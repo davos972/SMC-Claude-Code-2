@@ -181,6 +181,20 @@ async def get_positions() -> Dict[str, Any]:
         return {"configured": True, "data": [], "error": str(e)}
 
 
+@api.post("/positions/{position_id}/close")
+async def close_position(position_id: str) -> Dict[str, Any]:
+    """Emergency close a position by ID."""
+    if not metaapi_client.is_configured():
+        raise HTTPException(status_code=400, detail="MetaApi non configuré.")
+    try:
+        result = await metaapi_client.close_position(position_id)
+        return {"ok": True, "result": result}
+    except MetaApiConnectionError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @api.get("/price/{symbol}")
 async def get_price(symbol: str) -> Dict[str, Any]:
     if not metaapi_client.is_configured():

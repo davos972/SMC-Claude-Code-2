@@ -25,10 +25,59 @@ export default function Header({ botState, settings }) {
 
     const accountLabel = settings?.account_type === "real" ? "Compte réel" : "Compte démo";
     const status = botState?.effective_status;
+    const resumePolicy = settings?.resume_policy || "next_session";
+    const resumeLabel = resumePolicy === "next_day" ? "reprise demain" : "reprise prochaine session";
+
     const statusMap = {
-        active: { label: "ACTIF", dot: "bg-green", text: "text-green", ring: "border-green/40 bg-green/5" },
-        out_of_session: { label: "HORS SESSION", dot: "bg-gold", text: "text-gold", ring: "border-gold/40 bg-gold/5" },
-        stopped: { label: "ARRÊTÉ", dot: "bg-text-secondary", text: "text-text-secondary", ring: "border-bd bg-panel" },
+        active: {
+            label: "ACTIF",
+            dot: "bg-green animate-pulse-dot",
+            text: "text-green",
+            ring: "border-green/40 bg-green/5",
+            sub: null,
+        },
+        out_of_session: {
+            label: "HORS SESSION",
+            dot: "bg-gold",
+            text: "text-gold",
+            ring: "border-gold/40 bg-gold/5",
+            sub: null,
+        },
+        news_pause: {
+            label: "PAUSE NEWS",
+            dot: "bg-gold",
+            text: "text-gold",
+            ring: "border-gold/40 bg-gold/5",
+            sub: null,
+        },
+        stopped_manual: {
+            label: "ARRÊTÉ",
+            dot: "bg-text-secondary",
+            text: "text-text-secondary",
+            ring: "border-bd bg-panel",
+            sub: null,
+        },
+        stopped_drawdown: {
+            label: "ARRÊT DRAWDOWN",
+            dot: "bg-red",
+            text: "text-red",
+            ring: "border-red/30 bg-red/5",
+            sub: resumeLabel,
+        },
+        stopped_losses: {
+            label: "ARRÊT PERTES",
+            dot: "bg-red",
+            text: "text-red",
+            ring: "border-red/30 bg-red/5",
+            sub: resumeLabel,
+        },
+        stopped: {
+            label: "ARRÊTÉ",
+            dot: "bg-text-secondary",
+            text: "text-text-secondary",
+            ring: "border-bd bg-panel",
+            sub: null,
+        },
     };
     const st = statusMap[status] || statusMap.stopped;
 
@@ -49,9 +98,14 @@ export default function Header({ botState, settings }) {
                     </div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                    <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border ${st.ring}`} data-testid="bot-status-pill">
-                        <span className={`w-1.5 h-1.5 rounded-full ${st.dot} ${status === "active" ? "animate-pulse-dot" : ""}`} />
-                        <span className={`text-[11px] font-semibold tracking-wider ${st.text}`}>{st.label}</span>
+                    <div className="flex flex-col items-end">
+                        <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border ${st.ring}`} data-testid="bot-status-pill">
+                            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${st.dot}`} />
+                            <span className={`text-[11px] font-semibold tracking-wider ${st.text}`}>{st.label}</span>
+                        </div>
+                        {st.sub && (
+                            <span className="text-[10px] text-text-secondary mt-0.5 pr-1">{st.sub}</span>
+                        )}
                     </div>
                     <button
                         type="button"

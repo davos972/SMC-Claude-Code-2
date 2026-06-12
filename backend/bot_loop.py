@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import news as news_engine
@@ -51,10 +51,11 @@ async def _notify(ntype: str, category: str, title: str, message: str) -> None:
 
 async def auto_stop(reason: str, detail: str) -> None:
     """Stop the bot automatically with a reason."""
+    stop_time = datetime.now(timezone.utc)
     await store.set_bot_state({
         "running": False,
         "stop_reason": reason,
-        "last_status_change": datetime.now(timezone.utc).isoformat(),
+        "last_status_change": stop_time.isoformat(),
     })
     titles = {
         "drawdown": "Bot arrêté — Drawdown max atteint",
@@ -62,6 +63,59 @@ async def auto_stop(reason: str, detail: str) -> None:
     }
     await _notify("warning", "bot_stop", titles.get(reason, "Bot arrêté automatiquement"), detail)
     logger.info("Bot auto-stopped: %s — %s", reason, detail)
+    asyncio.create_task(_auto_resume_watcher(stop_time))
+
+
+async def _auto_resume_watcher(stop_time: datetime) -> None:
+    """Wait for resume condition then restart the bot."""
+    logger.info("Auto-resume watcher started (stopped at %s).", stop_time.isoformat())
+    # Wait at least 2 minutes before checking (avoid immediate re-trigger)
+    await asyncio.sleep(120)
+    while True:
+        await asyncio.sleep(30)
+        try:
+            state = await store.get_bot_state()
+            # If someone manually restarted or stopped again, exit watcher
+            if state.get("running") or state.get("stop_reason") is None:
+                logger.info("Auto-resume watcher: manual change detected, exiting.")
+                return
+
+            s = await store.get_settings()
+            resume_policy = s.get("resume_policy", "next_session")
+            now = datetime.now(timezone.utc)
+
+            should_resume = False
+            if resume_policy == "next_day":
+                should_resume = now.date() > stop_time.date()
+            else:  # next_session (default)
+                session_info = sess.is_in_session(now, s)
+                should_resume = session_info.get("in_session", False)
+
+            if not should_resume:
+                continue
+
+            # Resume: reset counters, snapshot equity, restart loop
+            try:
+                account_info = await metaapi_client.get_account_information()
+                equity = float(account_info.get("equity", 0))
+            except Exception:
+                equity = 0.0
+
+            await store.set_bot_state({
+                "running": True,
+                "stop_reason": None,
+                "consec_losses": 0,
+                "trades_today": 0,
+                "day_start_equity": equity,
+                "last_status_change": now.isoformat(),
+            })
+            start(equity)
+            await _notify("success", "bot_resume", "Bot repris automatiquement",
+                          f"Equity de référence : {equity:.2f}")
+            logger.info("Bot auto-resumed (policy=%s, equity=%.2f).", resume_policy, equity)
+            return
+        except Exception as e:
+            logger.warning("Auto-resume watcher error: %s", e)
 
 
 async def _check_closed_positions(current_equity: float, magic_number: int) -> None:

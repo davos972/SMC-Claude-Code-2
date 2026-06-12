@@ -227,9 +227,9 @@ export default function Dashboard({ botState, settings, refresh }) {
                     Positions ouvertes
                 </div>
                 {positions && positions.length > 0 ? (
-                    <div className="space-y-2" data-testid="open-positions">
+                    <div data-testid="open-positions">
                         {positions.map((p) => (
-                            <PositionRow key={p.id} p={p} />
+                            <PositionRow key={p.id} p={p} onClose={loadData} />
                         ))}
                     </div>
                 ) : (
@@ -263,23 +263,60 @@ export default function Dashboard({ botState, settings, refresh }) {
     );
 }
 
-function PositionRow({ p }) {
+function PositionRow({ p, onClose }) {
     const side = (p.type || "").toLowerCase().includes("buy") || p.type === 0 ? "buy" : "sell";
     const profit = Number(p.profit ?? p.unrealizedProfit ?? 0);
+    const [closing, setClosing] = useState(false);
+
+    const handleClose = async () => {
+        if (!window.confirm(`Fermer la position ${side.toUpperCase()} ${p.symbol} ?`)) return;
+        setClosing(true);
+        try {
+            await endpoints.closePosition(p.id);
+            toast.success("Position fermée");
+            onClose && onClose();
+        } catch {
+            toast.error("Erreur lors de la clôture");
+        } finally {
+            setClosing(false);
+        }
+    };
+
     return (
-        <div className="flex items-center gap-3 py-2" data-testid="position-row">
-            <span className={`px-2 py-1 rounded-md text-[11px] font-bold ${side === "buy" ? "bg-green/15 text-green" : "bg-red/15 text-red"}`}>
-                {side.toUpperCase()}
-            </span>
-            <div className="flex-1">
-                <div className="font-semibold">{p.symbol}</div>
-                <div className="text-xs text-text-secondary num">
-                    {Number(p.volume).toFixed(2)} lot · entrée {fmtPrice(p.openPrice || p.openingPrice)}
+        <div className="py-2 border-b border-bd last:border-0" data-testid="position-row">
+            <div className="flex items-center gap-3">
+                <span className={`px-2 py-1 rounded-md text-[11px] font-bold flex-shrink-0 ${side === "buy" ? "bg-green/15 text-green" : "bg-red/15 text-red"}`}>
+                    {side.toUpperCase()}
+                </span>
+                <div className="flex-1 min-w-0">
+                    <div className="font-semibold">{p.symbol}</div>
+                    <div className="text-xs text-text-secondary num">
+                        {Number(p.volume).toFixed(2)} lot · entrée {fmtPrice(p.openPrice || p.openingPrice)}
+                    </div>
                 </div>
+                <div className={`num font-bold flex-shrink-0 ${profit >= 0 ? "text-green" : "text-red"}`}>
+                    {profit >= 0 ? "+" : ""}{profit.toFixed(2)}
+                </div>
+                <button
+                    onClick={handleClose}
+                    disabled={closing}
+                    title="Fermer la position"
+                    className="w-8 h-8 rounded-lg border border-red/40 text-red flex items-center justify-center hover:bg-red/10 transition-colors disabled:opacity-40 flex-shrink-0"
+                    data-testid="close-position-button"
+                >
+                    <X className="w-4 h-4" />
+                </button>
             </div>
-            <div className={`num font-bold ${profit >= 0 ? "text-green" : "text-red"}`}>
-                {profit >= 0 ? "+" : ""}{profit.toFixed(2)} €
-            </div>
+            {(p.stopLoss || p.takeProfit) && (
+                <div className="flex gap-4 mt-1 pl-16">
+                    {p.stopLoss && (
+                        <span className="text-[11px] text-red num">SL {fmtPrice(p.stopLoss)}</span>
+                    )}
+                    {p.takeProfit && (
+                        <span className="text-[11px] text-green num">TP {fmtPrice(p.takeProfit)}</span>
+                    )}
+                </div>
+            )}
         </div>
     );
 }

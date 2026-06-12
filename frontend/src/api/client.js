@@ -33,6 +33,7 @@ export const endpoints = {
     notifications: () => api.get("/notifications"),
     readAllNotifications: () => api.post("/notifications/read-all"),
     news: (currency = "USD") => api.get(`/news?currency=${currency}`),
+    closePosition: (id) => api.post(`/positions/${id}/close`),
     cancelBacktest: (id) => api.delete(`/backtest/${id}`),
     analysisAtTime: (symbol, timestamp, mode = "intraday") =>
         apiLong.get(`/analysis/at-time`, { params: { symbol, timestamp, mode } }),
