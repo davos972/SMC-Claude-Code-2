@@ -1,0 +1,37 @@
+services:
+  # ── Backend (FastAPI) ──────────────────────────────────────────────
+  - type: web
+    name: goldflow-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    plan: free
+    envVars:
+      - key: MONGO_URL
+        sync: false          # à renseigner manuellement dans Render
+      - key: CORS_ORIGINS
+        sync: false          # sera remplacé par l'URL du frontend
+      - key: METAAPI_TOKEN
+        sync: false          # optionnel — peut aussi être saisi dans l'app
+      - key: METAAPI_ACCOUNT_ID
+        sync: false          # optionnel
+
+  # ── Frontend (React) ───────────────────────────────────────────────
+  - type: web
+    name: goldflow-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: yarn install && yarn build
+    staticPublishPath: build
+    plan: free
+    envVars:
+      - key: REACT_APP_BACKEND_URL
+        sync: false          # URL du backend Render, ex: https://goldflow-backend.onrender.com
+    headers:
+      - path: /sw.js
+        name: Service-Worker-Allowed
+        value: /
+      - path: /*
+        name: Cache-Control
+        value: no-cache

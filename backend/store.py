@@ -18,7 +18,7 @@ def get_db():
     if client is None:
         client = AsyncIOMotorClient(os.environ["MONGO_URL"])
         _mongo = client
-    return client[os.environ["DB_NAME"]]
+    return client[os.environ.get("DB_NAME", "goldflow")]
 
 
 # ---------- Settings ----------
