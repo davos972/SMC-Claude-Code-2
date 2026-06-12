@@ -118,6 +118,24 @@ async def _auto_resume_watcher(stop_time: datetime) -> None:
             logger.warning("Auto-resume watcher error: %s", e)
 
 
+async def _close_all_bot_positions(magic_number: int, reason: str = "news") -> None:
+    """Close all open positions belonging to this bot (matching magic number)."""
+    try:
+        positions = await metaapi_client.get_positions()
+        bot_pos = [p for p in positions if int(p.get("magic", 0)) == magic_number]
+        for p in bot_pos:
+            try:
+                await metaapi_client.close_position(str(p.get("id", "")))
+                logger.info("Closed position %s (reason: %s)", p.get("id"), reason)
+            except Exception as e:
+                logger.warning("Failed to close position %s: %s", p.get("id"), e)
+        if bot_pos:
+            await _notify("info", "close_trade", "Positions fermées automatiquement",
+                          f"Motif : {reason} ({len(bot_pos)} position(s))")
+    except Exception as e:
+        logger.warning("_close_all_bot_positions failed: %s", e)
+
+
 async def _check_closed_positions(current_equity: float, magic_number: int) -> None:
     """Detect positions closed since last check and update consecutive loss counter."""
     global _open_positions
@@ -200,6 +218,8 @@ async def _bot_trading_loop() -> None:
                         int(s.get("news_minutes_after", 30)),
                     )
                     if in_pause:
+                        if s.get("close_positions_before_news", False):
+                            await _close_all_bot_positions(magic, reason="annonce news imminente")
                         continue
                 except Exception:
                     pass  # don't block on news API error
