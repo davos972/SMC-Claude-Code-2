@@ -1,0 +1,318 @@
+/* eslint-disable react-hooks/set-state-in-effect */
+import React, { useEffect, useState, useCallback } from "react";
+import { toast } from "sonner";
+import { AlertTriangle, X } from "lucide-react";
+import StartStopButton from "../components/StartStopButton";
+import SessionRail from "../components/SessionRail";
+import KPICard from "../components/KPICard";
+import SMCChart from "../components/SMCChart";
+import SegmentedControl from "../components/SegmentedControl";
+import SignalLog from "../components/SignalLog";
+import { endpoints } from "../api/client";
+import { fmtMoney, fmtPrice, fmtPnL, fmtTime } from "../lib/format";
+
+const TIMEFRAME_OPTIONS = [
+    { value: "H1", label: "H1" },
+    { value: "M5", label: "M5" },
+    { value: "M1", label: "M1" },
+];
+
+export default function Dashboard({ botState, settings, refresh }) {
+    const [timeframe, setTimeframe] = useState("M5");
+    const [account, setAccount] = useState(null);
+    const [positions, setPositions] = useState([]);
+    const [price, setPrice] = useState(null);
+    const [candles, setCandles] = useState([]);
+    const [analysis, setAnalysis] = useState(null);
+    const [chartError, setChartError] = useState(null);
+    const [signals, setSignals] = useState([]);
+    const [news, setNews] = useState({ events: [], pause: null, error: null });
+    const [configured, setConfigured] = useState(true);
+    const [busy, setBusy] = useState(false);
+
+    const symbol = settings?.active_symbol || "XAUUSD";
+
+    const loadData = useCallback(async () => {
+        try {
+            const [acc, pos, pr, sig, nw] = await Promise.all([
+                endpoints.account(), endpoints.positions(), endpoints.price(symbol),
+                endpoints.signals(20), endpoints.news("USD"),
+            ]);
+            setAccount(acc.data?.data || null);
+            setConfigured(acc.data?.configured !== false);
+            setPositions(pos.data?.data || []);
+            setPrice(pr.data?.data || null);
+            setSignals(sig.data || []);
+            setNews(nw.data || { events: [], pause: null });
+        } catch (err) {
+            console.error("Dashboard load failed:", err);
+        }
+    }, [symbol]);
+
+    const loadCandles = useCallback(async (tf) => {
+        try {
+            const { data } = await endpoints.candles(symbol, tf, 200);
+            if (data?.configured === false) {
+                setCandles([]);
+                setChartError("MetaApi non configuré.");
+                return;
+            }
+            if (data?.error) {
+                setCandles([]);
+                setChartError(data.error);
+                return;
+            }
+            const list = data?.data || [];
+            setCandles(list);
+            setChartError(list.length === 0 ? "Aucune bougie reçue pour cette période." : null);
+        } catch (err) {
+            console.error("Failed to load candles:", err);
+            setCandles([]);
+            setChartError("Erreur de chargement des bougies.");
+        }
+    }, [symbol]);
+
+    useEffect(() => {
+        loadData();
+        loadCandles(timeframe);
+        const t = setInterval(loadData, 5000);
+        return () => clearInterval(t);
+    }, [loadData, loadCandles, timeframe]);
+
+    const onStart = async () => {
+        setBusy(true);
+        try {
+            const { data } = await endpoints.botStart();
+            if (data.error) toast.error(data.error);
+            else toast.success("Bot démarré");
+            refresh && refresh();
+        } finally { setBusy(false); }
+    };
+
+    const onStop = async () => {
+        setBusy(true);
+        try {
+            await endpoints.botStop();
+            toast("Bot arrêté");
+            refresh && refresh();
+        } finally { setBusy(false); }
+    };
+
+    const onAnalyze = async () => {
+        if (!configured) {
+            toast.error("MetaApi non configuré. Renseigne ton token dans Réglages.");
+            return;
+        }
+        setBusy(true);
+        try {
+            const { data } = await endpoints.runAnalysis(symbol, true);
+            if (data.error) {
+                toast.error(data.error);
+            } else {
+                setAnalysis(data.result);
+                const r = data.result;
+                if (r?.signal) toast.success(`Signal ${r.signal.side.toUpperCase()} (RR 1:${r.signal.rr.toFixed(1)})`);
+                else toast(`Setup rejeté: ${r?.reject_reason || "—"}`);
+            }
+            const sig = await endpoints.signals(20);
+            setSignals(sig.data || []);
+        } catch (e) {
+            toast.error("Erreur d'analyse: " + e.message);
+        } finally { setBusy(false); }
+    };
+
+    const running = botState?.running;
+    const effective = botState?.effective_status;
+    const statusLabel = ({
+        active: "Bot en marche",
+        out_of_session: "Hors session",
+        stopped: "Bot arrêté",
+    })[effective] || "Bot arrêté";
+
+    const balance = account?.balance;
+    const equity = account?.equity;
+    const pnlDay = account ? (account.equity - account.balance) : null;
+    const currency = account?.currency || "€";
+
+    const priceVal = price?.bid || price?.ask;
+
+    return (
+        <div className="space-y-4 animate-fade-in">
+            {!configured && <DegradedBanner />}
+            {news?.pause && (
+                <div className="bg-gold/10 border border-gold/30 rounded-card p-3 flex items-start gap-2" data-testid="news-pause-banner">
+                    <AlertTriangle className="w-4 h-4 text-gold mt-0.5" />
+                    <div className="text-sm">
+                        <span className="font-semibold text-gold">Pause actualité.</span>{" "}
+                        <span className="text-text-secondary">
+                            {news.pause.event?.title} — reprise dans ~{Math.round(news.pause.diff_min)} min.
+                        </span>
+                    </div>
+                </div>
+            )}
+
+            {/* START/STOP + status */}
+            <div className="bg-panel border border-bd rounded-card p-5">
+                <div className="flex items-center gap-5">
+                    <StartStopButton running={running} onClick={running ? onStop : onStart} disabled={busy} />
+                    <div className="flex-1 min-w-0 space-y-1">
+                        <div className="text-xl font-semibold leading-tight" data-testid="bot-status-label">{statusLabel}</div>
+                        <div className="text-sm text-text-secondary">
+                            Mode {settings?.trading_mode || "intraday"} · {settings?.signal_only_mode ? "Signal" : "Signal + exécution"}
+                        </div>
+                        <div className="text-sm text-text-secondary">
+                            Pertes consécutives :{" "}
+                            <span className="num text-text-primary font-semibold">{botState?.consec_losses || 0}</span>
+                            <span className="text-text-secondary"> / </span>
+                            <span className="num text-text-primary font-semibold">{botState?.max_consec_losses || 3}</span>
+                        </div>
+                        <div className="text-sm text-text-secondary">
+                            Drawdown jour :{" "}
+                            <span className="num text-text-primary font-semibold">0,0%</span>
+                            <span className="text-text-secondary"> / </span>
+                            <span className="num text-text-primary font-semibold">{(botState?.max_drawdown_pct || 3).toFixed(1).replace(".", ",")}%</span>
+                        </div>
+                    </div>
+                </div>
+                <div className="mt-5">
+                    <SessionRail rail={botState?.rail} />
+                </div>
+            </div>
+
+            {/* KPI grid */}
+            <div className="grid grid-cols-3 gap-3">
+                <KPICard label="SOLDE" value={fmtMoney(balance, currency, 0)} testid="kpi-balance" />
+                <KPICard label="ÉQUITÉ" value={fmtMoney(equity, currency, 0)} testid="kpi-equity" />
+                <KPICard
+                    label="P&L JOUR"
+                    value={pnlDay !== null ? fmtPnL(pnlDay, currency) : "—"}
+                    accent={pnlDay > 0 ? "positive" : pnlDay < 0 ? "negative" : "default"}
+                    testid="kpi-pnl"
+                />
+            </div>
+
+            {/* Chart card */}
+            <div className="bg-panel border border-bd rounded-card p-4 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-baseline gap-2 min-w-0">
+                        <span className="text-xl font-bold tracking-wide">{symbol}</span>
+                        <span className="num text-gold text-xl font-semibold truncate" data-testid="symbol-price">
+                            {priceVal ? fmtPrice(priceVal) : "—"}
+                        </span>
+                    </div>
+                    <div className="flex-shrink-0 w-[160px]">
+                        <SegmentedControl
+                            options={TIMEFRAME_OPTIONS}
+                            value={timeframe}
+                            onChange={setTimeframe}
+                            testid="timeframe-select"
+                        />
+                    </div>
+                </div>
+                <SMCChart candles={candles} analysis={analysis} errorMessage={chartError} />
+                <button
+                    type="button"
+                    onClick={onAnalyze}
+                    disabled={busy}
+                    data-testid="run-analysis-button"
+                    className="w-full py-3 rounded-xl bg-gold text-bg font-bold text-sm hover:brightness-110 transition-all disabled:opacity-60"
+                >
+                    {busy ? "Analyse en cours…" : "Lancer une analyse SMC"}
+                </button>
+            </div>
+
+            {/* Positions */}
+            <div className="bg-panel border border-bd rounded-card p-4">
+                <div className="text-[11px] font-bold uppercase tracking-widest text-text-secondary mb-3">
+                    Positions ouvertes
+                </div>
+                {positions && positions.length > 0 ? (
+                    <div className="space-y-2" data-testid="open-positions">
+                        {positions.map((p) => (
+                            <PositionRow key={p.id} p={p} />
+                        ))}
+                    </div>
+                ) : (
+                    <div className="text-sm text-text-secondary py-4 text-center">
+                        Aucune position ouverte
+                    </div>
+                )}
+            </div>
+
+            {/* Signal log */}
+            <div className="bg-panel border border-bd rounded-card p-4">
+                <div className="flex items-center justify-between mb-2">
+                    <div className="text-[11px] font-bold uppercase tracking-widest text-text-secondary">
+                        Journal des signaux
+                    </div>
+                </div>
+                <SignalLog signals={signals} />
+            </div>
+
+            {/* News */}
+            <div className="bg-panel border border-bd rounded-card p-4">
+                <div className="text-[11px] font-bold uppercase tracking-widest text-text-secondary mb-3">
+                    Annonces éco du jour — USD
+                </div>
+                {news?.error && (
+                    <div className="text-sm text-red mb-2" data-testid="news-error">{news.error}</div>
+                )}
+                <NewsList events={news?.events || []} />
+            </div>
+        </div>
+    );
+}
+
+function PositionRow({ p }) {
+    const side = (p.type || "").toLowerCase().includes("buy") || p.type === 0 ? "buy" : "sell";
+    const profit = Number(p.profit ?? p.unrealizedProfit ?? 0);
+    return (
+        <div className="flex items-center gap-3 py-2" data-testid="position-row">
+            <span className={`px-2 py-1 rounded-md text-[11px] font-bold ${side === "buy" ? "bg-green/15 text-green" : "bg-red/15 text-red"}`}>
+                {side.toUpperCase()}
+            </span>
+            <div className="flex-1">
+                <div className="font-semibold">{p.symbol}</div>
+                <div className="text-xs text-text-secondary num">
+                    {Number(p.volume).toFixed(2)} lot · entrée {fmtPrice(p.openPrice || p.openingPrice)}
+                </div>
+            </div>
+            <div className={`num font-bold ${profit >= 0 ? "text-green" : "text-red"}`}>
+                {profit >= 0 ? "+" : ""}{profit.toFixed(2)} €
+            </div>
+        </div>
+    );
+}
+
+function NewsList({ events }) {
+    if (!events || events.length === 0) {
+        return <div className="text-sm text-text-secondary py-2">Aucune annonce à venir.</div>;
+    }
+    return (
+        <div className="space-y-2">
+            {events.slice(0, 5).map((e) => (
+                <div key={`${e.date}-${e.title}`} className="flex items-center gap-3 py-1" data-testid="news-row">
+                    <span className={`w-2 h-2 rounded-full ${
+                        e.impact === "high" ? "bg-red" : e.impact === "medium" ? "bg-gold" : "bg-text-secondary"
+                    }`} />
+                    <span className="text-sm flex-1 truncate">{e.title}</span>
+                    <span className="text-xs text-text-secondary num">{fmtTime(e.date)}</span>
+                </div>
+            ))}
+        </div>
+    );
+}
+
+function DegradedBanner() {
+    return (
+        <div className="bg-gold/10 border border-gold/30 rounded-card p-3 flex items-start gap-2" data-testid="degraded-banner">
+            <AlertTriangle className="w-5 h-5 text-gold mt-0.5 flex-shrink-0" />
+            <div className="text-sm">
+                <span className="font-semibold text-gold">MetaApi non configuré.</span>{" "}
+                <span className="text-text-secondary">
+                    Renseigne ton token et accountId dans <strong>Réglages</strong> pour activer les données réelles et le trading.
+                </span>
+            </div>
+        </div>
+    );
+}

@@ -1,0 +1,173 @@
+"""Pydantic models and Mongo helpers for GoldFlow SMC."""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Annotated, Any, List, Optional, Literal
+from bson import ObjectId
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+
+
+def _to_str(v: Any) -> str:
+    if isinstance(v, ObjectId):
+        return str(v)
+    return str(v)
+
+
+PyObjectId = Annotated[str, BeforeValidator(_to_str)]
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def now_iso() -> str:
+    return now_utc().isoformat()
+
+
+# ---------- Settings ----------
+
+DEFAULT_SETTINGS = {
+    # MetaApi
+    "metaapi_token": "",
+    "metaapi_account_id": "",
+    "account_type": "demo",  # demo | real
+    "real_confirmed": False,
+
+    # Symbol(s)
+    "active_symbol": "XAUUSD",
+    "symbols": ["XAUUSD"],
+
+    # Mode
+    "trading_mode": "intraday",  # intraday | scalping
+    "intraday_htf": "H1",
+    "intraday_ltf": "M5",
+    "scalping_htf": "M15",
+    "scalping_ltf": "M1",
+
+    # Risk
+    "risk_per_trade_pct": 1.0,
+    "min_rr": 2.0,
+    "max_consec_losses": 3,
+    "max_drawdown_pct": 3.0,
+    "max_trades_per_day": 5,
+    "resume_policy": "next_session",  # next_session | next_day
+    "fractal_n": 3,
+
+    # Sessions (local times)
+    "session_london_start": "08:00",
+    "session_london_end": "11:00",
+    "session_newyork_start": "08:00",
+    "session_newyork_end": "11:00",
+
+    # News
+    "news_filter_enabled": True,
+    "news_minutes_before": 30,
+    "news_minutes_after": 30,
+    "close_positions_before_news": False,
+
+    # Prop firm
+    "prop_firm_enabled": False,
+    "prop_daily_dd_pct": 5.0,
+    "prop_total_dd_pct": 10.0,
+    "prop_safety_margin_pct": 20.0,
+    "prop_profit_target_pct": 10.0,
+    "prop_initial_balance": 10000.0,
+
+    # Notifications
+    "notif_open_trade": True,
+    "notif_close_trade": True,
+    "notif_dd_warning": True,
+    "notif_bot_stop": True,
+    "notif_connection": True,
+    "notif_news": True,
+
+    # Execution
+    "signal_only_mode": True,  # default ON for first launch
+    "bot_running": False,
+    "stop_reason": None,  # manual | drawdown | consec_losses | None
+
+    # Backtest defaults
+    "default_spread_points": 25,
+
+    # Magic
+    "magic_number": 990077,
+    "order_comment_tag": "GFSMC",
+}
+
+
+class SettingsIn(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class SettingsOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+# ---------- Signals ----------
+
+class Signal(BaseModel):
+    id: str
+    symbol: str
+    timeframe: str
+    side: Literal["buy", "sell"]
+    status: Literal["accepted", "rejected", "executed", "news_pause"]
+    reason: str
+    rr: Optional[float] = None
+    entry: Optional[float] = None
+    sl: Optional[float] = None
+    tp: Optional[float] = None
+    time: str
+
+
+# ---------- Notifications ----------
+
+class Notification(BaseModel):
+    id: str
+    type: Literal["info", "success", "warning", "error"]
+    category: str  # open_trade | close_trade | dd_warning | bot_stop | connection | news
+    title: str
+    message: str
+    time: str
+    read: bool = False
+
+
+# ---------- Backtests ----------
+
+class BacktestRequest(BaseModel):
+    symbol: str = "XAUUSD"
+    start_date: str  # YYYY-MM-DD
+    end_date: str    # YYYY-MM-DD
+    mode: Literal["intraday", "scalping"] = "intraday"
+    spread_points: float = 25.0
+
+
+class BacktestTrade(BaseModel):
+    id: str
+    side: str
+    entry_time: str
+    exit_time: str
+    entry: float
+    sl: float
+    tp: float
+    exit_price: float
+    pnl: float
+    rr: float
+    reason: str
+    result: Literal["win", "loss", "be"]
+
+
+class BacktestResult(BaseModel):
+    id: str
+    status: Literal["pending", "running", "done", "error"]
+    progress: float
+    symbol: str
+    start_date: str
+    end_date: str
+    mode: str
+    spread_points: float
+    created_at: str
+    finished_at: Optional[str] = None
+    trades: List[BacktestTrade] = []
+    metrics: dict = {}
+    equity_curve: List[dict] = []
+    error: Optional[str] = None

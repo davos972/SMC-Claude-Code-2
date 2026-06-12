@@ -1,0 +1,55 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body {
+    margin: 0;
+    background-color: #0D1117;
+    color: #E9ECF2;
+    font-family: 'Outfit', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overscroll-behavior: none;
+}
+
+* { box-sizing: border-box; }
+
+.num { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
+
+::selection { background: rgba(227,179,65,0.35); color: #E9ECF2; }
+
+/* Scrollbar (subtle) */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: #242E3D; border-radius: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+@layer base {
+    :root {
+        --background: 215 28% 7%;
+        --foreground: 220 22% 93%;
+        --card: 217 24% 11%;
+        --card-foreground: 220 22% 93%;
+        --popover: 217 24% 11%;
+        --popover-foreground: 220 22% 93%;
+        --primary: 42 73% 58%;
+        --primary-foreground: 215 28% 7%;
+        --secondary: 217 24% 14%;
+        --secondary-foreground: 220 22% 93%;
+        --muted: 217 24% 14%;
+        --muted-foreground: 218 13% 60%;
+        --accent: 217 24% 14%;
+        --accent-foreground: 220 22% 93%;
+        --destructive: 3 67% 63%;
+        --destructive-foreground: 220 22% 93%;
+        --border: 217 24% 19%;
+        --input: 217 24% 14%;
+        --ring: 42 73% 58%;
+        --radius: 0.75rem;
+    }
+}
+
+@layer base {
+    body { @apply bg-bg text-text-primary; }
+}

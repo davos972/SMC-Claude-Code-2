@@ -1,0 +1,180 @@
+{
+  "project_name": "GoldFlow SMC",
+  "app_type": "mobile_web_app",
+  "theme": "dark",
+  "archetype": "Performance Pro with Luxury Data (High-contrast Dark + Gold)",
+  "global_rules": {
+    "mobile_first_container": "App container must be max-width: 480px, margin: 0 auto, min-height: 100vh, position: relative, overflow-x: hidden. Wrap the main content in this container.",
+    "language": "French (fr)",
+    "testing_attributes": "All interactive elements MUST have data-testid attributes (e.g., data-testid='start-bot-button').",
+    "file_extension": "Use .js and .jsx extensions (no .tsx).",
+    "bottom_padding": "Main content must have padding-bottom to account for the fixed bottom navigation (e.g., pb-24)."
+  },
+  "colors": {
+    "background_main": "#0D1117",
+    "surface_panels": "#151B24",
+    "border_color": "#242E3D",
+    "accent_gold": "#E3B341",
+    "status_green": "#3FB68B",
+    "status_red": "#E0635E",
+    "text_primary": "#E9ECF2",
+    "text_secondary": "#8A94A6",
+    "fvg_blue": "rgba(59, 130, 246, 0.2)"
+  },
+  "typography": {
+    "primary_sans": {
+      "family": "Outfit, sans-serif",
+      "usage": "All headings, labels, buttons, and UI text.",
+      "import": "@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');"
+    },
+    "secondary_mono": {
+      "family": "'JetBrains Mono', monospace",
+      "usage": "CRITICAL: Used for ALL numbers including Prices, Balances, P&L, Dates, Times. Must always include 'tabular-nums' utility.",
+      "import": "@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');"
+    },
+    "scales": {
+      "h1": "text-2xl font-bold tracking-tight text-[#E9ECF2]",
+      "h2": "text-xl font-semibold text-[#E9ECF2]",
+      "h3": "text-lg font-medium text-[#E9ECF2]",
+      "body": "text-base font-normal text-[#E9ECF2]",
+      "small": "text-sm font-medium text-[#8A94A6]",
+      "tiny_label": "text-xs font-bold uppercase tracking-[0.1em] text-[#8A94A6]",
+      "money_large": "font-mono tabular-nums text-3xl font-bold",
+      "money_medium": "font-mono tabular-nums text-xl font-semibold",
+      "money_small": "font-mono tabular-nums text-sm font-medium"
+    }
+  },
+  "spacing_and_layout": {
+    "border_radius": "rounded-[14px] for main cards, rounded-full for buttons/badges.",
+    "padding": {
+      "card": "p-4 sm:p-5",
+      "screen": "px-4 py-6"
+    },
+    "gap": {
+      "tight": "gap-2",
+      "standard": "gap-4",
+      "loose": "gap-6"
+    }
+  },
+  "components": {
+    "header": {
+      "layout": "sticky top-0 z-50 flex items-center justify-between px-4 py-3 bg-[#0D1117]/90 backdrop-blur-md border-b border-[#242E3D]",
+      "logo": "flex items-center gap-2",
+      "logo_mark": "w-8 h-8 rounded-lg bg-[#E3B341]/10 border border-[#E3B341]/30 flex items-center justify-center text-[#E3B341] font-bold text-sm",
+      "logo_text": "font-semibold text-[#E9ECF2] text-lg",
+      "logo_highlight": "text-[#E3B341]",
+      "status_badge": "flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#151B24] border border-[#242E3D] text-xs font-medium",
+      "notification_bell": "relative p-2 text-[#8A94A6] hover:text-[#E9ECF2] transition-colors",
+      "notification_dot": "absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-[#E0635E]"
+    },
+    "bottom_navigation": {
+      "layout": "fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[480px] z-50 bg-[#151B24] border-t border-[#242E3D] px-2 py-2 flex items-center justify-between pb-safe",
+      "tab_item": "flex flex-col items-center gap-1 p-2 flex-1 rounded-xl transition-all",
+      "tab_active": "text-[#E3B341]",
+      "tab_inactive": "text-[#8A94A6] hover:text-[#E9ECF2]"
+    },
+    "start_stop_button": {
+      "container": "flex flex-col items-center justify-center py-8",
+      "button_base": "relative w-32 h-32 rounded-full flex items-center justify-center text-xl font-bold tracking-wider transition-all duration-300 transform active:scale-95",
+      "state_active": "bg-[#151B24] text-[#3FB68B] border-2 border-[#3FB68B] shadow-[0_0_30px_rgba(63,182,139,0.3)]",
+      "state_stopped": "bg-[#151B24] text-[#E0635E] border-2 border-[#E0635E] shadow-[0_0_30px_rgba(224,99,94,0.3)]",
+      "glow_layer": "absolute inset-0 rounded-full blur-xl opacity-50 transition-opacity"
+    },
+    "session_rail_24h": {
+      "container": "w-full h-12 bg-[#151B24] rounded-[14px] border border-[#242E3D] relative overflow-hidden flex",
+      "timeline": "absolute inset-0 flex items-center px-2",
+      "hour_marker": "flex-1 h-2 border-r border-[#242E3D]/50 last:border-none",
+      "highlight_london": "absolute top-0 bottom-0 left-[33%] w-[33%] bg-gradient-to-r from-[#E3B341]/0 via-[#E3B341]/10 to-[#E3B341]/0 border-b-2 border-[#E3B341]/50",
+      "highlight_newyork": "absolute top-0 bottom-0 left-[54%] w-[33%] bg-gradient-to-r from-[#E3B341]/0 via-[#E3B341]/10 to-[#E3B341]/0 border-b-2 border-[#E3B341]",
+      "current_time_marker": "absolute top-0 bottom-0 w-0.5 bg-[#E9ECF2] shadow-[0_0_8px_#E9ECF2] z-10"
+    },
+    "smc_chart": {
+      "container": "w-full h-[300px] bg-[#0D1117] rounded-[14px] border border-[#242E3D] overflow-hidden relative",
+      "config": {
+        "layout": { "background": { "color": "#0D1117" }, "textColor": "#8A94A6" },
+        "grid": { "vertLines": { "color": "#151B24" }, "horzLines": { "color": "#151B24" } },
+        "crosshair": { "mode": 0 },
+        "candles": { "upColor": "#3FB68B", "downColor": "#E0635E", "borderVisible": false, "wickUpColor": "#3FB68B", "wickDownColor": "#E0635E" }
+      },
+      "drawings": {
+        "order_blocks": "Dotted rectangle outline, gold color (#E3B341)",
+        "fvg": "Solid rectangle, blue low opacity (rgba(59, 130, 246, 0.2))",
+        "sweeps": "Circle marker, red (#E0635E) at wick extremes",
+        "bos_choch": "Dotted line, green (#3FB68B) with text label"
+      }
+    },
+    "segmented_control": {
+      "container": "flex p-1 bg-[#0D1117] rounded-xl border border-[#242E3D]",
+      "item_base": "flex-1 py-1.5 text-sm font-medium text-center rounded-lg transition-all",
+      "item_active": "bg-[#151B24] text-[#E3B341] shadow-sm",
+      "item_inactive": "text-[#8A94A6] hover:text-[#E9ECF2]"
+    },
+    "cards": {
+      "base": "bg-[#151B24] rounded-[14px] border border-[#242E3D] p-4 flex flex-col gap-2",
+      "label": "text-xs font-bold uppercase tracking-wider text-[#8A94A6]",
+      "value": "font-mono text-2xl font-bold text-[#E9ECF2]",
+      "value_positive": "font-mono text-2xl font-bold text-[#3FB68B]",
+      "value_negative": "font-mono text-2xl font-bold text-[#E0635E]"
+    },
+    "signal_log": {
+      "item": "flex items-center gap-3 p-3 border-b border-[#242E3D] last:border-0",
+      "icon_accepted": "w-8 h-8 rounded-full bg-[#3FB68B]/10 text-[#3FB68B] flex items-center justify-center",
+      "icon_rejected": "w-8 h-8 rounded-full bg-[#E0635E]/10 text-[#E0635E] flex items-center justify-center",
+      "icon_news": "w-8 h-8 rounded-full bg-[#E3B341]/10 text-[#E3B341] flex items-center justify-center",
+      "time": "font-mono text-xs text-[#8A94A6]",
+      "message": "text-sm text-[#E9ECF2]"
+    },
+    "forms_and_inputs": {
+      "input": "w-full bg-[#0D1117] border border-[#242E3D] rounded-xl px-4 py-3 text-[#E9ECF2] placeholder:text-[#8A94A6] focus:border-[#E3B341] focus:outline-none focus:ring-1 focus:ring-[#E3B341]/50 font-mono",
+      "toggle": "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none data-[state=checked]:bg-[#3FB68B] data-[state=unchecked]:bg-[#242E3D]",
+      "slider": "w-full h-2 bg-[#242E3D] rounded-full appearance-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#E3B341]",
+      "primary_button": "w-full py-3.5 bg-[#E3B341] text-[#0D1117] font-bold rounded-xl text-center active:scale-[0.98] transition-transform"
+    }
+  },
+  "pages_structure": {
+    "dashboard": [
+      "Header (Sticky)",
+      "Cards Grid (Solde, Equité, P&L Jour) - 2 cols",
+      "Start/Stop Button Section",
+      "24h Session Rail",
+      "Chart Section (Timeframe Selector + lightweight-charts)",
+      "Open Positions List (BUY/SELL badge, P&L floating)",
+      "Signal Log"
+    ],
+    "backtest": [
+      "Header (Sticky)",
+      "Date Range Selector (DU / AU)",
+      "Configuration Dropdown",
+      "Spread Input",
+      "Primary Button: 'Lancer le backtest' (Gold)",
+      "Progress Bar",
+      "Results Cards (Winrate, Profit Factor, Drawdown, etc.)",
+      "Equity Curve Chart",
+      "Trades List"
+    ],
+    "stats": [
+      "Header (Sticky)",
+      "KPI Grid",
+      "Equity Curve",
+      "Bar Chart: Stats par session",
+      "Bar Chart: Stats par jour"
+    ],
+    "settings": [
+      "Header (Sticky)",
+      "MetaApi Config (Password input for Token, AccountID)",
+      "Segmented Control: Démo / Réel (Réel requires lock icon)",
+      "Prop Firm Mode Section (Drawdown limits display)",
+      "Risk Management (Slider % risk)",
+      "News Filter Toggle (Forex Factory)",
+      "Notifications Toggles"
+    ]
+  },
+  "icons": "Use lucide-react. Standardize stroke-width to 2. Key icons: Bell, Play, Square (Stop), History, BarChart3, Settings, Lock, CheckCircle2, XCircle, AlertTriangle.",
+  "instructions_to_main_agent": [
+    "Use standard semantic HTML div/section with standard Tailwind classes. Avoid overly wrapping things in heavy third-party UI libs unless needed (like Radix UI for exact accessibility on complex things).",
+    "CRITICAL: Restrict the app shell to max-w-[480px] centered on screen, simulating a mobile app on desktop.",
+    "CRITICAL: Apply 'font-mono' and 'tabular-nums' to EVERY SINGLE price, percentage, balance, and time display.",
+    "Implement the 24h rail using absolute positioning inside a relative container to place the London/NY highlights.",
+    "All copy must be in French as specified."
+  ]
+}

@@ -1,0 +1,381 @@
+/* eslint-disable react-hooks/set-state-in-effect */
+import React, { useEffect, useState, useRef, useCallback } from "react";
+import { toast } from "sonner";
+import { Lock, AlertTriangle, Save, Plug, CheckCircle2 } from "lucide-react";
+import SegmentedControl from "../components/SegmentedControl";
+import { endpoints } from "../api/client";
+
+const TRADING_MODE_OPTIONS = [
+    { value: "intraday", label: "Intraday (H1 → M5)" },
+    { value: "scalping", label: "Scalping (M15 → M1)" },
+];
+
+const RESUME_POLICY_OPTIONS = [
+    { value: "next_session", label: "Prochaine session" },
+    { value: "next_day", label: "Lendemain" },
+];
+
+const ACCOUNT_TYPE_OPTIONS = [
+    { value: "demo", label: "Démo" },
+    { value: "real", label: "Réel", icon: <Lock className="w-3.5 h-3.5" /> },
+];
+
+export default function Settings({ settings, refresh }) {
+    const [local, setLocal] = useState(null);
+    const [saving, setSaving] = useState(false);
+    const [showRealModal, setShowRealModal] = useState(false);
+    const [token, setToken] = useState("");
+    const [connectionStatus, setConnectionStatus] = useState(null);
+    const initialized = useRef(false);
+    const debounceTimers = useRef({});
+
+    // Only initialize local state once on first load — never overwrite user edits from polling
+    useEffect(() => {
+        if (settings && !initialized.current) {
+            setLocal({ ...settings });
+            initialized.current = true;
+        }
+    }, [settings]);
+
+    const set = (k, v) => setLocal((s) => ({ ...s, [k]: v }));
+
+    // Save a single field immediately (for toggles, selects)
+    const saveField = useCallback(async (key, value) => {
+        try {
+            await endpoints.updateSettings({ [key]: value });
+        } catch {
+            toast.error("Erreur de sauvegarde");
+        }
+    }, []);
+
+    // Save a single field with 600ms debounce (for number inputs)
+    const saveFieldDebounced = useCallback((key, value) => {
+        if (debounceTimers.current[key]) clearTimeout(debounceTimers.current[key]);
+        debounceTimers.current[key] = setTimeout(() => saveField(key, value), 600);
+    }, [saveField]);
+
+    const setAndSave = (k, v) => { set(k, v); saveField(k, v); };
+    const setAndSaveDebounced = (k, v) => { set(k, v); saveFieldDebounced(k, v); };
+
+    const save = async (updates) => {
+        setSaving(true);
+        try {
+            const base = updates || local;
+            const payload = { ...base };
+            if (!token && payload.metaapi_token === undefined) {
+                delete payload.metaapi_token;
+            } else if (token) {
+                payload.metaapi_token = token;
+            }
+            await endpoints.updateSettings(payload);
+            toast.success("Paramètres sauvegardés");
+            setToken("");
+            refresh && refresh();
+        } catch (e) {
+            toast.error("Erreur de sauvegarde");
+        } finally { setSaving(false); }
+    };
+
+    const testConnection = async () => {
+        setConnectionStatus("testing");
+        try {
+            const { data } = await endpoints.testConnection();
+            setConnectionStatus(data.ok ? "ok" : "error");
+            if (data.ok) toast.success("Connexion MetaApi réussie");
+            else toast.error(data.error || "Échec de connexion");
+        } catch {
+            setConnectionStatus("error");
+            toast.error("Échec de connexion");
+        }
+    };
+
+    if (!local) return <div className="text-center py-12 text-text-secondary">Chargement…</div>;
+
+    const onAccountTypeChange = (v) => {
+        if (v === "real") {
+            setShowRealModal(true);
+        } else {
+            set("account_type", "demo");
+            save({ account_type: "demo", real_confirmed: false });
+        }
+    };
+
+    return (
+        <div className="space-y-4 animate-fade-in" data-testid="settings-page">
+            {/* MetaApi connection */}
+            <Section title="Connexion MetaApi" icon={<Plug className="w-4 h-4" />}>
+                <Field label="Token MetaApi">
+                    <input
+                        type="password"
+                        value={token}
+                        onChange={(e) => setToken(e.target.value)}
+                        placeholder={local.metaapi_token_masked || "Colle ton token MetaApi"}
+                        className="w-full bg-bg border border-bd rounded-xl px-3 py-3 num focus:border-gold focus:outline-none focus:ring-1 focus:ring-gold/40"
+                        data-testid="settings-metaapi-token"
+                    />
+                </Field>
+                <Field label="Account ID">
+                    <input
+                        type="text"
+                        value={local.metaapi_account_id || ""}
+                        onChange={(e) => set("metaapi_account_id", e.target.value)}
+                        placeholder="ex. a1b2c3d4-demo"
+                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-3 focus:border-gold focus:outline-none"
+                        data-testid="settings-metaapi-accountid"
+                    />
+                </Field>
+                <Field label="Type de compte">
+                    <SegmentedControl
+                        value={local.account_type}
+                        onChange={onAccountTypeChange}
+                        options={ACCOUNT_TYPE_OPTIONS}
+                        testid="settings-account-type"
+                    />
+                </Field>
+                {local.account_type === "real" && (
+                    <div className="text-xs text-gold bg-gold/10 border border-gold/30 rounded-xl p-3 flex items-start gap-2">
+                        <AlertTriangle className="w-4 h-4 mt-0.5" />
+                        <span>Compte réel actif. Les ordres seront placés avec de l&apos;argent réel.</span>
+                    </div>
+                )}
+                {local.account_type !== "real" && (
+                    <div className="text-xs text-text-secondary bg-bg border border-bd rounded-xl p-3 flex items-start gap-2">
+                        <Lock className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                        <span>Le compte réel nécessite une double confirmation et l&apos;acceptation des risques.</span>
+                    </div>
+                )}
+                <div className="flex gap-2">
+                    <button onClick={() => save({ metaapi_account_id: local.metaapi_account_id })}
+                            disabled={saving}
+                            className="flex-1 py-3 bg-gold text-bg font-bold rounded-xl hover:brightness-110 transition-all disabled:opacity-60 flex items-center justify-center gap-2"
+                            data-testid="save-metaapi-button">
+                        <Save className="w-4 h-4" />
+                        <span>{saving ? "…" : "Sauvegarder"}</span>
+                    </button>
+                    <button onClick={testConnection}
+                            className="px-4 py-3 border border-bd rounded-xl text-text-primary hover:border-gold/50 transition-colors flex items-center gap-2"
+                            data-testid="test-connection-button">
+                        {connectionStatus === "ok" ? <CheckCircle2 className="w-4 h-4 text-green" /> : <Plug className="w-4 h-4" />}
+                        <span className="text-sm">Tester</span>
+                    </button>
+                </div>
+            </Section>
+
+            {/* Mode */}
+            <Section title="Mode de trading">
+                <Field label="Mode">
+                    <SegmentedControl
+                        value={local.trading_mode}
+                        onChange={(v) => setAndSave("trading_mode", v)}
+                        options={TRADING_MODE_OPTIONS}
+                        testid="settings-trading-mode"
+                    />
+                </Field>
+                <Toggle
+                    label="Mode signal uniquement"
+                    description="Le bot détecte et logge sans exécuter d'ordres."
+                    value={local.signal_only_mode}
+                    onChange={(v) => setAndSave("signal_only_mode", v)}
+                    testid="settings-signal-only"
+                />
+            </Section>
+
+            {/* Risk */}
+            <Section title="Gestion du risque">
+                <Slider
+                    label="Risque par trade"
+                    min={0.25} max={2} step={0.25}
+                    value={local.risk_per_trade_pct}
+                    onChange={(v) => setAndSaveDebounced("risk_per_trade_pct", v)}
+                    suffix="%"
+                    testid="settings-risk-per-trade"
+                />
+                <NumberField label="RR minimum" value={local.min_rr} onChange={(v) => setAndSaveDebounced("min_rr", v)} step={0.1} testid="settings-min-rr" />
+                <NumberField label="Pertes consécutives max" value={local.max_consec_losses} onChange={(v) => setAndSaveDebounced("max_consec_losses", v)} step={1} testid="settings-max-losses" />
+                <NumberField label="Drawdown maximum (%)" value={local.max_drawdown_pct} onChange={(v) => setAndSaveDebounced("max_drawdown_pct", v)} step={0.1} testid="settings-max-dd" />
+                <NumberField label="Trades max / jour" value={local.max_trades_per_day} onChange={(v) => setAndSaveDebounced("max_trades_per_day", v)} step={1} testid="settings-max-trades" />
+                <Field label="Reprise après arrêt auto">
+                    <SegmentedControl
+                        value={local.resume_policy}
+                        onChange={(v) => setAndSave("resume_policy", v)}
+                        options={RESUME_POLICY_OPTIONS}
+                        testid="settings-resume-policy"
+                    />
+                </Field>
+            </Section>
+
+            {/* News */}
+            <Section title="Filtre actualités économiques">
+                <Toggle label="Activer le filtre Forex Factory"
+                    value={local.news_filter_enabled}
+                    onChange={(v) => setAndSave("news_filter_enabled", v)}
+                    testid="settings-news-filter" />
+                <NumberField label="Pause avant news (min)" value={local.news_minutes_before} onChange={(v) => setAndSaveDebounced("news_minutes_before", v)} step={5} testid="settings-news-before" />
+                <NumberField label="Pause après news (min)" value={local.news_minutes_after} onChange={(v) => setAndSaveDebounced("news_minutes_after", v)} step={5} testid="settings-news-after" />
+                <Toggle label="Fermer positions avant annonce forte"
+                    value={local.close_positions_before_news}
+                    onChange={(v) => setAndSave("close_positions_before_news", v)}
+                    testid="settings-news-close" />
+            </Section>
+
+            {/* Prop Firm */}
+            <Section title="Mode Prop Firm">
+                <Toggle label="Activer le mode Prop Firm"
+                    value={local.prop_firm_enabled}
+                    onChange={(v) => setAndSave("prop_firm_enabled", v)}
+                    testid="settings-propfirm" />
+                {local.prop_firm_enabled && (
+                    <div className="space-y-3 animate-fade-in">
+                        <NumberField label="Solde initial" value={local.prop_initial_balance} onChange={(v) => setAndSaveDebounced("prop_initial_balance", v)} step={100} testid="settings-prop-balance" />
+                        <NumberField label="Drawdown jour max (%)" value={local.prop_daily_dd_pct} onChange={(v) => setAndSaveDebounced("prop_daily_dd_pct", v)} step={0.1} testid="settings-prop-dd-day" />
+                        <NumberField label="Drawdown total max (%)" value={local.prop_total_dd_pct} onChange={(v) => setAndSaveDebounced("prop_total_dd_pct", v)} step={0.1} testid="settings-prop-dd-total" />
+                        <NumberField label="Marge de sécurité (%)" value={local.prop_safety_margin_pct} onChange={(v) => setAndSaveDebounced("prop_safety_margin_pct", v)} step={1} testid="settings-prop-margin" />
+                        <NumberField label="Objectif de profit (%)" value={local.prop_profit_target_pct} onChange={(v) => setAndSaveDebounced("prop_profit_target_pct", v)} step={0.5} testid="settings-prop-target" />
+                    </div>
+                )}
+            </Section>
+
+            {/* Notifications */}
+            <Section title="Notifications">
+                <Toggle label="Ouverture de trade" value={local.notif_open_trade} onChange={(v) => setAndSave("notif_open_trade", v)} testid="settings-notif-open" />
+                <Toggle label="Clôture de trade" value={local.notif_close_trade} onChange={(v) => setAndSave("notif_close_trade", v)} testid="settings-notif-close" />
+                <Toggle label="Avertissement drawdown" value={local.notif_dd_warning} onChange={(v) => setAndSave("notif_dd_warning", v)} testid="settings-notif-dd" />
+                <Toggle label="Arrêt automatique" value={local.notif_bot_stop} onChange={(v) => setAndSave("notif_bot_stop", v)} testid="settings-notif-stop" />
+                <Toggle label="Perte/rétablissement connexion" value={local.notif_connection} onChange={(v) => setAndSave("notif_connection", v)} testid="settings-notif-conn" />
+                <Toggle label="Annonce éco imminente" value={local.notif_news} onChange={(v) => setAndSave("notif_news", v)} testid="settings-notif-news" />
+            </Section>
+
+            {/* Save All */}
+            <button onClick={() => save(local)} disabled={saving}
+                className="w-full py-3.5 bg-gold text-bg font-bold rounded-xl hover:brightness-110 transition-all disabled:opacity-60 flex items-center justify-center gap-2"
+                data-testid="save-all-settings">
+                <Save className="w-4 h-4" />
+                <span>{saving ? "Sauvegarde…" : "Sauvegarder tous les paramètres"}</span>
+            </button>
+
+            {showRealModal && (
+                <RealAccountModal
+                    onCancel={() => setShowRealModal(false)}
+                    onConfirm={() => {
+                        set("account_type", "real");
+                        set("real_confirmed", true);
+                        save({ account_type: "real", real_confirmed: true });
+                        setShowRealModal(false);
+                    }}
+                />
+            )}
+        </div>
+    );
+}
+
+function Section({ title, icon, children }) {
+    return (
+        <div className="bg-panel border border-bd rounded-card p-4">
+            <div className="text-[11px] font-bold uppercase tracking-widest text-text-secondary mb-3 flex items-center gap-2">
+                {icon}{title}
+            </div>
+            <div className="space-y-3">{children}</div>
+        </div>
+    );
+}
+
+function Field({ label, children }) {
+    return (
+        <div>
+            <label className="text-[10px] uppercase font-bold tracking-widest text-text-secondary block mb-1.5">
+                {label}
+            </label>
+            {children}
+        </div>
+    );
+}
+
+function NumberField({ label, value, onChange, step, testid }) {
+    return (
+        <Field label={label}>
+            <input
+                type="number"
+                value={value ?? ""}
+                step={step}
+                onChange={(e) => onChange(parseFloat(e.target.value))}
+                className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
+                data-testid={testid}
+            />
+        </Field>
+    );
+}
+
+function Toggle({ label, description, value, onChange, testid }) {
+    return (
+        <div className="flex items-center justify-between gap-3">
+            <div className="flex-1 min-w-0">
+                <div className="text-sm">{label}</div>
+                {description && <div className="text-xs text-text-secondary">{description}</div>}
+            </div>
+            <button
+                type="button"
+                role="switch"
+                aria-checked={value}
+                onClick={() => onChange(!value)}
+                data-testid={testid}
+                className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${value ? "bg-green" : "bg-bd"}`}
+            >
+                <span className={`absolute top-0.5 ${value ? "left-[22px]" : "left-0.5"} w-5 h-5 rounded-full bg-white shadow transition-all`} />
+            </button>
+        </div>
+    );
+}
+
+function Slider({ label, min, max, step, value, onChange, suffix, testid }) {
+    return (
+        <Field label={`${label} — ${value}${suffix || ""}`}>
+            <input
+                type="range" min={min} max={max} step={step}
+                value={value}
+                onChange={(e) => onChange(parseFloat(e.target.value))}
+                className="w-full accent-gold"
+                data-testid={testid}
+            />
+            <div className="flex justify-between text-[10px] text-text-secondary num mt-1">
+                <span>{min}{suffix}</span><span>{max}{suffix}</span>
+            </div>
+        </Field>
+    );
+}
+
+function RealAccountModal({ onCancel, onConfirm }) {
+    const [check1, setCheck1] = useState(false);
+    const [check2, setCheck2] = useState(false);
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4" data-testid="real-account-modal">
+            <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onCancel} />
+            <div className="relative w-full max-w-sm bg-panel border border-red/40 rounded-2xl p-5 animate-fade-in">
+                <div className="flex items-center gap-2 text-red mb-3">
+                    <AlertTriangle className="w-5 h-5" />
+                    <h3 className="font-bold">Passage en compte réel</h3>
+                </div>
+                <p className="text-sm text-text-secondary leading-relaxed mb-4">
+                    Tu t&apos;apprêtes à activer le trading sur un compte réel.
+                    Les ordres placés engageront ton vrai capital. Le trading sur le forex et l&apos;or comporte des risques de perte importants.
+                </p>
+                <label className="flex items-start gap-2 mb-2 text-sm cursor-pointer">
+                    <input type="checkbox" checked={check1} onChange={(e) => setCheck1(e.target.checked)} className="mt-0.5 accent-gold" data-testid="real-check-1" />
+                    <span>Je comprends que les ordres seront placés avec de l&apos;argent réel.</span>
+                </label>
+                <label className="flex items-start gap-2 mb-4 text-sm cursor-pointer">
+                    <input type="checkbox" checked={check2} onChange={(e) => setCheck2(e.target.checked)} className="mt-0.5 accent-gold" data-testid="real-check-2" />
+                    <span>J&apos;accepte les risques liés au trading automatique.</span>
+                </label>
+                <div className="flex gap-2">
+                    <button onClick={onCancel} className="flex-1 py-2.5 border border-bd rounded-xl text-text-secondary" data-testid="real-cancel">Annuler</button>
+                    <button
+                        onClick={onConfirm}
+                        disabled={!check1 || !check2}
+                        className="flex-1 py-2.5 bg-red text-bg font-bold rounded-xl disabled:opacity-40"
+                        data-testid="real-confirm"
+                    >Activer le réel</button>
+                </div>
+            </div>
+        </div>
+    );
+}
