@@ -117,6 +117,7 @@ class Signal(BaseModel):
     sl: Optional[float] = None
     tp: Optional[float] = None
     time: str
+    session: Optional[str] = None  # london | newyork | unknown
 
 
 # ---------- Notifications ----------

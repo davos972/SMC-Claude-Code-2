@@ -23,6 +23,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 import backtest as bt_engine  # noqa: E402
+import bot_loop  # noqa: E402
 import news as news_engine  # noqa: E402
 import sessions as sess  # noqa: E402
 import store  # noqa: E402
@@ -228,22 +229,34 @@ class BotStartPayload(BaseModel):
 async def bot_start() -> Dict[str, Any]:
     s = await store.get_settings()
     if not metaapi_client.is_configured():
-        # Allow start in signal-only with degraded data? No: require MetaApi
         await store.set_bot_state({"running": False, "stop_reason": "no_metaapi"})
         await _notify("warning", "bot_stop", "Démarrage impossible",
                       "MetaApi n'est pas configuré. Ajoute ton token dans Réglages.")
         return {"running": False, "error": "MetaApi non configuré."}
+    # Snapshot equity at bot start for drawdown tracking
+    equity = 0.0
+    try:
+        info = await metaapi_client.get_account_information()
+        equity = float(info.get("equity", 0))
+    except Exception:
+        pass
+    now_iso = datetime.now(timezone.utc).isoformat()
     await store.set_bot_state({
         "running": True, "stop_reason": None,
-        "last_status_change": datetime.now(timezone.utc).isoformat(),
+        "last_status_change": now_iso,
+        "trades_today": 0,
+        "day_start_equity": equity,
+        "session_start_equity": equity,
     })
+    bot_loop.start(day_start_equity=equity)
     await _notify("success", "bot_stop", "Bot démarré",
-                  "Le bot est en marche. Mode " + ("Signal" if s.get("signal_only_mode") else "Exécution") + ".")
+                  "Mode " + ("Signal uniquement" if s.get("signal_only_mode") else "Exécution automatique") + ".")
     return {"running": True, "stop_reason": None}
 
 
 @api.post("/bot/stop")
 async def bot_stop() -> Dict[str, Any]:
+    bot_loop.stop()
     await store.set_bot_state({
         "running": False, "stop_reason": "manual",
         "last_status_change": datetime.now(timezone.utc).isoformat(),
@@ -298,6 +311,32 @@ async def bot_state() -> Dict[str, Any]:
     return state
 
 
+@api.post("/bot/resume")
+async def bot_resume() -> Dict[str, Any]:
+    """Manually resume bot after an automatic stop (drawdown or consec_losses)."""
+    s = await store.get_settings()
+    if not metaapi_client.is_configured():
+        return {"running": False, "error": "MetaApi non configuré."}
+    equity = 0.0
+    try:
+        info = await metaapi_client.get_account_information()
+        equity = float(info.get("equity", 0))
+    except Exception:
+        pass
+    await store.set_bot_state({
+        "running": True, "stop_reason": None,
+        "last_status_change": datetime.now(timezone.utc).isoformat(),
+        "consec_losses": 0,  # reset on manual resume
+        "trades_today": 0,
+        "day_start_equity": equity,
+        "session_start_equity": equity,
+    })
+    bot_loop.start(day_start_equity=equity)
+    await _notify("info", "bot_stop", "Bot repris manuellement",
+                  "Compteurs de pertes et de trades remis à zéro.")
+    return {"running": True, "stop_reason": None}
+
+
 # ---------------- analysis / signals ----------------
 
 @api.post("/analysis/run")
@@ -338,6 +377,8 @@ async def run_analysis(symbol: str = Body(default="XAUUSD", embed=True),
 
     if persist:
         sig = result.get("signal")
+        now = datetime.now(timezone.utc)
+        session_info = sess.is_in_session(now, s)
         rec = {
             "id": str(uuid.uuid4()),
             "symbol": symbol,
@@ -349,7 +390,8 @@ async def run_analysis(symbol: str = Body(default="XAUUSD", embed=True),
             "entry": sig["entry"] if sig else None,
             "sl": sig["sl"] if sig else None,
             "tp": sig["tp"] if sig else None,
-            "time": datetime.now(timezone.utc).isoformat(),
+            "time": now.isoformat(),
+            "session": session_info.get("session", "unknown"),
         }
         await store.add_signal(rec)
 
