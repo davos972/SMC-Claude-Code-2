@@ -24,7 +24,6 @@ services:
     rootDir: frontend
     buildCommand: yarn install && yarn build
     staticPublishPath: build
-    plan: free
     envVars:
       - key: REACT_APP_BACKEND_URL
         sync: false          # URL du backend Render, ex: https://goldflow-backend.onrender.com
