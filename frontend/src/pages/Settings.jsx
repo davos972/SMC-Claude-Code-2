@@ -1,7 +1,6 @@
-/* eslint-disable react-hooks/set-state-in-effect */
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { toast } from "sonner";
-import { Lock, AlertTriangle, Save, Plug, CheckCircle2 } from "lucide-react";
+import { Lock, AlertTriangle, Save, Plug, CheckCircle2, Loader2 } from "lucide-react";
 import SegmentedControl from "../components/SegmentedControl";
 import { endpoints } from "../api/client";
 
@@ -26,6 +25,7 @@ export default function Settings({ settings, refresh }) {
     const [showRealModal, setShowRealModal] = useState(false);
     const [token, setToken] = useState("");
     const [connectionStatus, setConnectionStatus] = useState(null);
+    const [mtStatus, setMtStatus] = useState(null);
     const initialized = useRef(false);
     const debounceTimers = useRef({});
 
@@ -36,6 +36,23 @@ export default function Settings({ settings, refresh }) {
             initialized.current = true;
         }
     }, [settings]);
+
+    // Poll the MetaApi account state (configured / deploying / connected / last_error)
+    useEffect(() => {
+        let alive = true;
+        const load = async () => {
+            try {
+                const { data } = await endpoints.metaapiStatus();
+                if (alive) setMtStatus(data);
+            } catch (e) {
+                console.error("metaapi status load failed:", e);
+                if (alive) setMtStatus({ fetch_error: true });
+            }
+        };
+        load();
+        const t = setInterval(load, 10000);
+        return () => { alive = false; clearInterval(t); };
+    }, []);
 
     const set = (k, v) => setLocal((s) => ({ ...s, [k]: v }));
 
@@ -104,6 +121,7 @@ export default function Settings({ settings, refresh }) {
         <div className="space-y-4 animate-fade-in" data-testid="settings-page">
             {/* MetaApi connection */}
             <Section title="Connexion MetaApi" icon={<Plug className="w-4 h-4" />}>
+                <MetaApiStatusBanner status={mtStatus} />
                 <Field label="Token MetaApi">
                     <input
                         type="password"
@@ -177,6 +195,13 @@ export default function Settings({ settings, refresh }) {
                     value={local.signal_only_mode}
                     onChange={(v) => setAndSave("signal_only_mode", v)}
                     testid="settings-signal-only"
+                />
+                <NumberField
+                    label="Fenêtre sweep/CHoCH (bougies LTF)"
+                    value={local.recent_window}
+                    onChange={(v) => setAndSaveDebounced("recent_window", v)}
+                    step={1}
+                    testid="settings-recent-window"
                 />
             </Section>
 
@@ -340,6 +365,64 @@ function Slider({ label, min, max, step, value, onChange, suffix, testid }) {
                 <span>{min}{suffix}</span><span>{max}{suffix}</span>
             </div>
         </Field>
+    );
+}
+
+function MetaApiStatusBanner({ status }) {
+    if (!status) {
+        return (
+            <div className="text-xs text-text-secondary bg-bg border border-bd rounded-xl p-3 flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Lecture de l&apos;état du compte…</span>
+            </div>
+        );
+    }
+
+    let cls = "text-text-secondary bg-bg border-bd";
+    let icon = <Plug className="w-4 h-4 mt-0.5 flex-shrink-0" />;
+    let title = "État inconnu";
+    let detail = null;
+
+    if (status.fetch_error) {
+        cls = "text-red bg-red/10 border-red/30";
+        icon = <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />;
+        title = "État du compte indisponible";
+        detail = "Impossible de joindre le backend.";
+    } else if (!status.configured) {
+        cls = "text-text-secondary bg-bg border-bd";
+        icon = <Plug className="w-4 h-4 mt-0.5 flex-shrink-0" />;
+        title = "MetaApi non configuré";
+        detail = "Renseigne ton token et ton Account ID ci-dessous.";
+    } else if (status.deploying) {
+        cls = "text-gold bg-gold/10 border-gold/30";
+        icon = <Loader2 className="w-4 h-4 mt-0.5 flex-shrink-0 animate-spin" />;
+        title = "Déploiement du compte en cours…";
+        detail = "Un compte inactif peut prendre 1 à 4 minutes à redémarrer. Patiente.";
+    } else if (status.connected) {
+        cls = "text-green bg-green/10 border-green/30";
+        icon = <CheckCircle2 className="w-4 h-4 mt-0.5 flex-shrink-0" />;
+        title = "Connecté à MetaApi";
+        detail = status.account_id ? `Compte ${status.account_id}` : null;
+    } else if (status.last_error) {
+        cls = "text-red bg-red/10 border-red/30";
+        icon = <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />;
+        title = "Erreur de connexion";
+        detail = status.last_error;
+    } else {
+        cls = "text-text-secondary bg-bg border-bd";
+        icon = <Plug className="w-4 h-4 mt-0.5 flex-shrink-0" />;
+        title = "Configuré — non connecté";
+        detail = "La connexion s'établira au prochain appel (test, graphique…).";
+    }
+
+    return (
+        <div className={`text-xs border rounded-xl p-3 flex items-start gap-2 ${cls}`} data-testid="metaapi-status-banner">
+            {icon}
+            <div className="min-w-0">
+                <div className="font-bold">{title}</div>
+                {detail && <div className="opacity-90 break-words">{detail}</div>}
+            </div>
+        </div>
     );
 }
 

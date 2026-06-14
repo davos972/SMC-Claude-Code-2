@@ -8,8 +8,10 @@ export default function Stats() {
     const [signals, setSignals] = useState([]);
 
     useEffect(() => {
-        endpoints.stats().then(({ data }) => setStats(data)).catch(() => {});
-        endpoints.signals(500).then(({ data }) => setSignals(data || [])).catch(() => {});
+        endpoints.stats().then(({ data }) => setStats(data))
+            .catch((e) => console.error("stats load failed:", e));
+        endpoints.signals(500).then(({ data }) => setSignals(data || []))
+            .catch((e) => console.error("signals load failed:", e));
     }, []);
 
     const accepted = signals.filter((s) => s.status === "accepted" || s.status === "executed");
@@ -130,7 +132,7 @@ function EquityCurve({ signals }) {
             </svg>
             <div className="flex justify-between text-[10px] text-text-secondary num mt-1">
                 <span>Début</span>
-                <span>Fin · {executed?.length || points.length - 1} trades</span>
+                <span>Fin · {signals.length || points.length - 1} trades</span>
             </div>
         </div>
     );

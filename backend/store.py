@@ -123,6 +123,7 @@ async def get_bot_state() -> Dict[str, Any]:
             "stop_reason": None,
             "consec_losses": 0,
             "trades_today": 0,
+            "current_day": None,
             "day_start_equity": 0.0,
             "session_start_equity": 0.0,
             "last_status_change": None,

@@ -258,6 +258,7 @@ async def bot_start() -> Dict[str, Any]:
     await store.set_bot_state({
         "running": True, "stop_reason": None,
         "last_status_change": now_iso,
+        "current_day": datetime.now(timezone.utc).date().isoformat(),
         "trades_today": 0,
         "day_start_equity": equity,
         "session_start_equity": equity,
@@ -340,6 +341,7 @@ async def bot_resume() -> Dict[str, Any]:
     await store.set_bot_state({
         "running": True, "stop_reason": None,
         "last_status_change": datetime.now(timezone.utc).isoformat(),
+        "current_day": datetime.now(timezone.utc).date().isoformat(),
         "consec_losses": 0,  # reset on manual resume
         "trades_today": 0,
         "day_start_equity": equity,
@@ -387,7 +389,8 @@ async def run_analysis(symbol: str = Body(default="XAUUSD", embed=True),
     ltf_norm = _norm(ltf_candles)
     result = analyze(htf_norm, ltf_norm,
                      fractal_n=int(s.get("fractal_n", 3)),
-                     min_rr=float(s.get("min_rr", 2.0)))
+                     min_rr=float(s.get("min_rr", 2.0)),
+                     recent_window=int(s.get("recent_window", 6)))
 
     if persist:
         sig = result.get("signal")
@@ -449,7 +452,8 @@ async def analysis_at_time(symbol: str = "XAUUSD", timestamp: str = "",
     ltf_norm = _norm(ltf_candles)
     result = analyze(htf_norm, ltf_norm,
                      fractal_n=int(s.get("fractal_n", 3)),
-                     min_rr=float(s.get("min_rr", 2.0)))
+                     min_rr=float(s.get("min_rr", 2.0)),
+                     recent_window=int(s.get("recent_window", 6)))
     return {
         "configured": True, "result": result, "candles_ltf": ltf_norm,
         "mode": mode, "htf": htf, "ltf": ltf, "timestamp": timestamp,

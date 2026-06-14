@@ -21,21 +21,24 @@ from smc import analyze
 logger = logging.getLogger("goldflow.bot")
 
 _bot_task: Optional[asyncio.Task] = None
+_resume_task: Optional[asyncio.Task] = None  # auto-resume watcher (tracked so it can be cancelled)
 _last_candle_time: Dict[str, str] = {}  # "symbol:timeframe" -> last seen ISO time
 _open_positions: Dict[str, Dict] = {}   # position_id -> {equity_at_open, symbol, side}
+_news_outage_active: bool = False       # True while the news calendar is unreachable
 
 
 def calc_lot_size(balance: float, risk_pct: float, entry: float, sl: float,
-                  contract_size: float = 100.0) -> float:
+                  contract_size: float = 100.0, max_lot: float = 10.0) -> float:
     """Lot size for XAUUSD (100 oz per standard lot).
     Formula: lot = (balance * risk%) / (SL_distance * contract_size)
+    Capped at `max_lot` to avoid over-leverage when the SL distance is tiny.
     """
     risk_dollars = balance * (risk_pct / 100.0)
     sl_distance = abs(entry - sl)
     if sl_distance <= 0:
         return 0.01
     lot = risk_dollars / (sl_distance * contract_size)
-    return max(0.01, round(lot * 100) / 100)
+    return max(0.01, min(max_lot, round(lot * 100) / 100))
 
 
 async def _notify(ntype: str, category: str, title: str, message: str) -> None:
@@ -63,7 +66,10 @@ async def auto_stop(reason: str, detail: str) -> None:
     }
     await _notify("warning", "bot_stop", titles.get(reason, "Bot arrêté automatiquement"), detail)
     logger.info("Bot auto-stopped: %s — %s", reason, detail)
-    asyncio.create_task(_auto_resume_watcher(stop_time))
+    global _resume_task
+    if _resume_task and not _resume_task.done():
+        _resume_task.cancel()
+    _resume_task = asyncio.create_task(_auto_resume_watcher(stop_time))
 
 
 async def _auto_resume_watcher(stop_time: datetime) -> None:
@@ -105,8 +111,10 @@ async def _auto_resume_watcher(stop_time: datetime) -> None:
                 "running": True,
                 "stop_reason": None,
                 "consec_losses": 0,
+                "current_day": now.date().isoformat(),
                 "trades_today": 0,
                 "day_start_equity": equity,
+                "session_start_equity": equity,
                 "last_status_change": now.isoformat(),
             })
             start(equity)
@@ -199,6 +207,24 @@ async def _bot_trading_loop() -> None:
                 logger.warning("Cannot get account info: %s", e)
                 continue
 
+            # ── Daily rollover: reset trades_today / day_start_equity at a new UTC day ──
+            # Sans ce reset, max_trades_per_day devient un plafond cumulatif et le
+            # drawdown « du jour » est calculé contre une équité périmée.
+            today_str = now.date().isoformat()
+            if state.get("current_day") != today_str:
+                await store.set_bot_state({
+                    "current_day": today_str,
+                    "trades_today": 0,
+                    "day_start_equity": equity,
+                    "session_start_equity": equity,
+                })
+                state["current_day"] = today_str
+                state["trades_today"] = 0
+                state["day_start_equity"] = equity
+                state["session_start_equity"] = equity
+                logger.info("Nouveau jour %s — compteurs quotidiens réinitialisés (equity=%.2f).",
+                            today_str, equity)
+
             # ── Check for position closes (update consec_losses) ──
             await _check_closed_positions(equity, magic)
             state = await store.get_bot_state()  # reload after update
@@ -210,19 +236,35 @@ async def _bot_trading_loop() -> None:
 
             # ── News pause check ──
             if s.get("news_filter_enabled", True):
+                global _news_outage_active
                 try:
                     news_data = await news_engine.fetch_calendar()
-                    in_pause = news_engine.is_in_news_pause(
-                        news_data.get("events", []),
-                        int(s.get("news_minutes_before", 30)),
-                        int(s.get("news_minutes_after", 30)),
-                    )
-                    if in_pause:
-                        if s.get("close_positions_before_news", False):
-                            await _close_all_bot_positions(magic, reason="annonce news imminente")
-                        continue
-                except Exception:
-                    pass  # don't block on news API error
+                except Exception as e:
+                    news_data = {"events": [], "error": str(e)}
+                if news_data.get("error"):
+                    # Conservative behaviour: we cannot verify upcoming high-impact news,
+                    # so we skip new entries until the calendar is reachable again.
+                    if not _news_outage_active:
+                        _news_outage_active = True
+                        await _notify("warning", "bot_stop", "Filtre news indisponible",
+                                      "Calendrier économique inaccessible — le bot suspend les "
+                                      "nouvelles entrées par sécurité jusqu'au rétablissement.")
+                    logger.warning("Filtre news indisponible (%s) — pause conservatrice.",
+                                   news_data.get("error"))
+                    continue
+                if _news_outage_active:
+                    _news_outage_active = False
+                    await _notify("info", "bot_stop", "Filtre news rétabli",
+                                  "Le calendrier économique est de nouveau accessible.")
+                in_pause = news_engine.is_in_news_pause(
+                    news_data.get("events", []),
+                    int(s.get("news_minutes_before", 30)),
+                    int(s.get("news_minutes_after", 30)),
+                )
+                if in_pause:
+                    if s.get("close_positions_before_news", False):
+                        await _close_all_bot_positions(magic, reason="annonce news imminente")
+                    continue
 
             # ── Drawdown check ──
             day_start_eq = state.get("day_start_equity") or equity
@@ -305,7 +347,8 @@ async def _bot_trading_loop() -> None:
 
                 result = analyze(_norm(htf_raw), _norm(ltf_raw),
                                  fractal_n=int(s.get("fractal_n", 3)),
-                                 min_rr=float(s.get("min_rr", 2.0)))
+                                 min_rr=float(s.get("min_rr", 2.0)),
+                                 recent_window=int(s.get("recent_window", 6)))
             except Exception as e:
                 logger.warning("SMC analysis failed: %s", e)
                 continue
@@ -345,7 +388,8 @@ async def _bot_trading_loop() -> None:
             # ── Execute trade ──
             try:
                 lot = calc_lot_size(balance, float(s.get("risk_per_trade_pct", 1.0)),
-                                    float(sig["entry"]), float(sig["sl"]))
+                                    float(sig["entry"]), float(sig["sl"]),
+                                    max_lot=float(s.get("max_lot_per_trade", 10.0)))
                 order = await metaapi_client.place_order(
                     symbol=symbol, side=sig["side"], volume=lot,
                     sl=float(sig["sl"]), tp=float(sig["tp"]),
@@ -355,13 +399,33 @@ async def _bot_trading_loop() -> None:
                 await store.add_signal(rec)
                 await store.set_bot_state({"trades_today": trades_today + 1})
 
-                # Track position for win/loss detection
-                pos_id = str(order.get("positionId", uuid.uuid4()))
-                _open_positions[pos_id] = {
-                    "equity_at_open": equity,
-                    "symbol": symbol,
-                    "side": sig["side"],
-                }
+                # Track position for win/loss detection.
+                # Use the broker's real position id (matches get_positions()[].id).
+                # NEVER fall back to a random UUID: it would never match a live
+                # position and would be counted as an instant (false) win/loss.
+                pos_id = str(order.get("positionId") or order.get("position_id") or "")
+                if not pos_id:
+                    # Fallback: re-fetch positions and grab the one we just opened.
+                    try:
+                        positions = await metaapi_client.get_positions()
+                        mine = [p for p in positions
+                                if p.get("symbol") == symbol and int(p.get("magic", 0)) == magic]
+                        if mine:
+                            pos_id = str(mine[-1].get("id", ""))
+                    except Exception as e:
+                        logger.warning("Re-fetch positions for tracking failed: %s", e)
+                if pos_id:
+                    _open_positions[pos_id] = {
+                        "equity_at_open": equity,
+                        "symbol": symbol,
+                        "side": sig["side"],
+                    }
+                else:
+                    logger.error("Ordre placé sans identifiant de position exploitable — "
+                                 "suivi gain/perte ignoré pour ce trade. Réponse: %s", order)
+                    await _notify("warning", "open_trade", "Suivi P&L indisponible",
+                                  "Ordre placé mais MetaApi n'a pas renvoyé d'identifiant de "
+                                  "position : le comptage gain/perte de ce trade est ignoré.")
                 await _notify("success", "open_trade",
                               f"Trade {sig['side'].upper()} {symbol}",
                               f"{lot} lot · SL {sig['sl']:.2f} · TP {sig['tp']:.2f} · RR 1:{sig['rr']:.2f}")
@@ -392,7 +456,11 @@ def start(day_start_equity: float = 0.0) -> None:
 
 def stop() -> None:
     """Cancel the trading loop task. Call from bot_stop() endpoint."""
-    global _bot_task
+    global _bot_task, _resume_task
     if _bot_task and not _bot_task.done():
         _bot_task.cancel()
     _bot_task = None
+    # Also cancel any pending auto-resume watcher so a manual stop stays stopped.
+    if _resume_task and not _resume_task.done():
+        _resume_task.cancel()
+    _resume_task = None

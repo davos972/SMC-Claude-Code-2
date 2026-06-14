@@ -52,6 +52,8 @@ DEFAULT_SETTINGS = {
     "max_trades_per_day": 5,
     "resume_policy": "next_session",  # next_session | next_day
     "fractal_n": 3,
+    "recent_window": 6,          # LTF candles within which a sweep/CHoCH must occur
+    "max_lot_per_trade": 10.0,   # hard cap on computed lot size (anti over-leverage)
 
     # Sessions (local times)
     "session_london_start": "08:00",

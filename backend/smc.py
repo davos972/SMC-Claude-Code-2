@@ -260,7 +260,7 @@ def premium_discount(swings: List[Swing]) -> Optional[Dict[str, float]]:
 # ---------------- analysis pipeline ----------------
 
 def analyze(candles_htf: List[Candle], candles_ltf: List[Candle], fractal_n: int = 3,
-            min_rr: float = 2.0) -> Dict[str, Any]:
+            min_rr: float = 2.0, recent_window: int = 6) -> Dict[str, Any]:
     """Run full SMC analysis. Returns dict with detections + optional signal at latest LTF candle."""
     out: Dict[str, Any] = {
         "bias": None,
@@ -316,8 +316,8 @@ def analyze(candles_htf: List[Candle], candles_ltf: List[Candle], fractal_n: int
     last_idx = len(candles_ltf) - 1
     last_close = last["close"]
 
-    # Must have a recent CHoCH or sweep on LTF (within ~ 5 candles)
-    recent_window = 6
+    # Must have a recent CHoCH or sweep on LTF (within `recent_window` candles,
+    # configurable: 6 candles = 6 min in M1 scalping but 30 min in M5 intraday).
     recent_sweeps = [s for s in sweeps_ltf if last_idx - s.idx <= recent_window]
     recent_choch = [e for e in events_ltf if e.kind == "CHoCH" and last_idx - e.idx <= recent_window]
 

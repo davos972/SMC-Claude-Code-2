@@ -39,7 +39,7 @@ def session_rail_segments(settings: Dict, now_utc: Optional[datetime] = None) ->
     """Compute current-time marker position (0..1) on a 24h rail, and
     the % positions of London + NY windows mapped to UTC for visual."""
     if now_utc is None:
-        now_utc = datetime.utcnow().replace(tzinfo=pytz.UTC)
+        now_utc = datetime.now(pytz.UTC)
 
     london_start = _parse_hhmm(settings.get("session_london_start", "08:00"))
     london_end = _parse_hhmm(settings.get("session_london_end", "11:00"))

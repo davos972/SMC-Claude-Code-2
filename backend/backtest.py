@@ -62,6 +62,7 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     ltf = settings.get("intraday_ltf", "M5") if mode == "intraday" else settings.get("scalping_ltf", "M1")
     min_rr = float(settings.get("min_rr", 2.0))
     fractal_n = int(settings.get("fractal_n", 3))
+    recent_window = int(settings.get("recent_window", 6))
     spread_points = float(req.get("spread_points", 25))
     spread_price = spread_points * 0.01  # XAUUSD: 1 point ≈ 0.01
 
@@ -105,7 +106,8 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         if open_trade:
             continue
 
-        result = analyze(htf_window, ltf_window, fractal_n=fractal_n, min_rr=min_rr)
+        result = analyze(htf_window, ltf_window, fractal_n=fractal_n, min_rr=min_rr,
+                         recent_window=recent_window)
         sig = result.get("signal")
         if sig:
             entry_price = sig["entry"] + (spread_price if sig["side"] == "buy" else -spread_price)
@@ -123,6 +125,21 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
                 "pnl": 0.0,
                 "result": "be",
             }
+
+    # Close any trade still open at the end of the period at the last candle's
+    # close — otherwise it is silently omitted from the metrics (biasing winrate).
+    if open_trade and not open_trade.get("_closed") and ltf_candles:
+        last_c = ltf_candles[-1]
+        side = open_trade["side"]
+        exit_price = last_c["close"]
+        pnl = (exit_price - open_trade["entry"]) if side == "buy" else (open_trade["entry"] - exit_price)
+        pnl -= spread_price
+        result = "win" if pnl > 0 else ("loss" if pnl < 0 else "be")
+        open_trade.update(exit_time=_to_iso(last_c["time"]), exit_price=exit_price,
+                          pnl=pnl, result=result, _closed=True)
+        trades.append({k: v for k, v in open_trade.items() if not k.startswith("_")})
+        equity_curve.append({"time": _to_iso(last_c["time"]),
+                             "equity": equity_curve[-1]["equity"] + pnl * 100})
 
     if on_progress:
         try:
@@ -213,16 +230,33 @@ async def download_m1_history(metaapi_client, symbol: str, start_dt: datetime, e
         if on_status:
             await on_status(f"Téléchargement bougies M1 lot {chunk_idx}…", 0.0)
 
-        try:
-            chunk = await asyncio.wait_for(
-                metaapi_client.get_candles(symbol, "1m", cursor, chunk_size),
-                timeout=60.0,
-            )
-        except asyncio.TimeoutError as e:
-            raise CandleFetchTimeout(
-                f"MetaApi.get_candles timeout après 60s sur le lot #{chunk_idx} "
-                f"(cursor={cursor.isoformat()})"
-            ) from e
+        # Fetch the chunk with up to 3 attempts and exponential backoff (1s, 2s, 4s)
+        # to ride out transient MetaApi rate-limits (HTTP 429) without failing the run.
+        chunk = None
+        for attempt in range(3):
+            try:
+                chunk = await asyncio.wait_for(
+                    metaapi_client.get_candles(symbol, "1m", cursor, chunk_size),
+                    timeout=60.0,
+                )
+                break
+            except asyncio.TimeoutError as e:
+                raise CandleFetchTimeout(
+                    f"MetaApi.get_candles timeout après 60s sur le lot #{chunk_idx} "
+                    f"(cursor={cursor.isoformat()})"
+                ) from e
+            except Exception as e:
+                wait = 2 ** attempt  # 1, 2, 4 seconds
+                logger.warning("download_m1_history: lot %d échec (tentative %d/3): %s",
+                               chunk_idx, attempt + 1, e)
+                if attempt == 2:
+                    raise
+                if on_status:
+                    await on_status(
+                        f"Limite MetaApi atteinte — nouvelle tentative lot {chunk_idx} dans {wait}s…",
+                        0.0,
+                    )
+                await asyncio.sleep(wait)
 
         if not chunk:
             logger.info("download_m1_history: lot %d vide, arrêt", chunk_idx)

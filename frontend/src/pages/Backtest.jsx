@@ -24,7 +24,8 @@ export default function Backtest({ settings }) {
     const [tradeChart, setTradeChart] = useState({ loading: false, candles: [], analysis: null, error: null });
 
     useEffect(() => {
-        endpoints.listBacktests().then(({ data }) => setHistory(data || [])).catch(() => {});
+        endpoints.listBacktests().then(({ data }) => setHistory(data || []))
+            .catch((e) => console.error("listBacktests failed:", e));
     }, []);
 
     useEffect(() => {
@@ -74,6 +75,7 @@ export default function Backtest({ settings }) {
     };
 
     const onDelete = async (id, clearCurrent = false) => {
+        if (!window.confirm("Supprimer définitivement ce backtest ?")) return;
         try {
             await endpoints.cancelBacktest(id);
             if (clearCurrent) setCurrent(null);

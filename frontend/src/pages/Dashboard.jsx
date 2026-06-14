@@ -1,4 +1,3 @@
-/* eslint-disable react-hooks/set-state-in-effect */
 import React, { useEffect, useState, useCallback } from "react";
 import { toast } from "sonner";
 import { AlertTriangle, X } from "lucide-react";
