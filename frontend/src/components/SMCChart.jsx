@@ -29,6 +29,7 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
     const chartRef = useRef(null);
     const seriesRef = useRef(null);
     const priceLinesRef = useRef([]); // premium/discount mid line
+    const lastStepRef = useRef(null); // candle spacing — to fit the view only when timeframe changes
     const [overlayBoxes, setOverlayBoxes] = useState([]);
     const [overlayLabels, setOverlayLabels] = useState([]);
 
@@ -41,7 +42,10 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
             return;
         }
         const ts = chart.timeScale();
-        const containerWidth = containerRef.current?.clientWidth || 480;
+        // Right edge of the candle area = width of the time scale (EXCLUDES the price axis on the
+        // right). Zones must stop here so they don't overflow onto the price labels.
+        const containerWidth = (typeof ts.width === "function" ? ts.width() : null)
+            || containerRef.current?.clientWidth || 480;
 
         const boxes = [];
         const labels = [];
@@ -249,10 +253,14 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
             open: Number(c.open), high: Number(c.high), low: Number(c.low), close: Number(c.close),
         })).sort((a, b) => a.time - b.time);
         series.setData(data);
-        // Establish a visible range BEFORE adding the BOS/CHoCH line series — otherwise adding a
-        // series while the time range is still null makes lightweight-charts throw internally,
-        // which left the time scale unable to map coordinates (all zones vanished).
-        chart.timeScale().fitContent();
+        // Auto-fit the view ONLY on the first load or when the timeframe changes (detected via the
+        // candle spacing), never on routine 20s refreshes — so the user can pan/zoom freely without
+        // the chart snapping back to the latest price.
+        const step = data.length > 1 ? data[1].time - data[0].time : null;
+        if (step !== lastStepRef.current) {
+            lastStepRef.current = step;
+            chart.timeScale().fitContent();
+        }
 
         // Remove previous priceLines
         priceLinesRef.current.forEach((pl) => {
@@ -298,7 +306,6 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
             }
         }
 
-        chart.timeScale().fitContent();
         // Defer overlay compute until after the chart settles its layout
         requestAnimationFrame(recomputeOverlay);
     }, [candles, analysis, recomputeOverlay]);

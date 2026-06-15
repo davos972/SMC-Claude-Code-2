@@ -199,11 +199,14 @@ export default function Dashboard({ botState, settings, refresh }) {
             {/* Chart card */}
             <div className="bg-panel border border-bd rounded-card p-4 space-y-3">
                 <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-baseline gap-2 min-w-0">
-                        <span className="text-xl font-bold tracking-wide">{symbol}</span>
-                        <span className="num text-gold text-xl font-semibold truncate" data-testid="symbol-price">
-                            {priceVal ? fmtPrice(priceVal) : "—"}
-                        </span>
+                    <div className="min-w-0">
+                        <div className="flex items-baseline gap-2 min-w-0">
+                            <span className="text-xl font-bold tracking-wide">{symbol}</span>
+                            <span className="num text-gold text-xl font-semibold truncate" data-testid="symbol-price">
+                                {priceVal ? fmtPrice(priceVal) : "—"}
+                            </span>
+                        </div>
+                        <CandleCountdown timeframe={timeframe} />
                     </div>
                     <div className="flex-shrink-0 w-[160px]">
                         <SegmentedControl
@@ -270,6 +273,28 @@ export default function Dashboard({ botState, settings, refresh }) {
                 )}
                 <NewsList events={news?.events || []} />
             </div>
+        </div>
+    );
+}
+
+// Countdown to the close of the current candle for the displayed timeframe.
+// Candles are aligned to UTC boundaries, so (epoch % interval) gives the elapsed time in the bar.
+const TF_SECONDS = { H1: 3600, M5: 300, M1: 60 };
+
+function CandleCountdown({ timeframe }) {
+    const interval = TF_SECONDS[timeframe] || 300;
+    const [now, setNow] = useState(() => Date.now());
+    useEffect(() => {
+        const t = setInterval(() => setNow(Date.now()), 1000);
+        return () => clearInterval(t);
+    }, []);
+    const remaining = interval - (Math.floor(now / 1000) % interval);
+    const mm = Math.floor(remaining / 60);
+    const ss = remaining % 60;
+    const formatted = `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+    return (
+        <div className="text-xs text-text-secondary num mt-0.5" data-testid="candle-countdown">
+            Clôture bougie {timeframe} dans <span className="text-text-primary font-semibold">{formatted}</span>
         </div>
     );
 }
