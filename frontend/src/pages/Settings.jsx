@@ -243,6 +243,20 @@ export default function Settings({ settings, refresh }) {
                 />
             </Section>
 
+            {/* Sessions */}
+            <Section title="Sessions de trading">
+                <div className="text-xs text-text-secondary -mt-1">
+                    Le bot ne trade que pendant ces fenêtres (heure locale de chaque place,
+                    heure d&apos;été gérée automatiquement).
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                    <TimeField label="Londres début" value={local.session_london_start} onChange={(v) => setAndSave("session_london_start", v)} testid="settings-london-start" />
+                    <TimeField label="Londres fin" value={local.session_london_end} onChange={(v) => setAndSave("session_london_end", v)} testid="settings-london-end" />
+                    <TimeField label="New York début" value={local.session_newyork_start} onChange={(v) => setAndSave("session_newyork_start", v)} testid="settings-ny-start" />
+                    <TimeField label="New York fin" value={local.session_newyork_end} onChange={(v) => setAndSave("session_newyork_end", v)} testid="settings-ny-end" />
+                </div>
+            </Section>
+
             {/* Risk */}
             <Section title="Gestion du risque">
                 <Slider
@@ -361,6 +375,20 @@ function NumberField({ label, value, onChange, step, testid }) {
                 value={value ?? ""}
                 step={step}
                 onChange={(e) => onChange(parseFloat(e.target.value))}
+                className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
+                data-testid={testid}
+            />
+        </Field>
+    );
+}
+
+function TimeField({ label, value, onChange, testid }) {
+    return (
+        <Field label={label}>
+            <input
+                type="time"
+                value={value || ""}
+                onChange={(e) => onChange(e.target.value)}
                 className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
                 data-testid={testid}
             />
