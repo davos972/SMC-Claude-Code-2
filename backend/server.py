@@ -357,18 +357,29 @@ async def bot_resume() -> Dict[str, Any]:
 
 @api.post("/analysis/run")
 async def run_analysis(symbol: str = Body(default="XAUUSD", embed=True),
-                       persist: bool = Body(default=False, embed=True)) -> Dict[str, Any]:
+                       persist: bool = Body(default=False, embed=True),
+                       timeframe: Optional[str] = Body(default=None, embed=True)) -> Dict[str, Any]:
     s = await store.get_settings()
     mode = s.get("trading_mode", "intraday")
-    htf = s.get("intraday_htf" if mode == "intraday" else "scalping_htf", "H1")
-    ltf = s.get("intraday_ltf" if mode == "intraday" else "scalping_ltf", "M5")
+    if timeframe:
+        # Single-timeframe analysis (used by the chart): every detection — order blocks, FVG,
+        # structure, swings — is computed on the SAME timeframe that is displayed, so zones stay
+        # aligned with the candles. No cross-timeframe overlay (which produced oversized zones).
+        htf = ltf = timeframe
+    else:
+        htf = s.get("intraday_htf" if mode == "intraday" else "scalping_htf", "H1")
+        ltf = s.get("intraday_ltf" if mode == "intraday" else "scalping_ltf", "M5")
 
     if not metaapi_client.is_configured():
         return {"configured": False, "error": "MetaApi non configuré.", "result": None}
 
     try:
-        htf_candles = await metaapi_client.get_candles(symbol, htf, None, 300)
-        ltf_candles = await metaapi_client.get_candles(symbol, ltf, None, 300)
+        if timeframe:
+            ltf_candles = await metaapi_client.get_candles(symbol, timeframe, None, 300)
+            htf_candles = ltf_candles
+        else:
+            htf_candles = await metaapi_client.get_candles(symbol, htf, None, 300)
+            ltf_candles = await metaapi_client.get_candles(symbol, ltf, None, 300)
     except MetaApiConnectionError as e:
         return {"configured": True, "error": str(e), "result": None}
 

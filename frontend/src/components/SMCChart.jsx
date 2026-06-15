@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
-import { createChart, CandlestickSeries, LineSeries } from "lightweight-charts";
+import { createChart, CandlestickSeries } from "lightweight-charts";
 import { AlertTriangle } from "lucide-react";
 
 const COLORS = {
@@ -28,7 +28,6 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
     const containerRef = useRef(null);
     const chartRef = useRef(null);
     const seriesRef = useRef(null);
-    const lineSeriesRef = useRef([]); // BOS/CHoCH line series
     const priceLinesRef = useRef([]); // premium/discount mid line
     const [overlayBoxes, setOverlayBoxes] = useState([]);
     const [overlayLabels, setOverlayLabels] = useState([]);
@@ -42,16 +41,17 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
             return;
         }
         const ts = chart.timeScale();
-        const timesByIdx = candles.map((c) => toUnixTime(c.time));
-        const lastTime = timesByIdx[timesByIdx.length - 1];
         const containerWidth = containerRef.current?.clientWidth || 480;
 
         const boxes = [];
         const labels = [];
 
-        const timeToX = (idx) => {
-            const t = timesByIdx[Math.min(idx, timesByIdx.length - 1)];
-            const x = ts.timeToCoordinate(t);
+        // Position zones by their real timestamp (not by candle index): the analysis runs on
+        // its own candle arrays (HTF + LTF, 300 each) which differ from the chart's candle array,
+        // so index-based positioning lands zones off-screen. Time-based mapping is robust.
+        const timeToX = (rawTime) => {
+            if (rawTime == null) return null;
+            const x = ts.timeToCoordinate(toUnixTime(rawTime));
             return x == null ? null : x;
         };
         const priceToY = (price) => {
@@ -59,12 +59,11 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
             return y == null ? null : y;
         };
 
-        // --- Order Blocks (dashed gold) ---
-        (analysis.order_blocks_htf || []).slice(-6).forEach((ob, k) => {
-            const x1 = timeToX(ob.start_idx);
-            // Right edge: mitigated_idx if mitigated else last candle (extend forward)
-            const endIdx = ob.mitigated && ob.mitigated_idx >= 0 ? ob.mitigated_idx : candles.length - 1;
-            const x2raw = timeToX(endIdx);
+        // --- Order Blocks (dashed gold box) — last few, active bold / mitigated faded ---
+        (analysis.order_blocks_htf || []).slice(-3).forEach((ob, k) => {
+            const x1 = timeToX(ob.time);
+            // Right edge: mitigated_time if mitigated, else extend forward to the chart edge.
+            const x2raw = ob.mitigated && ob.mitigated_time ? timeToX(ob.mitigated_time) : (x1 != null ? containerWidth - 8 : null);
             const x2 = ob.mitigated ? x2raw : (x2raw != null ? Math.max(x2raw, containerWidth - 8) : null);
             const yTop = priceToY(ob.top);
             const yBot = priceToY(ob.bottom);
@@ -73,9 +72,9 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
             boxes.push({
                 key: `ob-${k}-${ob.start_idx}`,
                 left: Math.min(x1, x2), top: Math.min(yTop, yBot),
-                width: Math.max(2, Math.abs(x2 - x1)), height: Math.max(2, Math.abs(yBot - yTop)),
+                width: Math.max(2, Math.abs(x2 - x1)), height: Math.max(6, Math.abs(yBot - yTop)),
                 style: {
-                    border: `1.5px dashed ${COLORS.borderOB}`,
+                    border: `1px dashed ${COLORS.borderOB}`,
                     background: COLORS.bgOB,
                     opacity,
                     borderRadius: 2,
@@ -92,11 +91,10 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
             });
         });
 
-        // --- FVG (solid colored border, green/red) ---
-        (analysis.fvgs_ltf || []).slice(-10).forEach((fvg, k) => {
-            const x1 = timeToX(fvg.idx);
-            const endIdx = fvg.filled && fvg.filled_idx >= 0 ? fvg.filled_idx : candles.length - 1;
-            const x2raw = timeToX(endIdx);
+        // --- FVG (solid colored border, green/red) — only ACTIVE (unfilled) ones ---
+        (analysis.fvgs_ltf || []).filter((f) => !f.filled).slice(-5).forEach((fvg, k) => {
+            const x1 = timeToX(fvg.time);
+            const x2raw = fvg.filled && fvg.filled_time ? timeToX(fvg.filled_time) : (x1 != null ? containerWidth - 8 : null);
             const x2 = fvg.filled ? x2raw : (x2raw != null ? Math.max(x2raw, containerWidth - 8) : null);
             const yTop = priceToY(fvg.top);
             const yBot = priceToY(fvg.bottom);
@@ -106,9 +104,9 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
             boxes.push({
                 key: `fvg-${k}-${fvg.idx}`,
                 left: Math.min(x1, x2), top: Math.min(yTop, yBot),
-                width: Math.max(2, Math.abs(x2 - x1)), height: Math.max(2, Math.abs(yBot - yTop)),
+                width: Math.max(2, Math.abs(x2 - x1)), height: Math.max(6, Math.abs(yBot - yTop)),
                 style: {
-                    border: `1.5px solid ${isBull ? COLORS.borderBull : COLORS.borderBear}`,
+                    border: `1px solid ${isBull ? COLORS.borderBull : COLORS.borderBear}`,
                     background: isBull ? COLORS.bgBull : COLORS.bgBear,
                     opacity,
                     borderRadius: 4,
@@ -125,11 +123,22 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
             });
         });
 
-        // --- BOS / CHoCH labels (blue) — line itself drawn via LineSeries below ---
-        (analysis.structure_htf || []).slice(-6).forEach((e, k) => {
-            const xEnd = timeToX(e.idx);
+        // --- BOS / CHoCH (blue dashed horizontal line + label), most recent only ---
+        // Drawn as an HTML overlay line (not a chart LineSeries, which crashed the time scale).
+        (analysis.structure_htf || []).slice(-2).forEach((e, k) => {
+            const xEnd = timeToX(e.time);
             const y = priceToY(e.price);
             if (xEnd == null || y == null) return;
+            const xStart = e.swing_time != null ? timeToX(e.swing_time) : null;
+            if (xStart != null) {
+                boxes.push({
+                    key: `struct-line-${k}-${e.idx}`,
+                    left: Math.min(xStart, xEnd), top: y,
+                    width: Math.max(2, Math.abs(xEnd - xStart)), height: 0,
+                    style: { borderTop: `1.5px dashed ${COLORS.bos}`, background: "transparent" },
+                    testid: "smc-zone-bos",
+                });
+            }
             labels.push({
                 key: `struct-l-${k}-${e.idx}`,
                 left: xEnd + 4,
@@ -141,9 +150,47 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
             });
         });
 
+        // --- Swing structure labels HH / HL / LH / LL ---
+        // Classify each swing against the previous swing of the same kind:
+        //   high → HH (higher high) if above previous high, else LH (lower high)
+        //   low  → HL (higher low)  if above previous low,  else LL (lower low)
+        // Green = bullish structure (HH/HL), red = bearish structure (LH/LL).
+        let prevHigh = null;
+        let prevLow = null;
+        (analysis.swings_ltf || []).slice(-10).forEach((sw, k) => {
+            const isHigh = sw.kind === "high";
+            let label;
+            if (isHigh) {
+                label = prevHigh == null ? "H" : (sw.price >= prevHigh ? "HH" : "LH");
+                prevHigh = sw.price;
+            } else {
+                label = prevLow == null ? "L" : (sw.price >= prevLow ? "HL" : "LL");
+                prevLow = sw.price;
+            }
+            const x = timeToX(sw.time);
+            const y = priceToY(sw.price);
+            if (x == null || y == null) return;
+            const bullish = label === "HH" || label === "HL";
+            labels.push({
+                key: `sw-${k}-${sw.idx}`,
+                left: x - 8,
+                top: isHigh ? y - 16 : y + 4,
+                text: label,
+                color: bullish ? COLORS.borderBull : COLORS.borderBear,
+                bold: true,
+                opacity: 0.95,
+            });
+        });
+
         setOverlayBoxes(boxes);
         setOverlayLabels(labels);
     }, [candles, analysis]);
+
+    // Always call the latest recomputeOverlay from chart subscriptions WITHOUT making the
+    // init effect depend on it (otherwise the chart is destroyed/recreated on every data or
+    // analysis update — which stacked multiple chart canvases and broke the price scale).
+    const recomputeRef = useRef(recomputeOverlay);
+    useEffect(() => { recomputeRef.current = recomputeOverlay; }, [recomputeOverlay]);
 
     // Init chart once
     useEffect(() => {
@@ -175,11 +222,12 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
             if (containerRef.current && chartRef.current) {
                 chartRef.current.applyOptions({ width: containerRef.current.clientWidth });
             }
-            recomputeOverlay();
+            recomputeRef.current();
         };
+        const recompute = () => recomputeRef.current();
         window.addEventListener("resize", onResize);
-        const unsubRange = chart.timeScale().subscribeVisibleTimeRangeChange(recomputeOverlay);
-        const unsubCrosshair = chart.subscribeCrosshairMove(recomputeOverlay);
+        const unsubRange = chart.timeScale().subscribeVisibleTimeRangeChange(recompute);
+        const unsubCrosshair = chart.subscribeCrosshairMove(recompute);
 
         return () => {
             window.removeEventListener("resize", onResize);
@@ -189,7 +237,7 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
             chartRef.current = null;
             seriesRef.current = null;
         };
-    }, [height, recomputeOverlay]);
+    }, [height]);
 
     // Update data + markers + lines when candles/analysis change
     useEffect(() => {
@@ -201,12 +249,11 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
             open: Number(c.open), high: Number(c.high), low: Number(c.low), close: Number(c.close),
         })).sort((a, b) => a.time - b.time);
         series.setData(data);
+        // Establish a visible range BEFORE adding the BOS/CHoCH line series — otherwise adding a
+        // series while the time range is still null makes lightweight-charts throw internally,
+        // which left the time scale unable to map coordinates (all zones vanished).
+        chart.timeScale().fitContent();
 
-        // Remove previous BOS/CHoCH line series
-        lineSeriesRef.current.forEach((ls) => {
-            try { chart.removeSeries(ls); } catch (e) { /* ignore */ }
-        });
-        lineSeriesRef.current = [];
         // Remove previous priceLines
         priceLinesRef.current.forEach((pl) => {
             try { series.removePriceLine(pl); } catch (e) { /* ignore */ }
@@ -214,33 +261,10 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
         priceLinesRef.current = [];
 
         if (analysis) {
-            // BOS / CHoCH : draw blue dashed line from swing_time to break_time at price
-            (analysis.structure_htf || []).slice(-6).forEach((e) => {
-                if (e.swing_idx < 0 || e.swing_idx >= data.length) return;
-                const t1 = data[Math.min(e.swing_idx, data.length - 1)]?.time;
-                const t2 = data[Math.min(e.idx, data.length - 1)]?.time;
-                if (!t1 || !t2 || t1 === t2) return;
-                try {
-                    const ls = chart.addSeries(LineSeries, {
-                        color: COLORS.bos,
-                        lineWidth: 1,
-                        lineStyle: 2, // dashed
-                        priceLineVisible: false,
-                        lastValueVisible: false,
-                        crosshairMarkerVisible: false,
-                    });
-                    ls.setData([
-                        { time: t1, value: e.price },
-                        { time: t2, value: e.price },
-                    ]);
-                    lineSeriesRef.current.push(ls);
-                } catch (err) { console.error("addLineSeries failed:", err); }
-            });
-
             // Sweep markers : red arrows
             const markers = [];
-            (analysis.sweeps_ltf || []).slice(-12).forEach((s) => {
-                const ts = data[Math.min(s.idx, data.length - 1)]?.time;
+            (analysis.sweeps_ltf || []).slice(-6).forEach((s) => {
+                const ts = s.time ? toUnixTime(s.time) : null;
                 if (!ts) return;
                 if (s.kind === "high_sweep") {
                     markers.push({
@@ -254,6 +278,7 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
                     });
                 }
             });
+            markers.sort((a, b) => a.time - b.time);
             try { series.setMarkers && series.setMarkers(markers); } catch (e) { console.error("setMarkers:", e); }
 
             // Premium/Discount mid as gold dotted line
@@ -262,7 +287,7 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
                 try {
                     const line = series.createPriceLine({
                         price: pd.mid,
-                        color: "#E3B341",
+                        color: "#A974FF", // violet — distinct from the gold used for Order Blocks
                         lineWidth: 1,
                         lineStyle: 3, // dotted
                         axisLabelVisible: false,
@@ -284,7 +309,7 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
         <div className="w-full bg-bg rounded-card border border-bd overflow-hidden" data-testid="smc-chart">
             <div className="relative" style={{ height }}>
                 <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
-                <div className="absolute inset-0 pointer-events-none overflow-hidden" style={{ height }}>
+                <div className="absolute inset-0 pointer-events-none overflow-hidden" style={{ height, zIndex: 3 }}>
                     {overlayBoxes.map((b) => (
                         <div
                             key={b.key}
@@ -307,11 +332,11 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
                                 left: `${l.left}px`,
                                 top: `${l.top}px`,
                                 fontSize: 10,
-                                fontWeight: l.bold ? 700 : 600,
+                                fontWeight: 500,
                                 color: l.color,
                                 opacity: l.opacity,
-                                background: "rgba(13,17,23,0.65)",
-                                padding: "0 4px",
+                                background: "rgba(13,17,23,0.6)",
+                                padding: "0 3px",
                                 borderRadius: 3,
                                 whiteSpace: "nowrap",
                                 pointerEvents: "none",
@@ -350,13 +375,22 @@ function Legend() {
             <LegendItem label="Order Block" border={COLORS.borderOB} bg={COLORS.bgOB} dashed />
             <LegendItem label="BOS/CHoCH" line color={COLORS.bos} />
             <LegendItem label="Sweep" arrow color={COLORS.sweep} />
+            <LegendItem label="Structure HH/HL/LH/LL" structure />
+            <LegendItem label="50% Premium/Discount" line color="#A974FF" />
         </div>
     );
 }
 
-function LegendItem({ label, border, bg, dashed, line, arrow, color }) {
+function LegendItem({ label, border, bg, dashed, line, arrow, color, structure }) {
     let swatch;
-    if (line) {
+    if (structure) {
+        swatch = (
+            <span style={{ fontSize: 9, fontWeight: 700, lineHeight: 1 }} aria-hidden>
+                <span style={{ color: COLORS.borderBull }}>HH</span>
+                <span style={{ color: COLORS.borderBear }}>LL</span>
+            </span>
+        );
+    } else if (line) {
         swatch = (
             <span
                 style={{ width: 16, height: 0, borderTop: `1.5px dashed ${color}`, display: "inline-block" }}

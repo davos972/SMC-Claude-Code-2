@@ -26,6 +26,7 @@ export default function Settings({ settings, refresh }) {
     const [token, setToken] = useState("");
     const [connectionStatus, setConnectionStatus] = useState(null);
     const [mtStatus, setMtStatus] = useState(null);
+    const [loadTimedOut, setLoadTimedOut] = useState(false);
     const initialized = useRef(false);
     const debounceTimers = useRef({});
 
@@ -35,6 +36,16 @@ export default function Settings({ settings, refresh }) {
             setLocal({ ...settings });
             initialized.current = true;
         }
+    }, [settings]);
+
+    // If the settings never arrive (backend down / unreachable), stop the infinite "Chargement…"
+    // after 8s and surface an explicit error with a retry, instead of hanging silently.
+    useEffect(() => {
+        if (initialized.current) return;
+        const t = setTimeout(() => {
+            if (!initialized.current) setLoadTimedOut(true);
+        }, 8000);
+        return () => clearTimeout(t);
     }, [settings]);
 
     // Poll the MetaApi account state (configured / deploying / connected / last_error)
@@ -106,7 +117,34 @@ export default function Settings({ settings, refresh }) {
         }
     };
 
-    if (!local) return <div className="text-center py-12 text-text-secondary">Chargement…</div>;
+    if (!local) {
+        if (loadTimedOut) {
+            return (
+                <div className="text-center py-12 px-4 space-y-3" data-testid="settings-load-error">
+                    <AlertTriangle className="w-8 h-8 text-gold mx-auto" />
+                    <div className="text-sm font-semibold text-text-primary">
+                        Impossible de charger les réglages
+                    </div>
+                    <div className="text-xs text-text-secondary max-w-xs mx-auto">
+                        Le backend ne répond pas. En local, vérifie qu&apos;il est bien démarré
+                        (port&nbsp;8000). En ligne, vérifie l&apos;état du service Render.
+                    </div>
+                    <button
+                        onClick={() => { setLoadTimedOut(false); refresh && refresh(); }}
+                        className="mt-2 px-4 py-2 bg-gold text-bg font-bold rounded-xl hover:brightness-110 transition-all"
+                        data-testid="settings-retry-button"
+                    >
+                        Réessayer
+                    </button>
+                </div>
+            );
+        }
+        return (
+            <div className="text-center py-12 text-text-secondary flex items-center justify-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" /> Chargement…
+            </div>
+        );
+    }
 
     const onAccountTypeChange = (v) => {
         if (v === "real") {

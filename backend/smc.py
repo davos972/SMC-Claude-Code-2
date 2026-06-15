@@ -189,12 +189,36 @@ def detect_order_blocks(candles: List[Candle], events: List[StructureEvent]) -> 
     return obs
 
 
+def _epoch(t: Any) -> Optional[float]:
+    """Best-effort conversion of a candle time (epoch number or ISO string) to epoch seconds."""
+    if isinstance(t, (int, float)):
+        return float(t)
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(t).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
 def detect_fvgs(candles: List[Candle]) -> List[FVG]:
     """3-candle FVG: gap between c1.high and c3.low (bullish) or c1.low and c3.high (bearish).
-    Also marks `filled` and `filled_idx` if a subsequent candle closes the gap."""
+    Also marks `filled` and `filled_idx` if a subsequent candle closes the gap.
+
+    FVGs that straddle a market gap (weekend / session break — i.e. missing candles) are skipped:
+    the price jump across a closed market is not a real fair value gap."""
     fvgs: List[FVG] = []
+    # Typical spacing between candles (median delta) — used to detect abnormal time gaps.
+    times = [_epoch(c.get("time")) for c in candles]
+    deltas = sorted(b - a for a, b in zip(times, times[1:]) if a is not None and b is not None and b > a)
+    typical_dt = deltas[len(deltas) // 2] if deltas else None
+
     for i in range(2, len(candles)):
         c1, c2, c3 = candles[i - 2], candles[i - 1], candles[i]
+        # Skip if these 3 candles span a market gap (more than ~3x the normal step over 2 bars).
+        if typical_dt:
+            t1, t3 = times[i - 2], times[i]
+            if t1 is not None and t3 is not None and (t3 - t1) > typical_dt * 3:
+                continue
         fvg: Optional[FVG] = None
         if c3["low"] > c1["high"]:
             fvg = FVG(idx=i - 1, top=c3["low"], bottom=c1["high"], direction="bullish", time=c2["time"])

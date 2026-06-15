@@ -28,6 +28,8 @@ export default function Dashboard({ botState, settings, refresh }) {
     const [news, setNews] = useState({ events: [], pause: null, error: null });
     const [configured, setConfigured] = useState(true);
     const [busy, setBusy] = useState(false);
+    const [analyzedAt, setAnalyzedAt] = useState(null);
+    const analyzingRef = React.useRef(false);
 
     const symbol = settings?.active_symbol || "XAUUSD";
 
@@ -71,12 +73,39 @@ export default function Dashboard({ botState, settings, refresh }) {
         }
     }, [symbol]);
 
+    // Continuous SMC analysis: runs automatically (no manual button). persist=false so the
+    // auto-refresh never writes to the signal journal — only the running bot persists signals.
+    // Analyse the SAME timeframe that is selected on the chart (M1→M1, M5→M5, H1→H1) so the
+    // SMC zones always match the displayed candles.
+    const loadAnalysis = useCallback(async () => {
+        if (analyzingRef.current) return; // avoid overlapping requests
+        analyzingRef.current = true;
+        try {
+            const { data } = await endpoints.runAnalysis(symbol, false, timeframe);
+            if (data?.result) {
+                setAnalysis(data.result);
+                setAnalyzedAt(new Date());
+            }
+        } catch (err) {
+            console.error("Auto-analysis failed:", err);
+        } finally {
+            analyzingRef.current = false;
+        }
+    }, [symbol, timeframe]);
+
     useEffect(() => {
         loadData();
         loadCandles(timeframe);
         const t = setInterval(loadData, 5000);
         return () => clearInterval(t);
     }, [loadData, loadCandles, timeframe]);
+
+    // Auto-run the SMC analysis on arrival and refresh it every 20s.
+    useEffect(() => {
+        loadAnalysis();
+        const t = setInterval(loadAnalysis, 20000);
+        return () => clearInterval(t);
+    }, [loadAnalysis]);
 
     const onStart = async () => {
         setBusy(true);
@@ -94,29 +123,6 @@ export default function Dashboard({ botState, settings, refresh }) {
             await endpoints.botStop();
             toast("Bot arrêté");
             refresh && refresh();
-        } finally { setBusy(false); }
-    };
-
-    const onAnalyze = async () => {
-        if (!configured) {
-            toast.error("MetaApi non configuré. Renseigne ton token dans Réglages.");
-            return;
-        }
-        setBusy(true);
-        try {
-            const { data } = await endpoints.runAnalysis(symbol, true);
-            if (data.error) {
-                toast.error(data.error);
-            } else {
-                setAnalysis(data.result);
-                const r = data.result;
-                if (r?.signal) toast.success(`Signal ${r.signal.side.toUpperCase()} (RR 1:${r.signal.rr.toFixed(1)})`);
-                else toast(`Setup rejeté: ${r?.reject_reason || "—"}`);
-            }
-            const sig = await endpoints.signals(20);
-            setSignals(sig.data || []);
-        } catch (e) {
-            toast.error("Erreur d'analyse: " + e.message);
         } finally { setBusy(false); }
     };
 
@@ -203,21 +209,27 @@ export default function Dashboard({ botState, settings, refresh }) {
                         <SegmentedControl
                             options={TIMEFRAME_OPTIONS}
                             value={timeframe}
-                            onChange={setTimeframe}
+                            onChange={(v) => { setAnalysis(null); setTimeframe(v); }}
                             testid="timeframe-select"
                         />
                     </div>
                 </div>
                 <SMCChart candles={candles} analysis={analysis} errorMessage={chartError} />
-                <button
-                    type="button"
-                    onClick={onAnalyze}
-                    disabled={busy}
-                    data-testid="run-analysis-button"
-                    className="w-full py-3 rounded-xl bg-gold text-bg font-bold text-sm hover:brightness-110 transition-all disabled:opacity-60"
-                >
-                    {busy ? "Analyse en cours…" : "Lancer une analyse SMC"}
-                </button>
+                <div className="flex items-center justify-center gap-2 text-xs text-text-secondary" data-testid="analysis-status">
+                    <span className={`w-1.5 h-1.5 rounded-full ${analyzedAt ? "bg-green animate-pulse" : "bg-text-secondary"}`} />
+                    {analysis?.bias && (
+                        <span>
+                            Biais{" "}
+                            <span className={`font-semibold ${analysis.bias === "bullish" ? "text-green" : "text-red"}`}>
+                                {analysis.bias === "bullish" ? "haussier ↑" : "baissier ↓"}
+                            </span>
+                            {" · "}
+                        </span>
+                    )}
+                    <span>
+                        Analyse SMC en continu{analyzedAt ? ` · maj ${fmtTime(analyzedAt)}` : "…"}
+                    </span>
+                </div>
             </div>
 
             {/* Positions */}

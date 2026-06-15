@@ -27,7 +27,7 @@ export const endpoints = {
     botStart: () => api.post("/bot/start"),
     botStop: () => api.post("/bot/stop"),
     botState: () => api.get("/bot/state"),
-    runAnalysis: (symbol, persist = false) => apiLong.post("/analysis/run", { symbol, persist }),
+    runAnalysis: (symbol, persist = false, timeframe = null) => apiLong.post("/analysis/run", { symbol, persist, timeframe }),
     signals: (limit = 50) => api.get(`/signals?limit=${limit}`),
     clearSignals: () => api.delete("/signals"),
     notifications: () => api.get("/notifications"),
