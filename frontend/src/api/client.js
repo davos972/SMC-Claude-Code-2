@@ -32,6 +32,7 @@ export const endpoints = {
     clearSignals: () => api.delete("/signals"),
     notifications: () => api.get("/notifications"),
     readAllNotifications: () => api.post("/notifications/read-all"),
+    deleteNotification: (id) => api.delete(`/notifications/${id}`),
     news: (currency = "USD") => api.get(`/news?currency=${currency}`),
     closePosition: (id) => api.post(`/positions/${id}/close`),
     cancelBacktest: (id) => api.delete(`/backtest/${id}`),

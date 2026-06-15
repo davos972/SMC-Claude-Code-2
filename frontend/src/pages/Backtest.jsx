@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Play, History as HistoryIcon, X, Trash2 } from "lucide-react";
+import { Play, History as HistoryIcon, X, Trash2, ChevronRight } from "lucide-react";
 import SegmentedControl from "../components/SegmentedControl";
 import SMCChart from "../components/SMCChart";
 import { endpoints } from "../api/client";
@@ -71,6 +71,18 @@ export default function Backtest({ settings }) {
             setCurrent(data);
         } catch (e) {
             toast.error("Échec de l'annulation");
+        }
+    };
+
+    const onOpenHistory = async (h) => {
+        try {
+            const { data } = await endpoints.getBacktest(h.id);
+            setSelectedTrade(null);
+            setPolling(false);
+            setCurrent(data);
+            window.scrollTo({ top: 0, behavior: "smooth" });
+        } catch (e) {
+            toast.error("Impossible de charger ce backtest");
         }
     };
 
@@ -222,11 +234,30 @@ export default function Backtest({ settings }) {
                         <HistoryIcon className="w-4 h-4" /> Historique des backtests
                     </div>
                     <div className="space-y-2" data-testid="backtest-history">
-                        {history.map((h) => (
-                            <div key={h.id} className="flex items-center justify-between py-2 border-b border-bd last:border-0">
+                        {history.map((h) => {
+                            const isOpenable = h.status === "done";
+                            const isActive = current?.id === h.id;
+                            const m = h.metrics || {};
+                            return (
+                            <div
+                                key={h.id}
+                                role={isOpenable ? "button" : undefined}
+                                tabIndex={isOpenable ? 0 : undefined}
+                                onClick={isOpenable ? () => onOpenHistory(h) : undefined}
+                                onKeyDown={isOpenable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenHistory(h); } } : undefined}
+                                data-testid="backtest-history-row"
+                                className={`flex items-center justify-between gap-2 py-2 px-2 -mx-2 rounded-lg border-b border-bd last:border-0 transition-colors ${
+                                    isOpenable ? "cursor-pointer hover:bg-bd/40" : ""
+                                } ${isActive ? "bg-gold/5 ring-1 ring-gold/40" : ""}`}
+                            >
                                 <div className="text-sm flex-1 min-w-0">
                                     <div className="truncate">{fmtDate(h.start_date)} → {fmtDate(h.end_date)}</div>
                                     <div className="text-xs text-text-secondary">{h.mode} · {h.symbol}</div>
+                                    {h.status === "done" && (
+                                        <div className="text-xs text-text-secondary mt-0.5 num">
+                                            {m.trades_count ?? 0} trades · winrate {fmtPct(m.winrate)}
+                                        </div>
+                                    )}
                                     {h.error && (
                                         <div className="text-xs text-red mt-0.5 truncate" title={h.error}>{h.error}</div>
                                     )}
@@ -239,7 +270,7 @@ export default function Backtest({ settings }) {
                                     }`}>{h.status}</span>
                                     <button
                                         type="button"
-                                        onClick={() => onDelete(h.id)}
+                                        onClick={(e) => { e.stopPropagation(); onDelete(h.id); }}
                                         className="w-8 h-8 rounded-md border border-bd text-text-secondary hover:text-red hover:border-red/40 flex items-center justify-center transition-colors"
                                         data-testid={`delete-history-${h.id.slice(0, 8)}`}
                                         title={h.status === "running" || h.status === "pending" ? "Annuler" : "Supprimer"}
@@ -248,9 +279,11 @@ export default function Backtest({ settings }) {
                                             ? <X className="w-4 h-4" />
                                             : <Trash2 className="w-4 h-4" />}
                                     </button>
+                                    {isOpenable && <ChevronRight className="w-4 h-4 text-text-secondary" />}
                                 </div>
                             </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 </div>
             )}

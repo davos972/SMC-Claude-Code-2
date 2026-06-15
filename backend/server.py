@@ -508,6 +508,12 @@ async def read_all_notifications() -> Dict[str, Any]:
     return {"ok": True}
 
 
+@api.delete("/notifications/{notif_id}")
+async def delete_notification(notif_id: str) -> Dict[str, Any]:
+    deleted = await store.delete_notification(notif_id)
+    return {"ok": deleted}
+
+
 # ---------------- news ----------------
 
 @api.get("/news")

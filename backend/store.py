@@ -81,6 +81,12 @@ async def mark_all_read() -> None:
     await db.notifications.update_many({"read": False}, {"$set": {"read": True}})
 
 
+async def delete_notification(notif_id: str) -> bool:
+    db = get_db()
+    res = await db.notifications.delete_one({"id": notif_id})
+    return res.deleted_count > 0
+
+
 async def unread_count() -> int:
     db = get_db()
     return await db.notifications.count_documents({"read": False})
