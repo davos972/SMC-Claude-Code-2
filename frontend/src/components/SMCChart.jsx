@@ -66,9 +66,9 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
         // --- Order Blocks (dashed gold box) — last few, active bold / mitigated faded ---
         (analysis.order_blocks_htf || []).slice(-3).forEach((ob, k) => {
             const x1 = timeToX(ob.time);
-            // Right edge: mitigated_time if mitigated, else extend forward to the chart edge.
-            const x2raw = ob.mitigated && ob.mitigated_time ? timeToX(ob.mitigated_time) : (x1 != null ? containerWidth - 8 : null);
-            const x2 = ob.mitigated ? x2raw : (x2raw != null ? Math.max(x2raw, containerWidth - 8) : null);
+            // Always extend the box to the right edge of the candle area (like FVGs) so OBs stay
+            // visible; mitigated ones are just faded (opacity below) rather than truncated.
+            const x2 = x1 != null ? containerWidth - 8 : null;
             const yTop = priceToY(ob.top);
             const yBot = priceToY(ob.bottom);
             if (x1 == null || x2 == null || yTop == null || yBot == null) return;
