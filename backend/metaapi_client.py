@@ -160,6 +160,20 @@ class MetaApiWrapper:
         await self._connect()
         return await self._connection.close_position(position_id)
 
+    async def get_deals_by_position(self, position_id: str) -> List[Dict[str, Any]]:
+        """Broker deal history for one position — used to read the REAL realized P&L
+        (profit + swap + commission) of a closed trade, instead of inferring it from
+        the global account equity delta (which is wrong as soon as several positions
+        are open at once). Returns [] if the SDK/connection has no such history."""
+        await self._connect()
+        getter = getattr(self._connection, "get_deals_by_position", None)
+        if getter is None:
+            return []
+        result = await getter(position_id)
+        if isinstance(result, dict):
+            return result.get("deals", []) or []
+        return result or []
+
     async def disconnect(self) -> None:
         try:
             if self._connection:

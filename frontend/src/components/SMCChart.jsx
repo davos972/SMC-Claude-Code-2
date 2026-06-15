@@ -186,6 +186,26 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
             });
         });
 
+        // --- Liquidity sweeps : red arrow pointing at the swept wick + "Sweep" label ---
+        // high_sweep = a high was taken (arrow points DOWN onto the wick top),
+        // low_sweep  = a low was taken  (arrow points UP   onto the wick bottom).
+        // Drawn as HTML overlay (lightweight-charts v5 has no series.setMarkers).
+        (analysis.sweeps_ltf || []).filter((s) => !s.mitigated).slice(-6).forEach((s, k) => {
+            const x = timeToX(s.time);
+            const y = priceToY(s.price);
+            if (x == null || y == null) return;
+            const isHigh = s.kind === "high_sweep";
+            labels.push({
+                key: `sweep-${k}-${s.idx}`,
+                left: x - 14,
+                top: isHigh ? y - 22 : y + 6,
+                text: isHigh ? "↓ Sweep" : "↑ Sweep",
+                color: COLORS.sweep,
+                bold: true,
+                opacity: 1,
+            });
+        });
+
         setOverlayBoxes(boxes);
         setOverlayLabels(labels);
     }, [candles, analysis]);
@@ -269,25 +289,8 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
         priceLinesRef.current = [];
 
         if (analysis) {
-            // Sweep markers : red arrows
-            const markers = [];
-            (analysis.sweeps_ltf || []).slice(-6).forEach((s) => {
-                const ts = s.time ? toUnixTime(s.time) : null;
-                if (!ts) return;
-                if (s.kind === "high_sweep") {
-                    markers.push({
-                        time: ts, position: "aboveBar",
-                        color: COLORS.sweep, shape: "arrowDown", text: "SWEEP",
-                    });
-                } else {
-                    markers.push({
-                        time: ts, position: "belowBar",
-                        color: COLORS.sweep, shape: "arrowUp", text: "SWEEP",
-                    });
-                }
-            });
-            markers.sort((a, b) => a.time - b.time);
-            try { series.setMarkers && series.setMarkers(markers); } catch (e) { console.error("setMarkers:", e); }
+            // Sweeps are drawn as an HTML overlay in recomputeOverlay (lightweight-charts v5
+            // removed series.setMarkers), so nothing to do here for them.
 
             // Premium/Discount mid as gold dotted line
             const pd = analysis.premium_discount;
@@ -339,7 +342,7 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
                                 left: `${l.left}px`,
                                 top: `${l.top}px`,
                                 fontSize: 10,
-                                fontWeight: 500,
+                                fontWeight: l.bold ? 700 : 500,
                                 color: l.color,
                                 opacity: l.opacity,
                                 background: "rgba(13,17,23,0.6)",

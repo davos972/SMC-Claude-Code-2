@@ -66,6 +66,9 @@ class LiquiditySweep:
     price: float
     kind: Literal["high_sweep", "low_sweep"]
     time: Any
+    mitigated: bool = False
+    mitigated_idx: int = -1
+    mitigated_time: Any = None
 
 
 @dataclass
@@ -262,6 +265,20 @@ def detect_liquidity_sweeps(candles: List[Candle], swings: List[Swing], lookback
         for s in rec_lows:
             if c["low"] < s.price and c["close"] > s.price:
                 sweeps.append(LiquiditySweep(idx=i, price=s.price, kind="low_sweep", time=c["time"]))
+                break
+
+    # Mitigation: a sweep stays "fresh" until price later CLOSES through the swept level
+    # (the liquidity is then consumed / the level genuinely broken — no longer a sweep signal).
+    #   high_sweep  → mitigated once a later candle closes ABOVE the swept high
+    #   low_sweep   → mitigated once a later candle closes BELOW the swept low
+    for sw in sweeps:
+        for k in range(sw.idx + 1, len(candles)):
+            cc = candles[k]
+            if (sw.kind == "high_sweep" and cc["close"] > sw.price) or \
+               (sw.kind == "low_sweep" and cc["close"] < sw.price):
+                sw.mitigated = True
+                sw.mitigated_idx = k
+                sw.mitigated_time = cc["time"]
                 break
     return sweeps
 

@@ -144,6 +144,25 @@ async def _close_all_bot_positions(magic_number: int, reason: str = "news") -> N
         logger.warning("_close_all_bot_positions failed: %s", e)
 
 
+async def _realized_pnl(position_id: str) -> Optional[float]:
+    """Real realized P&L of a closed position from the broker's deal history
+    (profit + swap + commission). Returns None if the history is unavailable, so
+    the caller can fall back to the (mono-symbol-only) equity-delta estimate."""
+    try:
+        deals = await metaapi_client.get_deals_by_position(position_id)
+    except Exception as e:
+        logger.warning("get_deals_by_position(%s) failed: %s", position_id, e)
+        return None
+    if not deals:
+        return None
+    total = 0.0
+    for d in deals:
+        total += float(d.get("profit", 0) or 0)
+        total += float(d.get("swap", 0) or 0)
+        total += float(d.get("commission", 0) or 0)
+    return total
+
+
 async def _check_closed_positions(current_equity: float, magic_number: int) -> None:
     """Detect positions closed since last check and update consecutive loss counter."""
     global _open_positions
@@ -158,7 +177,12 @@ async def _check_closed_positions(current_equity: float, magic_number: int) -> N
                 continue
             equity_at_open = tracked.get("equity_at_open", current_equity)
             symbol = tracked.get("symbol", "")
-            delta = current_equity - equity_at_open
+            # Prefer the broker's REAL realized P&L for this exact position. The global
+            # equity delta only approximates it with a single open position at a time and
+            # becomes wrong with several symbols open at once — so it's only a fallback.
+            delta = await _realized_pnl(pos_id)
+            if delta is None:
+                delta = current_equity - equity_at_open
             be_threshold = equity_at_open * 0.001  # 0.1% = break-even
 
             state = await store.get_bot_state()
