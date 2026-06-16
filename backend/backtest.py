@@ -58,11 +58,15 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     """Replay strategy on supplied M1 candles. Pure logic — no I/O."""
     settings = settings or {}
     mode = req.get("mode", "intraday")
-    htf = settings.get("intraday_htf", "H1") if mode == "intraday" else settings.get("scalping_htf", "M15")
+    htf = settings.get("intraday_htf", "H1") if mode == "intraday" else settings.get("scalping_htf", "H1")
+    mtf = settings.get("intraday_mtf", "M15") if mode == "intraday" else settings.get("scalping_mtf", "M15")
     ltf = settings.get("intraday_ltf", "M5") if mode == "intraday" else settings.get("scalping_ltf", "M1")
     min_rr = float(settings.get("min_rr", 2.0))
     fractal_n = int(settings.get("fractal_n", 3))
     recent_window = int(settings.get("recent_window", 6))
+    require_fvg = bool(settings.get("require_fvg_entry", True))
+    require_sequence = bool(settings.get("require_sweep_then_choch", True))
+    require_unmitigated = bool(settings.get("require_unmitigated_ob", True))
     spread_points = float(req.get("spread_points", 25))
     spread_price = spread_points * 0.01  # XAUUSD: 1 point ≈ 0.01
 
@@ -70,6 +74,7 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         return {"trades": [], "metrics": {}, "equity_curve": []}
 
     htf_minutes = TF_MIN.get(htf, 60)
+    mtf_minutes = TF_MIN.get(mtf, 15)
     ltf_minutes = TF_MIN.get(ltf, 5)
 
     trades: List[Dict[str, Any]] = []
@@ -77,6 +82,7 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     equity_curve: List[Dict[str, Any]] = [{"time": _to_iso(candles_m1[0]["time"]), "equity": equity}]
 
     htf_candles = _aggregate(candles_m1, htf_minutes)
+    mtf_candles = _aggregate(candles_m1, mtf_minutes)
     ltf_candles = _aggregate(candles_m1, ltf_minutes)
 
     open_trade: Optional[Dict[str, Any]] = None
@@ -93,8 +99,9 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         c = ltf_candles[i]
         cur_time = c["time"]
         htf_window = [h for h in htf_candles if h["time"] <= cur_time][-100:]
+        mtf_window = [h for h in mtf_candles if h["time"] <= cur_time][-150:]
         ltf_window = ltf_candles[max(0, i - 200): i + 1]
-        if len(htf_window) < 30:
+        if len(htf_window) < 30 or len(mtf_window) < 30:
             continue
 
         if open_trade:
@@ -106,8 +113,9 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         if open_trade:
             continue
 
-        result = analyze(htf_window, ltf_window, fractal_n=fractal_n, min_rr=min_rr,
-                         recent_window=recent_window)
+        result = analyze(htf_window, mtf_window, ltf_window, fractal_n=fractal_n, min_rr=min_rr,
+                         recent_window=recent_window, require_fvg=require_fvg,
+                         require_sequence=require_sequence, require_unmitigated=require_unmitigated)
         sig = result.get("signal")
         if sig:
             entry_price = sig["entry"] + (spread_price if sig["side"] == "buy" else -spread_price)
@@ -132,8 +140,8 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         last_c = ltf_candles[-1]
         side = open_trade["side"]
         exit_price = last_c["close"]
+        # Spread already paid once via the worse entry fill — do not subtract again.
         pnl = (exit_price - open_trade["entry"]) if side == "buy" else (open_trade["entry"] - exit_price)
-        pnl -= spread_price
         result = "win" if pnl > 0 else ("loss" if pnl < 0 else "be")
         open_trade.update(exit_time=_to_iso(last_c["time"]), exit_price=exit_price,
                           pnl=pnl, result=result, _closed=True)
@@ -167,8 +175,9 @@ def _check_exit(trade: Dict[str, Any], c: Dict[str, Any], spread_price: float,
     else:
         exit_price = tp
         result = "win"
+    # Spread is already paid once via the worse entry fill (entry_price adjusted at open),
+    # which models the full round-trip cost — do NOT subtract it again here (double-counting).
     pnl = (exit_price - entry) if side == "buy" else (entry - exit_price)
-    pnl -= spread_price
     trade.update(exit_time=_to_iso(c["time"]), exit_price=exit_price, pnl=pnl, result=result, _closed=True)
     trades.append({k: v for k, v in trade.items() if not k.startswith("_")})
     last_eq = equity_curve[-1]["equity"] + pnl * 100

@@ -219,6 +219,7 @@ async def _bot_trading_loop() -> None:
             symbol = s.get("active_symbol", "XAUUSD")
             mode = s.get("trading_mode", "intraday")
             htf = s.get("intraday_htf" if mode == "intraday" else "scalping_htf", "H1")
+            mtf = s.get("intraday_mtf" if mode == "intraday" else "scalping_mtf", "M15")
             ltf = s.get("intraday_ltf" if mode == "intraday" else "scalping_ltf", "M5")
             magic = int(s.get("magic_number", 990077))
 
@@ -354,9 +355,10 @@ async def _bot_trading_loop() -> None:
                 logger.warning("Candle fetch failed: %s", e)
                 continue
 
-            # ── SMC analysis ──
+            # ── SMC analysis (top-down 3 niveaux) ──
             try:
                 htf_raw = await metaapi_client.get_candles(symbol, htf, None, 300)
+                mtf_raw = await metaapi_client.get_candles(symbol, mtf, None, 300)
 
                 def _norm(arr):
                     out = []
@@ -369,10 +371,13 @@ async def _bot_trading_loop() -> None:
                                     "close": float(c["close"])})
                     return out
 
-                result = analyze(_norm(htf_raw), _norm(ltf_raw),
+                result = analyze(_norm(htf_raw), _norm(mtf_raw), _norm(ltf_raw),
                                  fractal_n=int(s.get("fractal_n", 3)),
                                  min_rr=float(s.get("min_rr", 2.0)),
-                                 recent_window=int(s.get("recent_window", 6)))
+                                 recent_window=int(s.get("recent_window", 6)),
+                                 require_fvg=bool(s.get("require_fvg_entry", True)),
+                                 require_sequence=bool(s.get("require_sweep_then_choch", True)),
+                                 require_unmitigated=bool(s.get("require_unmitigated_ob", True)))
             except Exception as e:
                 logger.warning("SMC analysis failed: %s", e)
                 continue

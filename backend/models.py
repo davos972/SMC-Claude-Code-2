@@ -37,12 +37,19 @@ DEFAULT_SETTINGS = {
     "active_symbol": "XAUUSD",
     "symbols": ["XAUUSD"],
 
-    # Mode
+    # Mode — top-down 3 niveaux : biais (HTF) → structure/POI (MTF) → entrée (LTF)
     "trading_mode": "intraday",  # intraday | scalping
-    "intraday_htf": "H1",
-    "intraday_ltf": "M5",
-    "scalping_htf": "M15",
-    "scalping_ltf": "M1",
+    "intraday_htf": "H1",        # biais
+    "intraday_mtf": "M15",       # structure / order blocks (POI)
+    "intraday_ltf": "M5",        # déclencheur / entrée
+    "scalping_htf": "H1",        # biais
+    "scalping_mtf": "M15",       # structure / order blocks (POI)
+    "scalping_ltf": "M1",        # déclencheur / entrée
+
+    # Règles SMC strictes (désactivables pour comparer en backtest)
+    "require_fvg_entry": True,        # le prix doit être dans une FVG non comblée du bon sens
+    "require_sweep_then_choch": True, # séquence imposée : sweep de liquidité PUIS CHoCH
+    "require_unmitigated_ob": True,   # l'order block POI doit être non mitigé (vierge)
 
     # Risk
     "risk_per_trade_pct": 1.0,

@@ -300,9 +300,95 @@ def premium_discount(swings: List[Swing]) -> Optional[Dict[str, float]]:
 
 # ---------------- analysis pipeline ----------------
 
-def analyze(candles_htf: List[Candle], candles_ltf: List[Candle], fractal_n: int = 3,
-            min_rr: float = 2.0, recent_window: int = 6) -> Dict[str, Any]:
-    """Run full SMC analysis. Returns dict with detections + optional signal at latest LTF candle."""
+def _build_signal(direction, candles_entry, last_close, last_idx, poi, pd_struct,
+                  swings_bias, sweeps_entry, events_entry, fvgs_entry,
+                  min_rr, recent_window, require_fvg, require_sequence):
+    """Evaluate the entry trigger on the entry timeframe for a given HTF bias direction.
+    Returns (Signal, None) if all conditions pass, else (None, reject_reason)."""
+    bullish = direction == "bullish"
+
+    # 1) Premium/Discount (range computed on the structure tier)
+    if bullish and last_close > pd_struct["mid"]:
+        return None, "Prix hors zone discount"
+    if not bullish and last_close < pd_struct["mid"]:
+        return None, "Prix hors zone premium"
+
+    # 2) Price must be inside the POI (structure-tier order block)
+    if bullish:
+        if not (poi.bottom <= last_close <= poi.top * 1.001):
+            return None, "Prix hors de l'order block POI"
+    else:
+        if not (poi.bottom * 0.999 <= last_close <= poi.top):
+            return None, "Prix hors de l'order block POI"
+
+    # 3) Entry-tier confirmation
+    want_sweep = "low_sweep" if bullish else "high_sweep"
+    recent_sweeps = [s for s in sweeps_entry
+                     if s.kind == want_sweep and last_idx - s.idx <= recent_window]
+    recent_choch = [e for e in events_entry
+                    if e.kind == "CHoCH" and e.direction == direction and last_idx - e.idx <= recent_window]
+    chosen_sweep = recent_sweeps[-1] if recent_sweeps else None
+
+    if require_sequence:
+        # Imposed sequence: liquidity sweep FIRST, then a CHoCH in the bias direction.
+        if not chosen_sweep:
+            return None, "Pas de sweep de liquidité récent (entrée)"
+        if not any(e.idx > chosen_sweep.idx for e in recent_choch):
+            return None, "Pas de CHoCH après le sweep (séquence non respectée)"
+    else:
+        if not (recent_sweeps or recent_choch):
+            return None, "Pas de sweep ni CHoCH récent (entrée)"
+
+    # 4) Strict FVG: price must sit inside an unfilled FVG of the bias direction
+    if require_fvg:
+        fvg_ok = any(
+            f.direction == direction and not f.filled and f.bottom <= last_close <= f.top
+            for f in fvgs_entry
+        )
+        if not fvg_ok:
+            return None, "Prix hors d'une FVG non comblée (entrée)"
+
+    # 5) Entry / SL / TP
+    entry = last_close
+    if bullish:
+        sweep_low = candles_entry[chosen_sweep.idx]["low"] if chosen_sweep else poi.bottom
+        sl = min(poi.bottom, sweep_low) * 0.999
+        targets = [s.price for s in swings_bias if s.kind == "high" and s.price > entry]
+        if not targets:
+            return None, "Pas de liquidité haussière cible"
+        tp = min(targets)
+        risk, reward = entry - sl, tp - entry
+    else:
+        sweep_high = candles_entry[chosen_sweep.idx]["high"] if chosen_sweep else poi.top
+        sl = max(poi.top, sweep_high) * 1.001
+        targets = [s.price for s in swings_bias if s.kind == "low" and s.price < entry]
+        if not targets:
+            return None, "Pas de liquidité baissière cible"
+        tp = max(targets)
+        risk, reward = sl - entry, entry - tp
+
+    if risk <= 0:
+        return None, "Placement SL invalide"
+    rr = reward / risk
+    if rr < min_rr:
+        return None, f"RR {rr:.2f} < min {min_rr}"
+
+    side = "buy" if bullish else "sell"
+    zone = "discount" if bullish else "premium"
+    sig = Signal(
+        side=side, entry=entry, sl=sl, tp=tp, rr=rr,
+        reason=f"Sweep→CHoCH + FVG dans OB {zone} → {side.upper()} (RR 1:{rr:.2f})",
+        poi_top=poi.top, poi_bottom=poi.bottom,
+    )
+    return sig, None
+
+
+def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_entry: List[Candle],
+            fractal_n: int = 3, min_rr: float = 2.0, recent_window: int = 6,
+            require_fvg: bool = True, require_sequence: bool = True,
+            require_unmitigated: bool = True) -> Dict[str, Any]:
+    """Top-down 3-tier SMC analysis: bias (HTF) → structure/POI (MTF) → entry trigger (LTF).
+    Returns dict with detections + optional signal at the latest entry candle."""
     out: Dict[str, Any] = {
         "bias": None,
         "swings_htf": [],
@@ -317,122 +403,67 @@ def analyze(candles_htf: List[Candle], candles_ltf: List[Candle], fractal_n: int
         "signal": None,
         "reject_reason": None,
     }
-    if len(candles_htf) < fractal_n * 2 + 5 or len(candles_ltf) < fractal_n * 2 + 5:
+    min_len = fractal_n * 2 + 5
+    if len(candles_bias) < min_len or len(candles_struct) < min_len or len(candles_entry) < min_len:
         out["reject_reason"] = "Insufficient candles"
         return out
 
-    # HTF analysis
-    swings_htf = find_swings(candles_htf, n=fractal_n)
-    events_htf = detect_structure(candles_htf, swings_htf)
-    obs_htf = detect_order_blocks(candles_htf, events_htf)
-
-    out["swings_htf"] = [asdict(s) for s in swings_htf]
-    out["structure_htf"] = [asdict(e) for e in events_htf]
-    out["order_blocks_htf"] = [asdict(o) for o in obs_htf]
-
-    bias = events_htf[-1].direction if events_htf else None
+    # --- Tier 1: BIAS (HTF) — direction only ---
+    swings_bias = find_swings(candles_bias, n=fractal_n)
+    events_bias = detect_structure(candles_bias, swings_bias)
+    out["swings_htf"] = [asdict(s) for s in swings_bias]
+    out["structure_htf"] = [asdict(e) for e in events_bias]
+    bias = events_bias[-1].direction if events_bias else None
     out["bias"] = bias
 
-    # LTF analysis
-    swings_ltf = find_swings(candles_ltf, n=fractal_n)
-    events_ltf = detect_structure(candles_ltf, swings_ltf)
-    obs_ltf = detect_order_blocks(candles_ltf, events_ltf)
-    fvgs_ltf = detect_fvgs(candles_ltf)
-    sweeps_ltf = detect_liquidity_sweeps(candles_ltf, swings_ltf)
-    pd = premium_discount(swings_htf)
+    # --- Tier 2: STRUCTURE / POI (MTF) — order blocks + dealing range ---
+    swings_struct = find_swings(candles_struct, n=fractal_n)
+    events_struct = detect_structure(candles_struct, swings_struct)
+    obs_struct = detect_order_blocks(candles_struct, events_struct)
+    pd_struct = premium_discount(swings_struct)
+    out["order_blocks_htf"] = [asdict(o) for o in obs_struct]
+    out["premium_discount"] = pd_struct
 
-    out["swings_ltf"] = [asdict(s) for s in swings_ltf]
-    out["structure_ltf"] = [asdict(e) for e in events_ltf]
-    out["order_blocks_ltf"] = [asdict(o) for o in obs_ltf]
-    out["fvgs_ltf"] = [asdict(f) for f in fvgs_ltf]
-    out["sweeps_ltf"] = [asdict(s) for s in sweeps_ltf]
-    out["premium_discount"] = pd
+    # --- Tier 3: ENTRY trigger (LTF) — sweeps, CHoCH, FVG ---
+    swings_entry = find_swings(candles_entry, n=fractal_n)
+    events_entry = detect_structure(candles_entry, swings_entry)
+    obs_entry = detect_order_blocks(candles_entry, events_entry)
+    fvgs_entry = detect_fvgs(candles_entry)
+    sweeps_entry = detect_liquidity_sweeps(candles_entry, swings_entry)
+    out["swings_ltf"] = [asdict(s) for s in swings_entry]
+    out["structure_ltf"] = [asdict(e) for e in events_entry]
+    out["order_blocks_ltf"] = [asdict(o) for o in obs_entry]
+    out["fvgs_ltf"] = [asdict(f) for f in fvgs_entry]
+    out["sweeps_ltf"] = [asdict(s) for s in sweeps_entry]
 
-    if not bias or not pd:
-        out["reject_reason"] = "No HTF bias or no defined range"
+    if not bias or not pd_struct:
+        out["reject_reason"] = "Pas de biais HTF ou pas de range défini"
         return out
 
-    # Build signal candidate from the last LTF candle
-    last = candles_ltf[-1]
-    last_idx = len(candles_ltf) - 1
-    last_close = last["close"]
-
-    # Must have a recent CHoCH or sweep on LTF (within `recent_window` candles,
-    # configurable: 6 candles = 6 min in M1 scalping but 30 min in M5 intraday).
-    recent_sweeps = [s for s in sweeps_ltf if last_idx - s.idx <= recent_window]
-    recent_choch = [e for e in events_ltf if e.kind == "CHoCH" and last_idx - e.idx <= recent_window]
-
-    poi_obs = [o for o in obs_htf if o.direction == bias]
+    # POI: order block on the structure tier, in the bias direction, optionally unmitigated only.
+    poi_obs = [o for o in obs_struct if o.direction == bias]
+    if require_unmitigated:
+        poi_obs = [o for o in poi_obs if not o.mitigated]
     if not poi_obs:
-        out["reject_reason"] = "No HTF order block matching bias"
+        out["reject_reason"] = ("Aucun order block non mitigé dans le sens du biais"
+                                if require_unmitigated
+                                else "Aucun order block dans le sens du biais")
         return out
     poi = poi_obs[-1]
 
-    # Must be in discount (for bullish) or premium (for bearish)
-    if bias == "bullish":
-        if last_close > pd["mid"]:
-            out["reject_reason"] = "Price not in discount zone"
-            return out
-        if not (poi.bottom <= last_close <= poi.top * 1.001):
-            out["reject_reason"] = "Price not inside HTF order block"
-            return out
-        if not (recent_sweeps or recent_choch):
-            out["reject_reason"] = "No LTF sweep or CHoCH confirmation in POI"
-            return out
-        # Build signal
-        entry = last_close
-        sl = poi.bottom * 0.999
-        # TP = next opposite liquidity: nearest swing high above
-        target_highs = [s.price for s in swings_htf if s.kind == "high" and s.price > entry]
-        if not target_highs:
-            out["reject_reason"] = "No upward liquidity target"
-            return out
-        tp = min(target_highs)
-        risk = entry - sl
-        reward = tp - entry
-        if risk <= 0:
-            out["reject_reason"] = "Invalid SL placement"
-            return out
-        rr = reward / risk
-        if rr < min_rr:
-            out["reject_reason"] = f"RR {rr:.2f} < min {min_rr}"
-            return out
-        out["signal"] = asdict(Signal(
-            side="buy", entry=entry, sl=sl, tp=tp, rr=rr,
-            reason=f"Sweep/CHoCH LTF dans OB H1 discount → BUY (RR 1:{rr:.2f})",
-            poi_top=poi.top, poi_bottom=poi.bottom,
-        ))
-        return out
+    # Build the entry candidate from the latest entry-tier candle.
+    # recent_window is in candles: 6 candles = 6 min in M1 scalping, 30 min in M5 intraday.
+    last = candles_entry[-1]
+    last_idx = len(candles_entry) - 1
+    last_close = last["close"]
 
-    else:  # bearish
-        if last_close < pd["mid"]:
-            out["reject_reason"] = "Price not in premium zone"
-            return out
-        if not (poi.bottom * 0.999 <= last_close <= poi.top):
-            out["reject_reason"] = "Price not inside HTF order block"
-            return out
-        if not (recent_sweeps or recent_choch):
-            out["reject_reason"] = "No LTF sweep or CHoCH confirmation in POI"
-            return out
-        entry = last_close
-        sl = poi.top * 1.001
-        target_lows = [s.price for s in swings_htf if s.kind == "low" and s.price < entry]
-        if not target_lows:
-            out["reject_reason"] = "No downward liquidity target"
-            return out
-        tp = max(target_lows)
-        risk = sl - entry
-        reward = entry - tp
-        if risk <= 0:
-            out["reject_reason"] = "Invalid SL placement"
-            return out
-        rr = reward / risk
-        if rr < min_rr:
-            out["reject_reason"] = f"RR {rr:.2f} < min {min_rr}"
-            return out
-        out["signal"] = asdict(Signal(
-            side="sell", entry=entry, sl=sl, tp=tp, rr=rr,
-            reason=f"Sweep/CHoCH LTF dans OB H1 premium → SELL (RR 1:{rr:.2f})",
-            poi_top=poi.top, poi_bottom=poi.bottom,
-        ))
-        return out
+    sig, reason = _build_signal(
+        bias, candles_entry, last_close, last_idx, poi, pd_struct,
+        swings_bias, sweeps_entry, events_entry, fvgs_entry,
+        min_rr, recent_window, require_fvg, require_sequence,
+    )
+    if sig is None:
+        out["reject_reason"] = reason
+    else:
+        out["signal"] = asdict(sig)
+    return out

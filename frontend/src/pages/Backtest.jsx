@@ -22,10 +22,21 @@ export default function Backtest({ settings }) {
     const [history, setHistory] = useState([]);
     const [selectedTrade, setSelectedTrade] = useState(null);
     const [tradeChart, setTradeChart] = useState({ loading: false, candles: [], analysis: null, error: null });
+    const [liveSpread, setLiveSpread] = useState(null); // real broker spread (AXI) via MetaApi
 
     useEffect(() => {
         endpoints.listBacktests().then(({ data }) => setHistory(data || []))
             .catch((e) => console.error("listBacktests failed:", e));
+    }, []);
+
+    // Fetch the live broker spread (ask − bid) and use it as the realistic default.
+    useEffect(() => {
+        endpoints.symbolSpread("XAUUSD").then(({ data }) => {
+            if (data?.configured && typeof data.spread_points === "number") {
+                setLiveSpread(data);
+                setSpread(data.spread_points);
+            }
+        }).catch((e) => console.error("symbolSpread failed:", e));
     }, []);
 
     useEffect(() => {
@@ -138,6 +149,21 @@ export default function Backtest({ settings }) {
                             data-testid="backtest-spread" />
                         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary text-sm">points</span>
                     </div>
+                    {liveSpread ? (
+                        <div className="text-xs text-text-secondary mt-1.5 flex items-center gap-2 flex-wrap" data-testid="backtest-live-spread">
+                            <span>Spread live AXI : <span className="num text-text-primary">{liveSpread.spread_points} pts</span> (≈ {liveSpread.spread_price} $)</span>
+                            {Number(spread) !== liveSpread.spread_points && (
+                                <button type="button" onClick={() => setSpread(liveSpread.spread_points)}
+                                    className="text-gold underline hover:brightness-110" data-testid="apply-live-spread">
+                                    appliquer
+                                </button>
+                            )}
+                        </div>
+                    ) : (
+                        <div className="text-xs text-text-secondary mt-1.5">
+                            Compté une fois par trade (coût aller-retour). Mets une moyenne un peu plus haute que le spread calme pour intégrer news/ouvertures.
+                        </div>
+                    )}
                 </div>
 
                 <button onClick={onStart} disabled={polling}

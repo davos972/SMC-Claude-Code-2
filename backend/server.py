@@ -233,6 +233,29 @@ async def get_candles(symbol: str, timeframe: str = "M5", limit: int = 200) -> D
         return {"configured": True, "data": [], "error": f"{type(e).__name__}: {e}"}
 
 
+@api.get("/symbol/spread")
+async def get_symbol_spread(symbol: str = "XAUUSD") -> Dict[str, Any]:
+    """Live spread (ask − bid) from the connected broker account, used as a realistic
+    default for the backtest 'spread moyen simulé'. 1 point = 0,01 for XAUUSD."""
+    if not metaapi_client.is_configured():
+        return {"configured": False}
+    try:
+        price = await metaapi_client.get_symbol_price(symbol)
+    except MetaApiConnectionError as e:
+        return {"configured": True, "error": str(e)}
+    except Exception as e:
+        logger.exception("get_symbol_spread failed")
+        return {"configured": True, "error": f"{type(e).__name__}: {e}"}
+    bid = float(price.get("bid", 0) or 0)
+    ask = float(price.get("ask", 0) or 0)
+    spread_price = max(0.0, ask - bid)
+    return {
+        "configured": True, "symbol": symbol, "bid": bid, "ask": ask,
+        "spread_price": round(spread_price, 3),
+        "spread_points": round(spread_price / 0.01, 1),
+    }
+
+
 # ---------------- bot start/stop ----------------
 
 class BotStartPayload(BaseModel):
@@ -365,9 +388,10 @@ async def run_analysis(symbol: str = Body(default="XAUUSD", embed=True),
         # Single-timeframe analysis (used by the chart): every detection — order blocks, FVG,
         # structure, swings — is computed on the SAME timeframe that is displayed, so zones stay
         # aligned with the candles. No cross-timeframe overlay (which produced oversized zones).
-        htf = ltf = timeframe
+        htf = mtf = ltf = timeframe
     else:
         htf = s.get("intraday_htf" if mode == "intraday" else "scalping_htf", "H1")
+        mtf = s.get("intraday_mtf" if mode == "intraday" else "scalping_mtf", "M15")
         ltf = s.get("intraday_ltf" if mode == "intraday" else "scalping_ltf", "M5")
 
     if not metaapi_client.is_configured():
@@ -376,9 +400,10 @@ async def run_analysis(symbol: str = Body(default="XAUUSD", embed=True),
     try:
         if timeframe:
             ltf_candles = await metaapi_client.get_candles(symbol, timeframe, None, 300)
-            htf_candles = ltf_candles
+            htf_candles = mtf_candles = ltf_candles
         else:
             htf_candles = await metaapi_client.get_candles(symbol, htf, None, 300)
+            mtf_candles = await metaapi_client.get_candles(symbol, mtf, None, 300)
             ltf_candles = await metaapi_client.get_candles(symbol, ltf, None, 300)
     except MetaApiConnectionError as e:
         return {"configured": True, "error": str(e), "result": None}
@@ -397,11 +422,15 @@ async def run_analysis(symbol: str = Body(default="XAUUSD", embed=True),
         return out
 
     htf_norm = _norm(htf_candles)
+    mtf_norm = _norm(mtf_candles)
     ltf_norm = _norm(ltf_candles)
-    result = analyze(htf_norm, ltf_norm,
+    result = analyze(htf_norm, mtf_norm, ltf_norm,
                      fractal_n=int(s.get("fractal_n", 3)),
                      min_rr=float(s.get("min_rr", 2.0)),
-                     recent_window=int(s.get("recent_window", 6)))
+                     recent_window=int(s.get("recent_window", 6)),
+                     require_fvg=bool(s.get("require_fvg_entry", True)),
+                     require_sequence=bool(s.get("require_sweep_then_choch", True)),
+                     require_unmitigated=bool(s.get("require_unmitigated_ob", True)))
 
     if persist:
         sig = result.get("signal")
@@ -425,7 +454,7 @@ async def run_analysis(symbol: str = Body(default="XAUUSD", embed=True),
 
     return {
         "configured": True, "result": result, "candles_ltf": ltf_norm,
-        "mode": mode, "htf": htf, "ltf": ltf,
+        "mode": mode, "htf": htf, "mtf": mtf, "ltf": ltf,
     }
 
 
@@ -438,11 +467,13 @@ async def analysis_at_time(symbol: str = "XAUUSD", timestamp: str = "",
         return {"configured": False, "error": "MetaApi non configuré.", "result": None, "candles_ltf": []}
     s = await store.get_settings()
     htf = s.get("intraday_htf" if mode == "intraday" else "scalping_htf", "H1")
+    mtf = s.get("intraday_mtf" if mode == "intraday" else "scalping_mtf", "M15")
     ltf = s.get("intraday_ltf" if mode == "intraday" else "scalping_ltf", "M5")
     try:
         from datetime import datetime as _dt
         end_dt = _dt.fromisoformat(timestamp.replace("Z", "+00:00")) if timestamp else None
         htf_candles = await metaapi_client.get_candles(symbol, htf, end_dt, min(window, 500))
+        mtf_candles = await metaapi_client.get_candles(symbol, mtf, end_dt, min(window, 500))
         ltf_candles = await metaapi_client.get_candles(symbol, ltf, end_dt, min(window, 500))
     except Exception as e:
         return {"configured": True, "error": f"{type(e).__name__}: {e}", "result": None, "candles_ltf": []}
@@ -460,14 +491,18 @@ async def analysis_at_time(symbol: str = "XAUUSD", timestamp: str = "",
         return out
 
     htf_norm = _norm(htf_candles)
+    mtf_norm = _norm(mtf_candles)
     ltf_norm = _norm(ltf_candles)
-    result = analyze(htf_norm, ltf_norm,
+    result = analyze(htf_norm, mtf_norm, ltf_norm,
                      fractal_n=int(s.get("fractal_n", 3)),
                      min_rr=float(s.get("min_rr", 2.0)),
-                     recent_window=int(s.get("recent_window", 6)))
+                     recent_window=int(s.get("recent_window", 6)),
+                     require_fvg=bool(s.get("require_fvg_entry", True)),
+                     require_sequence=bool(s.get("require_sweep_then_choch", True)),
+                     require_unmitigated=bool(s.get("require_unmitigated_ob", True)))
     return {
         "configured": True, "result": result, "candles_ltf": ltf_norm,
-        "mode": mode, "htf": htf, "ltf": ltf, "timestamp": timestamp,
+        "mode": mode, "htf": htf, "mtf": mtf, "ltf": ltf, "timestamp": timestamp,
     }
 
 

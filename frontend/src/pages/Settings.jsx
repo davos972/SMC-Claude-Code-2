@@ -243,6 +243,50 @@ export default function Settings({ settings, refresh }) {
                 />
             </Section>
 
+            {/* Stratégie SMC */}
+            <Section title="Stratégie SMC">
+                <div className="text-xs text-text-secondary -mt-1">
+                    Analyse top-down 3 niveaux : biais → structure/POI → entrée.
+                </div>
+                <Toggle
+                    label="FVG obligatoire à l'entrée"
+                    description="Le prix doit revenir dans une FVG non comblée du bon sens."
+                    value={local.require_fvg_entry}
+                    onChange={(v) => setAndSave("require_fvg_entry", v)}
+                    testid="settings-require-fvg"
+                />
+                <Toggle
+                    label="Séquence sweep → CHoCH"
+                    description="Exige un balayage de liquidité PUIS un changement de structure."
+                    value={local.require_sweep_then_choch}
+                    onChange={(v) => setAndSave("require_sweep_then_choch", v)}
+                    testid="settings-require-sequence"
+                />
+                <Toggle
+                    label="Order block non mitigé"
+                    description="N'entre que sur des zones vierges (non déjà retouchées)."
+                    value={local.require_unmitigated_ob}
+                    onChange={(v) => setAndSave("require_unmitigated_ob", v)}
+                    testid="settings-require-unmitigated"
+                />
+                <div className="text-[10px] uppercase font-bold tracking-widest text-text-secondary pt-1">
+                    Intraday — biais / structure / entrée
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                    <SelectField label="Biais" value={local.intraday_htf} onChange={(v) => setAndSave("intraday_htf", v)} options={TF_LIST} testid="settings-intraday-htf" />
+                    <SelectField label="Structure" value={local.intraday_mtf} onChange={(v) => setAndSave("intraday_mtf", v)} options={TF_LIST} testid="settings-intraday-mtf" />
+                    <SelectField label="Entrée" value={local.intraday_ltf} onChange={(v) => setAndSave("intraday_ltf", v)} options={TF_LIST} testid="settings-intraday-ltf" />
+                </div>
+                <div className="text-[10px] uppercase font-bold tracking-widest text-text-secondary pt-1">
+                    Scalping — biais / structure / entrée
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                    <SelectField label="Biais" value={local.scalping_htf} onChange={(v) => setAndSave("scalping_htf", v)} options={TF_LIST} testid="settings-scalping-htf" />
+                    <SelectField label="Structure" value={local.scalping_mtf} onChange={(v) => setAndSave("scalping_mtf", v)} options={TF_LIST} testid="settings-scalping-mtf" />
+                    <SelectField label="Entrée" value={local.scalping_ltf} onChange={(v) => setAndSave("scalping_ltf", v)} options={TF_LIST} testid="settings-scalping-ltf" />
+                </div>
+            </Section>
+
             {/* Sessions */}
             <Section title="Sessions de trading">
                 <div className="text-xs text-text-secondary -mt-1">
@@ -378,6 +422,23 @@ function NumberField({ label, value, onChange, step, testid }) {
                 className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
                 data-testid={testid}
             />
+        </Field>
+    );
+}
+
+const TF_LIST = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
+
+function SelectField({ label, value, onChange, options, testid }) {
+    return (
+        <Field label={label}>
+            <select
+                value={value || ""}
+                onChange={(e) => onChange(e.target.value)}
+                className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
+                data-testid={testid}
+            >
+                {options.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
         </Field>
     );
 }

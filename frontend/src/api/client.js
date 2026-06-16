@@ -41,5 +41,6 @@ export const endpoints = {
     startBacktest: (payload) => apiLong.post("/backtest", payload),
     getBacktest: (id) => api.get(`/backtest/${id}`),
     listBacktests: () => api.get("/backtests"),
+    symbolSpread: (symbol = "XAUUSD") => api.get(`/symbol/spread?symbol=${symbol}`),
     stats: () => api.get("/stats"),
 };
