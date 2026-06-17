@@ -288,7 +288,7 @@ def detect_liquidity_sweeps(candles: List[Candle], swings: List[Swing], lookback
 
 
 def premium_discount(swings: List[Swing]) -> Optional[Dict[str, float]]:
-    """Compute current range premium/discount based on most recent swing high and low."""
+    """Fallback range premium/discount: most recent swing high and low (méthode brute)."""
     if len(swings) < 2:
         return None
     last_high = next((s for s in reversed(swings) if s.kind == "high"), None)
@@ -302,20 +302,54 @@ def premium_discount(swings: List[Swing]) -> Optional[Dict[str, float]]:
     return {"top": top, "bottom": bottom, "mid": mid}
 
 
+def dealing_range(swings: List[Swing], events: List[StructureEvent]) -> Optional[Dict[str, float]]:
+    """Dealing range SMC basé sur la dernière jambe d'impulsion (BOS/CHoCH le plus récent).
+
+    Plutôt que 2 swings bruts, on délimite la fourchette par la JAMBE qui a cassé la structure :
+    - cassure haussière : du creux d'origine (avant la cassure) jusqu'au plus haut atteint depuis →
+      discount = moitié basse de cette jambe (zone d'achat).
+    - cassure baissière : du sommet d'origine jusqu'au plus bas atteint → premium = moitié haute.
+    Le 50% (mid) sépare premium et discount. Repli sur premium_discount() si données insuffisantes.
+    """
+    if not events:
+        return premium_discount(swings)
+    ev = events[-1]
+    bullish = ev.direction == "bullish"
+    if bullish:
+        # creux d'origine : dernier swing bas AVANT la cassure
+        origin = next((s for s in reversed(swings) if s.kind == "low" and s.idx < ev.swing_idx), None)
+        if origin is None:
+            return premium_discount(swings)
+        highs = [s.price for s in swings if s.kind == "high" and s.idx >= origin.idx]
+        top = max(highs) if highs else ev.price
+        bottom = origin.price
+    else:
+        origin = next((s for s in reversed(swings) if s.kind == "high" and s.idx < ev.swing_idx), None)
+        if origin is None:
+            return premium_discount(swings)
+        lows = [s.price for s in swings if s.kind == "low" and s.idx >= origin.idx]
+        bottom = min(lows) if lows else ev.price
+        top = origin.price
+    if top <= bottom:
+        return premium_discount(swings)
+    return {"top": top, "bottom": bottom, "mid": (top + bottom) / 2}
+
+
 # ---------------- analysis pipeline ----------------
 
 def _build_signal(direction, candles_entry, last_close, last_idx, poi, pd_struct,
                   swings_target, sweeps_entry, events_entry, fvgs_entry,
-                  min_rr, recent_window, require_fvg, require_sequence):
+                  min_rr, recent_window, require_fvg, require_sequence, require_pd=True):
     """Evaluate the entry trigger on the entry timeframe for a given HTF bias direction.
     Returns (Signal, None) if all conditions pass, else (None, reject_reason)."""
     bullish = direction == "bullish"
 
-    # 1) Premium/Discount (range computed on the structure tier)
-    if bullish and last_close > pd_struct["mid"]:
-        return None, "Prix hors zone discount"
-    if not bullish and last_close < pd_struct["mid"]:
-        return None, "Prix hors zone premium"
+    # 1) Premium/Discount (range computed on the structure tier) — achat en discount, vente en premium
+    if require_pd:
+        if bullish and last_close > pd_struct["mid"]:
+            return None, "Prix hors zone discount"
+        if not bullish and last_close < pd_struct["mid"]:
+            return None, "Prix hors zone premium"
 
     # 2) Price must be inside the POI (structure-tier order block)
     if bullish:
@@ -390,7 +424,7 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi, pd_struct
 def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_entry: List[Candle],
             fractal_n: int = 3, min_rr: float = 2.0, recent_window: int = 6,
             require_fvg: bool = True, require_sequence: bool = True,
-            require_unmitigated: bool = True) -> Dict[str, Any]:
+            require_unmitigated: bool = True, require_pd: bool = True) -> Dict[str, Any]:
     """Top-down 3-tier SMC analysis: bias (HTF) → structure/POI (MTF) → entry trigger (LTF).
     Returns dict with detections + optional signal at the latest entry candle."""
     out: Dict[str, Any] = {
@@ -424,7 +458,7 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
     swings_struct = find_swings(candles_struct, n=fractal_n)
     events_struct = detect_structure(candles_struct, swings_struct)
     obs_struct = detect_order_blocks(candles_struct, events_struct)
-    pd_struct = premium_discount(swings_struct)
+    pd_struct = dealing_range(swings_struct, events_struct)
     out["order_blocks_htf"] = [asdict(o) for o in obs_struct]
     out["premium_discount"] = pd_struct
 
@@ -466,7 +500,7 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
     sig, reason = _build_signal(
         bias, candles_entry, last_close, last_idx, poi, pd_struct,
         swings_struct, sweeps_entry, events_entry, fvgs_entry,
-        min_rr, recent_window, require_fvg, require_sequence,
+        min_rr, recent_window, require_fvg, require_sequence, require_pd,
     )
     if sig is None:
         out["reject_reason"] = reason

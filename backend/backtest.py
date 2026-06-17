@@ -68,6 +68,7 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     require_fvg = bool(settings.get("require_fvg_entry", True))
     require_sequence = bool(settings.get("require_sweep_then_choch", True))
     require_unmitigated = bool(settings.get("require_unmitigated_ob", True))
+    require_pd = bool(settings.get("require_premium_discount", True))
     spread_points = float(req.get("spread_points", 25))
     spread_price = spread_points * 0.01  # XAUUSD: 1 point ≈ 0.01
 
@@ -122,7 +123,8 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
 
         result = analyze(htf_window, mtf_window, ltf_window, fractal_n=fractal_n, min_rr=min_rr,
                          recent_window=recent_window, require_fvg=require_fvg,
-                         require_sequence=require_sequence, require_unmitigated=require_unmitigated)
+                         require_sequence=require_sequence, require_unmitigated=require_unmitigated,
+                         require_pd=require_pd)
         sig = result.get("signal")
         if sig:
             entry_price = sig["entry"] + (spread_price if sig["side"] == "buy" else -spread_price)
