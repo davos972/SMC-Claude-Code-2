@@ -88,3 +88,9 @@ android-sdk/
 credentials.json
 *.key
 .credentials
+
+# Fichiers temporaires d analyse/backtest (sessions Claude, non versionnes)
+backend/_compare*
+backend/_confirm*
+backend/_old_*.py
+backend/_m1_cache_*.json

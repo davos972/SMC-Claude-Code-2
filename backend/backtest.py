@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from smc import analyze
+import sessions as sess
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,12 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
                 open_trade = None
 
         if open_trade:
+            continue
+
+        # Sessions: comme le bot live, on n'OUVRE de position que pendant Londres/NY.
+        # (Les positions déjà ouvertes, elles, sont gérées 24h via SL/TP ci-dessus.)
+        cdt = _parse_dt(cur_time)
+        if cdt is not None and not sess.is_in_session(cdt, settings)["in_session"]:
             continue
 
         result = analyze(htf_window, mtf_window, ltf_window, fractal_n=fractal_n, min_rr=min_rr,

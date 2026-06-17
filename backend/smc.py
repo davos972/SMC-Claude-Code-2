@@ -151,7 +151,11 @@ def detect_order_blocks(candles: List[Candle], events: List[StructureEvent]) -> 
     move that caused the BOS/CHoCH event.
 
     OB body (top/bottom) is the candle BODY (open/close), not the wicks.
-    Mitigation: a subsequent candle's wick or body re-enters the OB zone.
+    Invalidation ("mitigated"): a later candle CLOSES through the OB (price genuinely
+    broke the level), NOT merely a wick tap. This matters because the entry logic needs
+    price to RETURN into the OB to trade it — counting that first tap as "mitigated"
+    would make the `require_unmitigated_ob` filter reject every valid setup.
+    Same philosophy as the liquidity-sweep mitigation (close-through = consumed).
     """
     obs: List[OrderBlock] = []
     for ev in events:
@@ -173,17 +177,17 @@ def detect_order_blocks(candles: List[Candle], events: List[StructureEvent]) -> 
             start_idx=j, end_idx=ev.idx, top=top, bottom=bottom,
             direction=ev.direction, time=c["time"],
         )
-        # Mitigation: scan forward
+        # Invalidation: scan forward for a candle CLOSING through the OB.
         for k in range(j + 1, len(candles)):
             cand = candles[k]
             if ob.direction == "bullish":
-                if cand["low"] <= ob.top:  # price came back into OB
+                if cand["close"] < ob.bottom:  # closed below a bullish OB → invalidated
                     ob.mitigated = True
                     ob.mitigated_idx = k
                     ob.mitigated_time = cand["time"]
                     break
             else:
-                if cand["high"] >= ob.bottom:
+                if cand["close"] > ob.top:  # closed above a bearish OB → invalidated
                     ob.mitigated = True
                     ob.mitigated_idx = k
                     ob.mitigated_time = cand["time"]
@@ -301,7 +305,7 @@ def premium_discount(swings: List[Swing]) -> Optional[Dict[str, float]]:
 # ---------------- analysis pipeline ----------------
 
 def _build_signal(direction, candles_entry, last_close, last_idx, poi, pd_struct,
-                  swings_bias, sweeps_entry, events_entry, fvgs_entry,
+                  swings_target, sweeps_entry, events_entry, fvgs_entry,
                   min_rr, recent_window, require_fvg, require_sequence):
     """Evaluate the entry trigger on the entry timeframe for a given HTF bias direction.
     Returns (Signal, None) if all conditions pass, else (None, reject_reason)."""
@@ -353,7 +357,7 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi, pd_struct
     if bullish:
         sweep_low = candles_entry[chosen_sweep.idx]["low"] if chosen_sweep else poi.bottom
         sl = min(poi.bottom, sweep_low) * 0.999
-        targets = [s.price for s in swings_bias if s.kind == "high" and s.price > entry]
+        targets = [s.price for s in swings_target if s.kind == "high" and s.price > entry]
         if not targets:
             return None, "Pas de liquidité haussière cible"
         tp = min(targets)
@@ -361,7 +365,7 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi, pd_struct
     else:
         sweep_high = candles_entry[chosen_sweep.idx]["high"] if chosen_sweep else poi.top
         sl = max(poi.top, sweep_high) * 1.001
-        targets = [s.price for s in swings_bias if s.kind == "low" and s.price < entry]
+        targets = [s.price for s in swings_target if s.kind == "low" and s.price < entry]
         if not targets:
             return None, "Pas de liquidité baissière cible"
         tp = max(targets)
@@ -457,9 +461,11 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
     last_idx = len(candles_entry) - 1
     last_close = last["close"]
 
+    # TP cible la liquidité du niveau STRUCTURE (MTF, ex. M15) — même étage que la POI —
+    # et non plus un swing HTF lointain : cibles plus proches → meilleur taux de réussite.
     sig, reason = _build_signal(
         bias, candles_entry, last_close, last_idx, poi, pd_struct,
-        swings_bias, sweeps_entry, events_entry, fvgs_entry,
+        swings_struct, sweeps_entry, events_entry, fvgs_entry,
         min_rr, recent_window, require_fvg, require_sequence,
     )
     if sig is None:
