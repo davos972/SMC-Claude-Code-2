@@ -74,13 +74,19 @@ DEFAULT_SETTINGS = {
     "news_minutes_after": 30,
     "close_positions_before_news": False,
 
-    # Prop firm
+    # Prop firm — défauts calés sur BlueGuardian Instant Funding (vérifié juin 2026)
     "prop_firm_enabled": False,
-    "prop_daily_dd_pct": 5.0,
-    "prop_total_dd_pct": 10.0,
-    "prop_safety_margin_pct": 20.0,
-    "prop_profit_target_pct": 10.0,
-    "prop_initial_balance": 10000.0,
+    "prop_daily_dd_pct": 3.0,           # perte journalière max (% du solde initial)
+    "prop_total_dd_pct": 6.0,           # drawdown max (% du solde initial)
+    "prop_safety_margin_pct": 20.0,     # le bot s'arrête à (1 - marge) des limites réelles
+    "prop_profit_target_pct": 0.0,      # BlueGuardian Instant : aucun objectif de profit
+    "prop_initial_balance": 25000.0,    # taille du compte financé
+    # --- spécifiques BlueGuardian (0/false = règle désactivée pour une autre firme) ---
+    "prop_trailing_dd": True,           # drawdown max GLISSANT (vs statique type FTMO)
+    "prop_trailing_lock_profit_pct": 6.0,  # le plancher trailing se verrouille au solde initial après ce profit
+    "prop_guardian_shield_pct": 1.0,    # Guardian Shield : perte FLOTTANTE max des positions ouvertes (% solde initial)
+    "prop_consistency_pct": 20.0,       # cohérence : profit d'un jour ≤ X% du profit total (payout uniquement)
+    "prop_daily_reset_hour_est": 17,    # heure de reset du jour (17 = 17h00 EST chez BlueGuardian)
 
     # Notifications
     "notif_open_trade": True,

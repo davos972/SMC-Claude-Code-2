@@ -41,6 +41,21 @@ def calc_lot_size(balance: float, risk_pct: float, entry: float, sl: float,
     return max(0.01, min(max_lot, round(lot * 100) / 100))
 
 
+def _trading_day_key(now_utc: datetime, s: Dict) -> str:
+    """Clé du « jour de trading » pour les resets quotidiens.
+
+    Avec une prop firm à reset horaire (BlueGuardian : 17h00 EST), le jour bascule à
+    cette heure dans le fuseau de New York. Sinon, jour calendaire UTC classique."""
+    if s.get("prop_firm_enabled") and s.get("prop_daily_reset_hour_est") is not None:
+        reset_h = int(s.get("prop_daily_reset_hour_est", 17))
+        ny = now_utc.astimezone(sess.NEWYORK)
+        d = ny.date()
+        if ny.hour >= reset_h:  # après l'heure de reset → nouveau jour de trading
+            d = d + timedelta(days=1)
+        return d.isoformat()
+    return now_utc.date().isoformat()
+
+
 async def _notify(ntype: str, category: str, title: str, message: str) -> None:
     n = {
         "id": str(uuid.uuid4()),
@@ -235,20 +250,29 @@ async def _bot_trading_loop() -> None:
             # ── Daily rollover: reset trades_today / day_start_equity at a new UTC day ──
             # Sans ce reset, max_trades_per_day devient un plafond cumulatif et le
             # drawdown « du jour » est calculé contre une équité périmée.
-            today_str = now.date().isoformat()
+            today_str = _trading_day_key(now, s)
             if state.get("current_day") != today_str:
+                # Repère journalier prop = le PLUS HAUT entre solde et équité (règle BlueGuardian).
+                day_ref = max(equity, balance)
+                # High watermark trailing = plus haut solde de fin de journée vu jusqu'ici.
+                prop_initial = float(s.get("prop_initial_balance", balance) or balance)
+                hwm = max(float(state.get("prop_hwm_balance", 0) or 0), balance, prop_initial)
                 await store.set_bot_state({
                     "current_day": today_str,
                     "trades_today": 0,
                     "day_start_equity": equity,
+                    "day_start_ref": day_ref,
                     "session_start_equity": equity,
+                    "prop_hwm_balance": hwm,
                 })
                 state["current_day"] = today_str
                 state["trades_today"] = 0
                 state["day_start_equity"] = equity
+                state["day_start_ref"] = day_ref
                 state["session_start_equity"] = equity
-                logger.info("Nouveau jour %s — compteurs quotidiens réinitialisés (equity=%.2f).",
-                            today_str, equity)
+                state["prop_hwm_balance"] = hwm
+                logger.info("Nouveau jour %s — compteurs réinitialisés (equity=%.2f, ref=%.2f, hwm=%.2f).",
+                            today_str, equity, day_ref, hwm)
 
             # ── Check for position closes (update consec_losses) ──
             await _check_closed_positions(equity, magic)
@@ -291,20 +315,55 @@ async def _bot_trading_loop() -> None:
                         await _close_all_bot_positions(magic, reason="annonce news imminente")
                     continue
 
-            # ── Drawdown check ──
+            # ── Drawdown / prop firm checks ──
             day_start_eq = state.get("day_start_equity") or equity
             if s.get("prop_firm_enabled"):
-                prop_initial = float(s.get("prop_initial_balance", balance))
-                daily_limit = float(s.get("prop_daily_dd_pct", 5.0))
-                total_limit = float(s.get("prop_total_dd_pct", 10.0))
-                safety = float(s.get("prop_safety_margin_pct", 20.0))
-                eff_daily = daily_limit * (1 - safety / 100)
-                eff_total = total_limit * (1 - safety / 100)
-                daily_dd = (day_start_eq - equity) / day_start_eq * 100 if day_start_eq > 0 else 0
-                total_dd = (prop_initial - equity) / prop_initial * 100 if prop_initial > 0 else 0
-                if daily_dd >= eff_daily or total_dd >= eff_total:
+                prop_initial = float(s.get("prop_initial_balance", balance) or balance)
+                safety = float(s.get("prop_safety_margin_pct", 20.0)) / 100.0
+
+                # (1) GUARDIAN SHIELD — perte FLOTTANTE des positions ouvertes.
+                # On ferme NOUS-MÊMES, avec marge, AVANT que la prop ne déclenche son shield
+                # (chez BlueGuardian, un déclenchement = soft breach → split 50 %, et 2e = compte résilié).
+                gs_pct = float(s.get("prop_guardian_shield_pct", 0.0) or 0.0)
+                if gs_pct > 0:
+                    try:
+                        positions = await metaapi_client.get_positions()
+                        floating = sum(
+                            float(p.get("unrealizedProfit", p.get("profit", 0)) or 0)
+                            for p in positions if int(p.get("magic", 0)) == magic)
+                    except MetaApiConnectionError:
+                        floating = 0.0
+                    gs_limit = prop_initial * gs_pct / 100.0     # ex. 1% de 25000 = 250 $
+                    gs_trigger = gs_limit * (1 - safety)         # ferme à 0,8% = 200 $
+                    if floating <= -gs_trigger:
+                        await _close_all_bot_positions(
+                            magic,
+                            reason=(f"Guardian Shield préventif : perte flottante {floating:.0f}$ "
+                                    f"≥ seuil sécurité {gs_trigger:.0f}$ (limite prop {gs_limit:.0f}$)"))
+                        continue  # soft : on ne stoppe pas le bot, on protège juste la position
+
+                # (2) PERTE JOURNALIÈRE — repère = plus haut solde/équité au reset (17h EST).
+                daily_room = prop_initial * float(s.get("prop_daily_dd_pct", 3.0)) / 100.0
+                day_ref = float(state.get("day_start_ref") or day_start_eq or equity)
+                daily_loss = day_ref - equity
+                if daily_loss >= daily_room * (1 - safety):
                     await auto_stop("drawdown",
-                        f"Prop firm : {daily_dd:.1f}% jour / {total_dd:.1f}% total")
+                        f"Prop : perte du jour {daily_loss:.0f}$ approche la limite "
+                        f"{daily_room:.0f}$ ({s.get('prop_daily_dd_pct')}% de {prop_initial:.0f}$).")
+                    break
+
+                # (3) DRAWDOWN MAX — trailing (sur high watermark) ou statique.
+                total_room = prop_initial * float(s.get("prop_total_dd_pct", 6.0)) / 100.0
+                hwm = float(state.get("prop_hwm_balance") or prop_initial)
+                if s.get("prop_trailing_dd"):
+                    lock_at = prop_initial * (1 + float(s.get("prop_trailing_lock_profit_pct", 6.0)) / 100.0)
+                    floor = prop_initial if hwm >= lock_at else (hwm - total_room)
+                else:
+                    floor = prop_initial - total_room
+                if equity <= floor + total_room * safety:
+                    await auto_stop("drawdown",
+                        f"Prop : équité {equity:.0f}$ approche le drawdown max "
+                        f"(plancher {floor:.0f}$, marge sécurité incluse).")
                     break
             else:
                 max_dd = float(s.get("max_drawdown_pct", 3.0))
@@ -416,7 +475,18 @@ async def _bot_trading_loop() -> None:
 
             # ── Execute trade ──
             try:
-                lot = calc_lot_size(balance, float(s.get("risk_per_trade_pct", 1.0)),
+                risk_pct = float(s.get("risk_per_trade_pct", 1.0))
+                # Sur compte prop avec Guardian Shield : on plafonne le risque par trade SOUS
+                # le seuil shield (avec marge) pour qu'un SL ne puisse jamais le déclencher.
+                if s.get("prop_firm_enabled"):
+                    gs_pct = float(s.get("prop_guardian_shield_pct", 0.0) or 0.0)
+                    if gs_pct > 0:
+                        risk_cap = gs_pct * (1 - float(s.get("prop_safety_margin_pct", 20.0)) / 100.0)
+                        if risk_pct > risk_cap:
+                            logger.info("Risque plafonné %.2f%% → %.2f%% (Guardian Shield).",
+                                        risk_pct, risk_cap)
+                            risk_pct = risk_cap
+                lot = calc_lot_size(balance, risk_pct,
                                     float(sig["entry"]), float(sig["sl"]),
                                     max_lot=float(s.get("max_lot_per_trade", 10.0)))
                 order = await metaapi_client.place_order(

@@ -94,3 +94,5 @@ backend/_compare*
 backend/_confirm*
 backend/_old_*.py
 backend/_m1_cache_*.json
+backend/_income*
+backend/_pd_test*
