@@ -96,3 +96,10 @@ backend/_old_*.py
 backend/_m1_cache_*.json
 backend/_income*
 backend/_pd_test*
+backend/_backtest*
+backend/_trailing*
+backend/_symbol_monthly*
+backend/_monthly_results_*
+backend/_normalize_risk*
+backend/_stdout_*
+backend/_norm_out*

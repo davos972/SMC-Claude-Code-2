@@ -233,14 +233,31 @@ async def get_candles(symbol: str, timeframe: str = "M5", limit: int = 200) -> D
         return {"configured": True, "data": [], "error": f"{type(e).__name__}: {e}"}
 
 
+@api.get("/symbol/spec")
+async def get_symbol_spec(symbol: str = "XAUUSD") -> Dict[str, Any]:
+    """Per-symbol contract specs (point size, contract size) read live from MetaApi.
+    Used by the UI to display what the backtest/lot calc will apply for a symbol."""
+    if not metaapi_client.is_configured():
+        return {"configured": False}
+    try:
+        spec = await metaapi_client.get_symbol_spec(symbol)
+    except MetaApiConnectionError as e:
+        return {"configured": True, "error": str(e)}
+    except Exception as e:
+        logger.exception("get_symbol_spec failed")
+        return {"configured": True, "error": f"{type(e).__name__}: {e}"}
+    return {"configured": True, "symbol": symbol, **spec}
+
+
 @api.get("/symbol/spread")
 async def get_symbol_spread(symbol: str = "XAUUSD") -> Dict[str, Any]:
     """Live spread (ask − bid) from the connected broker account, used as a realistic
-    default for the backtest 'spread moyen simulé'. 1 point = 0,01 for XAUUSD."""
+    default for the backtest 'spread moyen simulé'. Points = prix / tickSize du symbole."""
     if not metaapi_client.is_configured():
         return {"configured": False}
     try:
         price = await metaapi_client.get_symbol_price(symbol)
+        spec = await metaapi_client.get_symbol_spec(symbol)
     except MetaApiConnectionError as e:
         return {"configured": True, "error": str(e)}
     except Exception as e:
@@ -249,10 +266,12 @@ async def get_symbol_spread(symbol: str = "XAUUSD") -> Dict[str, Any]:
     bid = float(price.get("bid", 0) or 0)
     ask = float(price.get("ask", 0) or 0)
     spread_price = max(0.0, ask - bid)
+    point_size = float(spec.get("point_size", 0.01)) or 0.01
     return {
         "configured": True, "symbol": symbol, "bid": bid, "ask": ask,
         "spread_price": round(spread_price, 3),
-        "spread_points": round(spread_price / 0.01, 1),
+        "spread_points": round(spread_price / point_size, 1),
+        "point_size": point_size,
     }
 
 
@@ -651,6 +670,16 @@ async def _execute_backtest(bt_id: str, req: Dict[str, Any]) -> None:
         await _fail_backtest(bt_id, "Aucune bougie M1 récupérée pour la plage demandée.")
         return
 
+    # Spécifications du symbole (taille du point + du contrat) pour un spread et
+    # un P&L corrects par symbole. Lues en live via MetaApi (or=0.01/100, indices=…).
+    try:
+        spec = await metaapi_client.get_symbol_spec(req["symbol"])
+        point_size = float(spec.get("point_size", 0.01))
+        contract_size = float(spec.get("contract_size", 100.0))
+    except Exception as e:
+        logger.warning("get_symbol_spec(%s) échec backtest, défauts XAUUSD: %s", req["symbol"], e)
+        point_size, contract_size = 0.01, 100.0
+
     await on_status(f"Replay SMC sur {len(candles)} bougies M1…", 0.0)
 
     async def on_progress(pct: float) -> None:
@@ -660,7 +689,8 @@ async def _execute_backtest(bt_id: str, req: Dict[str, Any]) -> None:
             cur["progress_label"] = f"Replay SMC… {pct:.0f}%"
             await store.save_backtest(cur)
 
-    result = await bt_engine.run_backtest(req, candles, on_progress=on_progress, settings=s)
+    result = await bt_engine.run_backtest(req, candles, on_progress=on_progress, settings=s,
+                                          point_size=point_size, contract_size=contract_size)
 
     bt = await store.get_backtest(bt_id) or bt
     bt["status"] = "done"

@@ -20,6 +20,20 @@ class MetaApiConnectionError(Exception):
     """Raised when MetaApi connection fails."""
 
 
+# Secours UNIQUEMENT si MetaApi est indisponible. Les vraies valeurs sont lues
+# en live via get_symbol_specification (tickSize / contractSize) et écrasent
+# celles-ci. Spécifications statiques du broker, sans danger comme défaut.
+# point_size = taille d'1 point (tickSize) ; contract_size = unités par lot.
+_SYMBOL_SPEC_FALLBACK: Dict[str, Dict[str, Any]] = {
+    "XAUUSD": {"point_size": 0.01, "contract_size": 100.0, "digits": 2},
+    "US30":   {"point_size": 0.1,  "contract_size": 1.0,   "digits": 1},
+    "USTECH": {"point_size": 0.1,  "contract_size": 1.0,   "digits": 1},
+    "US500":  {"point_size": 0.1,  "contract_size": 1.0,   "digits": 1},
+    "GER40":  {"point_size": 0.1,  "contract_size": 1.0,   "digits": 1},
+    "_DEFAULT": {"point_size": 0.01, "contract_size": 100.0, "digits": 2},
+}
+
+
 class MetaApiWrapper:
     """Async wrapper around metaapi-cloud-sdk for the lifetime of the bot."""
 
@@ -33,6 +47,7 @@ class MetaApiWrapper:
         self._connected: bool = False
         self._deploying: bool = False
         self._connect_lock = asyncio.Lock()
+        self._spec_cache: Dict[str, Dict[str, Any]] = {}
 
     def is_configured(self) -> bool:
         return bool(self._token and self._account_id)
@@ -120,6 +135,40 @@ class MetaApiWrapper:
         await self._connect()
         price = await self._connection.get_symbol_price(symbol)
         return price
+
+    async def get_symbol_spec(self, symbol: str) -> Dict[str, Any]:
+        """Per-symbol contract specs needed for lot sizing and backtest P&L.
+
+        Returns {point_size, contract_size, digits}. Source of truth = MetaApi
+        ``get_symbol_specification`` (tickSize / contractSize), cached for the
+        lifetime of the process (these never change intraday). Falls back to a
+        small hardcoded table ONLY if MetaApi is unavailable — we never invent
+        prices, but contract specs are static broker metadata, safe to default.
+        """
+        sym = (symbol or "").upper()
+        if sym in self._spec_cache:
+            return self._spec_cache[sym]
+        spec: Optional[Dict[str, Any]] = None
+        try:
+            await self._connect()
+            raw = await self._connection.get_symbol_specification(symbol)
+            tick = float(raw.get("tickSize") or 0) or None
+            contract = float(raw.get("contractSize") or 0) or None
+            if tick and contract:
+                digits = raw.get("digits")
+                if digits is None:
+                    # derive digits from tick size (0.01 -> 2, 0.1 -> 1, 1 -> 0)
+                    import math
+                    digits = max(0, int(round(-math.log10(tick)))) if tick < 1 else 0
+                spec = {"point_size": tick, "contract_size": contract,
+                        "digits": int(digits), "source": "metaapi"}
+        except Exception as e:
+            logger.warning("get_symbol_spec(%s) MetaApi failed, using fallback: %s", symbol, e)
+        if spec is None:
+            spec = dict(_SYMBOL_SPEC_FALLBACK.get(sym, _SYMBOL_SPEC_FALLBACK["_DEFAULT"]))
+            spec["source"] = "fallback"
+        self._spec_cache[sym] = spec
+        return spec
 
     @staticmethod
     def _normalize_timeframe(tf: str) -> str:

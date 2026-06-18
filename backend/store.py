@@ -52,6 +52,29 @@ async def add_signal(sig: Dict[str, Any]) -> None:
     await db.signals.insert_one(sig)
 
 
+async def add_or_merge_signal(sig: Dict[str, Any]) -> None:
+    """Journalise un rejet en REGROUPANT les répétitions : si le dernier signal du
+    symbole est un rejet de MÊME raison, on incrémente son compteur et on met à jour
+    l'heure de fin, au lieu d'insérer une nouvelle ligne identique chaque minute."""
+    db = get_db()
+    last = await db.signals.find_one({"symbol": sig.get("symbol")}, sort=[("time", -1)])
+    # On fusionne sur la CLÉ normalisée (reason_key) — ex. toutes les variantes
+    # "RR x < min 2.0" partagent la même clé → une seule ligne.
+    same = (last and last.get("status") == "rejected"
+            and last.get("reason_key", last.get("reason")) == sig.get("reason_key", sig.get("reason")))
+    if same:
+        await db.signals.update_one(
+            {"id": last["id"]},
+            # On met aussi à jour la raison affichée (dernier RR vu, par ex.).
+            {"$inc": {"count": 1},
+             "$set": {"last_time": sig.get("time"), "reason": sig.get("reason")}},
+        )
+        return
+    sig.setdefault("count", 1)
+    sig.setdefault("last_time", sig.get("time"))
+    await db.signals.insert_one(sig)
+
+
 async def list_signals(limit: int = 100) -> List[Dict[str, Any]]:
     db = get_db()
     cur = db.signals.find({}, {"_id": 0}).sort("time", -1).limit(limit)

@@ -337,6 +337,15 @@ def dealing_range(swings: List[Swing], events: List[StructureEvent]) -> Optional
 
 # ---------------- analysis pipeline ----------------
 
+# Rejets « prix mal placé » (pas dans la POI / mauvaise zone premium-discount) = bruit,
+# pas un vrai quasi-setup. Doit correspondre EXACTEMENT aux textes de _build_signal.
+_OUT_OF_ZONE_REASONS = {
+    "Prix hors zone discount",
+    "Prix hors zone premium",
+    "Prix hors de l'order block POI",
+}
+
+
 def _build_signal(direction, candles_entry, last_close, last_idx, poi, pd_struct,
                   swings_target, sweeps_entry, events_entry, fvgs_entry,
                   min_rr, recent_window, require_fvg, require_sequence, require_pd=True):
@@ -440,10 +449,14 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
         "premium_discount": None,
         "signal": None,
         "reject_reason": None,
+        # Stade atteint avant le rejet : insufficient | no_bias | no_poi | entry.
+        # Seul "entry" = vrai quasi-setup (POI trouvée, entrée tentée puis échouée).
+        "reject_stage": None,
     }
     min_len = fractal_n * 2 + 5
     if len(candles_bias) < min_len or len(candles_struct) < min_len or len(candles_entry) < min_len:
         out["reject_reason"] = "Insufficient candles"
+        out["reject_stage"] = "insufficient"
         return out
 
     # --- Tier 1: BIAS (HTF) — direction only ---
@@ -476,6 +489,7 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
 
     if not bias or not pd_struct:
         out["reject_reason"] = "Pas de biais HTF ou pas de range défini"
+        out["reject_stage"] = "no_bias"
         return out
 
     # POI: order block on the structure tier, in the bias direction, optionally unmitigated only.
@@ -486,6 +500,7 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
         out["reject_reason"] = ("Aucun order block non mitigé dans le sens du biais"
                                 if require_unmitigated
                                 else "Aucun order block dans le sens du biais")
+        out["reject_stage"] = "no_poi"
         return out
     poi = poi_obs[-1]
 
@@ -504,6 +519,9 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
     )
     if sig is None:
         out["reject_reason"] = reason
+        # near_miss = prix bien placé (dans la POI + bonne zone) mais déclencheur/RR
+        # manquant = vrai quasi-setup à journaliser. out_of_zone = prix mal placé = bruit.
+        out["reject_stage"] = "out_of_zone" if reason in _OUT_OF_ZONE_REASONS else "near_miss"
     else:
         out["signal"] = asdict(sig)
     return out

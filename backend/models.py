@@ -133,6 +133,10 @@ class Signal(BaseModel):
     tp: Optional[float] = None
     time: str
     session: Optional[str] = None  # london | newyork | unknown
+    count: int = 1                 # nb de rejets identiques regroupés sous cette ligne
+    last_time: Optional[str] = None  # heure du dernier rejet identique (plage horaire)
+    reject_stage: Optional[str] = None  # insufficient | no_bias | no_poi | out_of_zone | near_miss
+    reason_key: Optional[str] = None    # raison normalisée (nombres neutralisés) pour le regroupement
 
 
 # ---------- Notifications ----------

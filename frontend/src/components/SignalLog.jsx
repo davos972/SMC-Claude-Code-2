@@ -63,12 +63,21 @@ export default function SignalLog({ signals }) {
                     <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-semibold text-text-primary">{titleForStatus(s.status, s.side)}</span>
+                            {s.count > 1 && (
+                                <span className="text-[11px] font-bold px-2 py-0.5 rounded-full border border-bd text-text-secondary num">
+                                    ×{s.count}
+                                </span>
+                            )}
                             {s.rr && (
                                 <span className="text-[11px] font-bold px-2 py-0.5 rounded-full border border-green/40 text-green num">
                                     RR 1:{s.rr.toFixed(1).replace(".", ",")}
                                 </span>
                             )}
-                            <span className="text-xs text-text-secondary num ml-auto">{fmtTime(s.time)}</span>
+                            <span className="text-xs text-text-secondary num ml-auto">
+                                {s.count > 1 && s.last_time
+                                    ? `${fmtTime(s.time)} → ${fmtTime(s.last_time)}`
+                                    : fmtTime(s.time)}
+                            </span>
                         </div>
                         <div className="text-sm text-text-secondary mt-1 leading-snug">
                             {s.reason}

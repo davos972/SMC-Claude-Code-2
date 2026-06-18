@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
@@ -461,7 +462,17 @@ async def _bot_trading_loop() -> None:
             }
 
             if not sig:
-                await store.add_signal(rec)
+                # On ne journalise QUE les vrais quasi-setups (stade "near_miss" : prix
+                # DANS la POI + bonne zone, seul le déclencheur/RR manquait). Les minutes
+                # "pas de biais / pas de POI / prix mal placé" sont du bruit (la cause des
+                # centaines de lignes/jour) → ignorées. Les rejets de même nature
+                # consécutifs sont regroupés (compteur) au lieu d'être dupliqués chaque min.
+                if result.get("reject_stage") == "near_miss":
+                    rec["reject_stage"] = "near_miss"
+                    # Clé de regroupement : on neutralise les nombres (ex. "RR 1.85 < min 2.0")
+                    # pour que toutes les variantes RR fusionnent en une seule ligne.
+                    rec["reason_key"] = re.sub(r"[-+]?[0-9]*\.?[0-9]+", "N", rec["reason"] or "")
+                    await store.add_or_merge_signal(rec)
                 continue
 
             # ── Signal-only mode ──
@@ -486,8 +497,18 @@ async def _bot_trading_loop() -> None:
                             logger.info("Risque plafonné %.2f%% → %.2f%% (Guardian Shield).",
                                         risk_pct, risk_cap)
                             risk_pct = risk_cap
+                # Taille de contrat RÉELLE du symbole (100 oz pour l'or, 1 pour
+                # les indices) — indispensable pour que le risque % soit correct
+                # sur autre chose que XAUUSD. Lue en live via MetaApi (cache).
+                try:
+                    spec = await metaapi_client.get_symbol_spec(symbol)
+                    contract_size = float(spec.get("contract_size", 100.0))
+                except Exception as e:
+                    logger.warning("get_symbol_spec(%s) échec, contrat=100 par défaut: %s", symbol, e)
+                    contract_size = 100.0
                 lot = calc_lot_size(balance, risk_pct,
                                     float(sig["entry"]), float(sig["sl"]),
+                                    contract_size=contract_size,
                                     max_lot=float(s.get("max_lot_per_trade", 10.0)))
                 order = await metaapi_client.place_order(
                     symbol=symbol, side=sig["side"], volume=lot,
