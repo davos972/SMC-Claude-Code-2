@@ -77,13 +77,18 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     require_unmitigated = bool(settings.get("require_unmitigated_ob", True))
     require_pd = bool(settings.get("require_premium_discount", True))
     # Trailing / break-even (expérimental, OFF par défaut = aucun changement vs baseline).
+    # N'affecte QUE le backtest : le bot live n'applique jamais le trailing.
+    # Priorité à la requête (réglé par run depuis l'UI Backtest), sinon settings (scripts), sinon défaut.
+    def _tparam(key, default):
+        v = req.get(key)
+        return v if v is not None else settings.get(key, default)
     # mode: "off" | "breakeven" | "r_trail" | "structure"
     trailing = {
-        "mode": str(settings.get("trailing_mode", "off")),
-        "trigger_r": float(settings.get("trailing_trigger_r", 1.0)),
-        "distance_r": float(settings.get("trailing_distance_r", 1.0)),
-        "lookback": int(settings.get("trailing_lookback", 5)),
-        "buffer": float(settings.get("trailing_buffer", 0.0)),
+        "mode": str(_tparam("trailing_mode", "off")),
+        "trigger_r": float(_tparam("trailing_trigger_r", 1.0)),
+        "distance_r": float(_tparam("trailing_distance_r", 1.0)),
+        "lookback": int(_tparam("trailing_lookback", 5)),
+        "buffer": float(_tparam("trailing_buffer", 0.0)),
     }
     spread_points = float(req.get("spread_points", 25))
     spread_price = spread_points * point_size  # 1 point = tickSize du symbole

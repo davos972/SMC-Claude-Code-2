@@ -592,6 +592,12 @@ class BacktestPayload(BaseModel):
     end_date: str
     mode: str = "intraday"
     spread_points: float = 25.0
+    # Trailing stop — BACKTEST UNIQUEMENT (le bot live ne l'applique jamais). Optionnel.
+    trailing_mode: Optional[str] = None  # off | breakeven | r_trail | structure
+    trailing_trigger_r: Optional[float] = None
+    trailing_distance_r: Optional[float] = None
+    trailing_lookback: Optional[int] = None
+    trailing_buffer: Optional[float] = None
 
 
 BACKTEST_GLOBAL_TIMEOUT_SECONDS = 15 * 60  # 15 minutes

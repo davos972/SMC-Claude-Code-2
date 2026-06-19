@@ -347,11 +347,34 @@ export default function Settings({ settings, refresh }) {
                     testid="settings-propfirm" />
                 {local.prop_firm_enabled && (
                     <div className="space-y-3 animate-fade-in">
+                        <div className="text-xs text-text-secondary -mt-1">
+                            Défauts calés sur BlueGuardian Instant. Le bot s&apos;arrête AVANT les limites
+                            réelles (marge de sécurité). Garde-fous appliqués en live : Guardian Shield et drawdowns.
+                        </div>
                         <NumberField label="Solde initial" value={local.prop_initial_balance} onChange={(v) => setAndSaveDebounced("prop_initial_balance", v)} step={100} testid="settings-prop-balance" />
+                        <NumberField label="Guardian Shield (%)"
+                            hint="Perte flottante max des positions ouvertes. Le bot ferme tout AVANT ce seuil."
+                            value={local.prop_guardian_shield_pct} onChange={(v) => setAndSaveDebounced("prop_guardian_shield_pct", v)} step={0.1} testid="settings-prop-guardian" />
                         <NumberField label="Drawdown jour max (%)" value={local.prop_daily_dd_pct} onChange={(v) => setAndSaveDebounced("prop_daily_dd_pct", v)} step={0.1} testid="settings-prop-dd-day" />
                         <NumberField label="Drawdown total max (%)" value={local.prop_total_dd_pct} onChange={(v) => setAndSaveDebounced("prop_total_dd_pct", v)} step={0.1} testid="settings-prop-dd-total" />
+                        <Toggle label="Drawdown total glissant (trailing)"
+                            description="Le plancher de perte suit le plus haut solde atteint (sinon fixe au solde initial)."
+                            value={local.prop_trailing_dd}
+                            onChange={(v) => setAndSave("prop_trailing_dd", v)}
+                            testid="settings-prop-trailing-dd" />
+                        {local.prop_trailing_dd && (
+                            <NumberField label="Verrou du plancher après profit (%)"
+                                hint="Une fois ce profit atteint, le plancher se verrouille au solde initial."
+                                value={local.prop_trailing_lock_profit_pct} onChange={(v) => setAndSaveDebounced("prop_trailing_lock_profit_pct", v)} step={0.5} testid="settings-prop-lock" />
+                        )}
+                        <NumberField label="Heure de reset journalier (EST)"
+                            hint="Heure à laquelle le compteur de perte du jour repart à zéro (BlueGuardian : 17h EST)."
+                            value={local.prop_daily_reset_hour_est} onChange={(v) => setAndSaveDebounced("prop_daily_reset_hour_est", v)} step={1} testid="settings-prop-reset-hour" />
                         <NumberField label="Marge de sécurité (%)" value={local.prop_safety_margin_pct} onChange={(v) => setAndSaveDebounced("prop_safety_margin_pct", v)} step={1} testid="settings-prop-margin" />
                         <NumberField label="Objectif de profit (%)" value={local.prop_profit_target_pct} onChange={(v) => setAndSaveDebounced("prop_profit_target_pct", v)} step={0.5} testid="settings-prop-target" />
+                        <NumberField label="Cohérence (%)"
+                            hint="Indicatif (non bloquant) : un jour ne doit pas dépasser ce % du profit total pour le retrait."
+                            value={local.prop_consistency_pct} onChange={(v) => setAndSaveDebounced("prop_consistency_pct", v)} step={1} testid="settings-prop-consistency" />
                     </div>
                 )}
             </Section>
@@ -411,7 +434,7 @@ function Field({ label, children }) {
     );
 }
 
-function NumberField({ label, value, onChange, step, testid }) {
+function NumberField({ label, value, onChange, step, testid, hint }) {
     return (
         <Field label={label}>
             <input
@@ -422,6 +445,7 @@ function NumberField({ label, value, onChange, step, testid }) {
                 className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
                 data-testid={testid}
             />
+            {hint && <div className="text-xs text-text-secondary mt-1">{hint}</div>}
         </Field>
     );
 }

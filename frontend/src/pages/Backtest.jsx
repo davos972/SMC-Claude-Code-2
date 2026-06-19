@@ -23,6 +23,12 @@ export default function Backtest({ settings }) {
     const [selectedTrade, setSelectedTrade] = useState(null);
     const [tradeChart, setTradeChart] = useState({ loading: false, candles: [], analysis: null, error: null });
     const [liveSpread, setLiveSpread] = useState(null); // real broker spread (AXI) via MetaApi
+    // Trailing stop — ce backtest uniquement (le bot live ne l'applique jamais).
+    const [trailingMode, setTrailingMode] = useState("off");
+    const [trailingTriggerR, setTrailingTriggerR] = useState(1.0);
+    const [trailingDistanceR, setTrailingDistanceR] = useState(1.0);
+    const [trailingLookback, setTrailingLookback] = useState(5);
+    const [trailingBuffer, setTrailingBuffer] = useState(0.0);
 
     useEffect(() => {
         endpoints.listBacktests().then(({ data }) => setHistory(data || []))
@@ -64,6 +70,11 @@ export default function Backtest({ settings }) {
                 end_date: to,
                 mode,
                 spread_points: Number(spread),
+                trailing_mode: trailingMode,
+                trailing_trigger_r: Number(trailingTriggerR),
+                trailing_distance_r: Number(trailingDistanceR),
+                trailing_lookback: Number(trailingLookback),
+                trailing_buffer: Number(trailingBuffer),
             });
             setCurrent({ ...data, progress: 0, status: "pending", trades: [], metrics: {}, equity_curve: [] });
             setPolling(true);
@@ -162,6 +173,37 @@ export default function Backtest({ settings }) {
                     ) : (
                         <div className="text-xs text-text-secondary mt-1.5">
                             Compté une fois par trade (coût aller-retour). Mets une moyenne un peu plus haute que le spread calme pour intégrer news/ouvertures.
+                        </div>
+                    )}
+                </div>
+
+                <div>
+                    <label className="text-[10px] uppercase tracking-widest text-text-secondary font-bold">
+                        Trailing stop (ce backtest uniquement)
+                    </label>
+                    <select value={trailingMode} onChange={(e) => setTrailingMode(e.target.value)}
+                        className="num w-full mt-1 bg-bg border border-bd rounded-xl px-3 py-3 text-sm focus:border-gold focus:outline-none"
+                        data-testid="backtest-trailing-mode">
+                        <option value="off">Désactivé</option>
+                        <option value="breakeven">Break-even (SL ramené au prix d&apos;entrée)</option>
+                        <option value="r_trail">Trailing par R (verrouille le profit)</option>
+                        <option value="structure">Trailing structurel (suit les bougies)</option>
+                    </select>
+                    <div className="text-xs text-text-secondary mt-1.5">
+                        N&apos;affecte que ce backtest, jamais le bot en live. Réduit surtout le drawdown.
+                    </div>
+                    {trailingMode !== "off" && (
+                        <div className="grid grid-cols-2 gap-3 mt-3">
+                            <TInput label="Déclenche à (R)" value={trailingTriggerR} onChange={setTrailingTriggerR} step="0.1" testid="backtest-trailing-trigger" />
+                            {trailingMode === "r_trail" && (
+                                <TInput label="Distance (R)" value={trailingDistanceR} onChange={setTrailingDistanceR} step="0.1" testid="backtest-trailing-distance" />
+                            )}
+                            {trailingMode === "structure" && (
+                                <TInput label="Lookback (bougies)" value={trailingLookback} onChange={setTrailingLookback} step="1" testid="backtest-trailing-lookback" />
+                            )}
+                            {(trailingMode === "breakeven" || trailingMode === "structure") && (
+                                <TInput label="Buffer (prix)" value={trailingBuffer} onChange={setTrailingBuffer} step="0.01" testid="backtest-trailing-buffer" />
+                            )}
                         </div>
                     )}
                 </div>
@@ -366,6 +408,17 @@ function Results({ bt, onSelectTrade }) {
                 </div>
             </div>
         </>
+    );
+}
+
+function TInput({ label, value, onChange, step, testid }) {
+    return (
+        <div>
+            <label className="text-[10px] uppercase tracking-widest text-text-secondary font-bold">{label}</label>
+            <input type="number" value={value} step={step} onChange={(e) => onChange(e.target.value)}
+                className="num w-full mt-1 bg-bg border border-bd rounded-xl px-3 py-2.5 text-sm focus:border-gold focus:outline-none"
+                data-testid={testid} />
+        </div>
     );
 }
 
