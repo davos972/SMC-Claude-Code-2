@@ -121,20 +121,44 @@ class MetaApiWrapper:
                 logger.exception("MetaApi connection failed")
                 raise MetaApiConnectionError(str(e)) from e
 
-    async def get_account_information(self) -> Dict[str, Any]:
+    def _mark_disconnected(self) -> None:
+        """Marque la connexion comme perdue → le prochain appel forcera une reconnexion."""
+        self._connected = False
+        self._connection = None
+
+    async def _rpc_read(self, method: str, *args, timeout: float = 20.0, _retry: bool = True) -> Any:
+        """Appel RPC en LECTURE avec délai d'expiration + auto-réparation.
+
+        Cas typique : connexion « zombie » (drapeau connecté mais flux MetaApi
+        mort) → l'appel resterait figé indéfiniment. Ici on borne par un timeout ;
+        en cas d'expiration/échec on réinitialise la connexion et on retente UNE
+        fois. Réservé aux LECTURES — jamais aux ordres, pour ne pas risquer un
+        doublon. Échec définitif → MetaApiConnectionError (intercepté par les
+        endpoints / la boucle bot) au lieu de rester bloqué."""
         await self._connect()
-        info = await self._connection.get_account_information()
-        return info
+        try:
+            fn = getattr(self._connection, method)
+            return await asyncio.wait_for(fn(*args), timeout=timeout)
+        except MetaApiNotConfiguredError:
+            raise
+        except Exception as e:
+            self._mark_disconnected()
+            if _retry:
+                logger.warning("RPC %s en échec (%s) — reconnexion puis nouvelle tentative.",
+                               method, type(e).__name__)
+                return await self._rpc_read(method, *args, timeout=timeout, _retry=False)
+            self._last_error = f"{method}: {e}"
+            logger.warning("RPC %s toujours en échec après reconnexion: %s", method, e)
+            raise MetaApiConnectionError(self._last_error) from e
+
+    async def get_account_information(self) -> Dict[str, Any]:
+        return await self._rpc_read("get_account_information")
 
     async def get_positions(self) -> List[Dict[str, Any]]:
-        await self._connect()
-        positions = await self._connection.get_positions()
-        return positions
+        return await self._rpc_read("get_positions") or []
 
     async def get_symbol_price(self, symbol: str) -> Dict[str, Any]:
-        await self._connect()
-        price = await self._connection.get_symbol_price(symbol)
-        return price
+        return await self._rpc_read("get_symbol_price", symbol)
 
     async def get_symbol_spec(self, symbol: str) -> Dict[str, Any]:
         """Per-symbol contract specs needed for lot sizing and backtest P&L.
@@ -150,8 +174,7 @@ class MetaApiWrapper:
             return self._spec_cache[sym]
         spec: Optional[Dict[str, Any]] = None
         try:
-            await self._connect()
-            raw = await self._connection.get_symbol_specification(symbol)
+            raw = await self._rpc_read("get_symbol_specification", symbol)
             tick = float(raw.get("tickSize") or 0) or None
             contract = float(raw.get("contractSize") or 0) or None
             if tick and contract:
@@ -188,26 +211,46 @@ class MetaApiWrapper:
         """Fetch historical candles via REST endpoint exposed by SDK."""
         await self._connect()
         tf = self._normalize_timeframe(timeframe)
-        candles = await self._account.get_historical_candles(symbol, tf, start_time, limit)
+        try:
+            candles = await asyncio.wait_for(
+                self._account.get_historical_candles(symbol, tf, start_time, limit),
+                timeout=90.0,
+            )
+        except Exception as e:
+            self._mark_disconnected()
+            self._last_error = f"get_candles: {e}"
+            raise MetaApiConnectionError(self._last_error) from e
         return candles or []
 
     async def place_order(self, symbol: str, side: str, volume: float, sl: float, tp: float,
                            magic: int = 990077, comment: str = "GFSMC") -> Dict[str, Any]:
         await self._connect()
         opts = {"magic": magic, "comment": comment}
-        if side == "buy":
-            return await self._connection.create_market_buy_order(
-                symbol=symbol, volume=volume, stop_loss=sl, take_profit=tp, options=opts,
-            )
-        if side == "sell":
-            return await self._connection.create_market_sell_order(
-                symbol=symbol, volume=volume, stop_loss=sl, take_profit=tp, options=opts,
-            )
+        # Timeout SANS nouvelle tentative : un ordre peut avoir été placé même si
+        # la réponse tarde → ne JAMAIS retenter automatiquement (risque de doublon).
+        try:
+            if side == "buy":
+                return await asyncio.wait_for(self._connection.create_market_buy_order(
+                    symbol=symbol, volume=volume, stop_loss=sl, take_profit=tp, options=opts,
+                ), timeout=30.0)
+            if side == "sell":
+                return await asyncio.wait_for(self._connection.create_market_sell_order(
+                    symbol=symbol, volume=volume, stop_loss=sl, take_profit=tp, options=opts,
+                ), timeout=30.0)
+        except asyncio.TimeoutError as e:
+            self._mark_disconnected()
+            self._last_error = "place_order: timeout"
+            raise MetaApiConnectionError(self._last_error) from e
         raise ValueError("side must be 'buy' or 'sell'")
 
     async def close_position(self, position_id: str) -> Dict[str, Any]:
         await self._connect()
-        return await self._connection.close_position(position_id)
+        try:
+            return await asyncio.wait_for(self._connection.close_position(position_id), timeout=30.0)
+        except asyncio.TimeoutError as e:
+            self._mark_disconnected()
+            self._last_error = "close_position: timeout"
+            raise MetaApiConnectionError(self._last_error) from e
 
     async def get_deals_by_position(self, position_id: str) -> List[Dict[str, Any]]:
         """Broker deal history for one position — used to read the REAL realized P&L
@@ -215,10 +258,9 @@ class MetaApiWrapper:
         the global account equity delta (which is wrong as soon as several positions
         are open at once). Returns [] if the SDK/connection has no such history."""
         await self._connect()
-        getter = getattr(self._connection, "get_deals_by_position", None)
-        if getter is None:
+        if getattr(self._connection, "get_deals_by_position", None) is None:
             return []
-        result = await getter(position_id)
+        result = await self._rpc_read("get_deals_by_position", position_id)
         if isinstance(result, dict):
             return result.get("deals", []) or []
         return result or []
