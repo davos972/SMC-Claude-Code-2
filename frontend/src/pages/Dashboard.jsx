@@ -95,10 +95,18 @@ export default function Dashboard({ botState, settings, refresh }) {
 
     useEffect(() => {
         loadData();
-        loadCandles(timeframe);
         const t = setInterval(loadData, 5000);
         return () => clearInterval(t);
-    }, [loadData, loadCandles, timeframe]);
+    }, [loadData]);
+
+    // Candles: initial load + periodic refresh so the chart advances in (near) real time.
+    // Re-fetched every 10s; the chart redraws without snapping the view (panning/zoom preserved,
+    // see SMCChart lastStepRef guard) so new/forming candles appear as the market moves.
+    useEffect(() => {
+        loadCandles(timeframe);
+        const t = setInterval(() => loadCandles(timeframe), 10000);
+        return () => clearInterval(t);
+    }, [loadCandles, timeframe]);
 
     // Auto-run the SMC analysis on arrival and refresh it every 20s.
     useEffect(() => {
