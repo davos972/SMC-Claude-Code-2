@@ -24,7 +24,7 @@ const toUnixTime = (t) => (typeof t === "number" ? t : Math.floor(new Date(t).ge
  *  - BOS / CHoCH : blue dashed horizontal line from origin swing to break candle, with label.
  *  - Mitigated/filled zones are kept at very low opacity so they remain visible historically.
  */
-export default function SMCChart({ candles, analysis, height = 320, errorMessage }) {
+export default function SMCChart({ candles, analysis, price, height = 320, errorMessage }) {
     const containerRef = useRef(null);
     const chartRef = useRef(null);
     const seriesRef = useRef(null);
@@ -312,6 +312,27 @@ export default function SMCChart({ candles, analysis, height = 320, errorMessage
         // Defer overlay compute until after the chart settles its layout
         requestAnimationFrame(recomputeOverlay);
     }, [candles, analysis, recomputeOverlay]);
+
+    // Live price → grow the current (last) candle in real time. MetaApi only returns CLOSED
+    // candles, so between candle refreshes we extend the last bar's close/high/low from the live
+    // bid so the user sees the price moving. series.update() with the same time updates the bar
+    // (no new bar). When loadCandles brings a fresh closed candle, this effect rebases on it.
+    useEffect(() => {
+        const series = seriesRef.current;
+        if (!series || !price || !candles || candles.length === 0) return;
+        const live = Number(price.bid ?? price.ask);
+        if (!live || Number.isNaN(live)) return;
+        const last = candles[candles.length - 1];
+        try {
+            series.update({
+                time: toUnixTime(last.time),
+                open: Number(last.open),
+                high: Math.max(Number(last.high), live),
+                low: Math.min(Number(last.low), live),
+                close: live,
+            });
+        } catch (e) { /* time older than last bar — ignore */ }
+    }, [price, candles]);
 
     const showError = errorMessage || (!candles || candles.length === 0);
 

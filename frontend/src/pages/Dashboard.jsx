@@ -35,14 +35,13 @@ export default function Dashboard({ botState, settings, refresh }) {
 
     const loadData = useCallback(async () => {
         try {
-            const [acc, pos, pr, sig, nw] = await Promise.all([
-                endpoints.account(), endpoints.positions(), endpoints.price(symbol),
+            const [acc, pos, sig, nw] = await Promise.all([
+                endpoints.account(), endpoints.positions(),
                 endpoints.signals(20), endpoints.news("USD"),
             ]);
             setAccount(acc.data?.data || null);
             setConfigured(acc.data?.configured !== false);
             setPositions(pos.data?.data || []);
-            setPrice(pr.data?.data || null);
             setSignals(sig.data || []);
             setNews(nw.data || { events: [], pause: null });
         } catch (err) {
@@ -107,6 +106,21 @@ export default function Dashboard({ botState, settings, refresh }) {
         const t = setInterval(() => loadCandles(timeframe), 10000);
         return () => clearInterval(t);
     }, [loadCandles, timeframe]);
+
+    // Live price on its own fast loop (every 3s) so the current candle grows visibly between
+    // candle refreshes. MetaApi only returns closed candles, so the live bid drives the movement.
+    const loadPrice = useCallback(async () => {
+        try {
+            const { data } = await endpoints.price(symbol);
+            if (data?.data) setPrice(data.data);
+        } catch (err) { /* keep last known price */ }
+    }, [symbol]);
+
+    useEffect(() => {
+        loadPrice();
+        const t = setInterval(loadPrice, 3000);
+        return () => clearInterval(t);
+    }, [loadPrice]);
 
     // Auto-run the SMC analysis on arrival and refresh it every 20s.
     useEffect(() => {
@@ -225,7 +239,7 @@ export default function Dashboard({ botState, settings, refresh }) {
                         />
                     </div>
                 </div>
-                <SMCChart candles={candles} analysis={analysis} errorMessage={chartError} />
+                <SMCChart candles={candles} analysis={analysis} price={price} errorMessage={chartError} />
                 <div className="flex items-center justify-center gap-2 text-xs text-text-secondary" data-testid="analysis-status">
                     <span className={`w-1.5 h-1.5 rounded-full ${analyzedAt ? "bg-green animate-pulse" : "bg-text-secondary"}`} />
                     {analysis?.bias && (
