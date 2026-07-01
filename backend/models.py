@@ -66,6 +66,13 @@ DEFAULT_SETTINGS = {
     "recent_window": 6,          # LTF candles within which a sweep/CHoCH must occur
     "max_lot_per_trade": 10.0,   # hard cap on computed lot size (anti over-leverage)
 
+    # Trailing stop — MÊME logique live (bot_loop) + backtest. OFF par défaut.
+    "trailing_mode": "off",        # off | breakeven | r_trail | structure
+    "trailing_trigger_r": 1.0,     # profit (en R) à partir duquel le trailing s'active
+    "trailing_distance_r": 1.0,    # r_trail : distance verrouillée sous la meilleure excursion
+    "trailing_lookback": 5,        # structure : nb de bougies suivies
+    "trailing_buffer": 0.0,        # marge (prix) ajoutée sous/sur le niveau
+
     # Sessions (local times)
     "session_london_start": "08:00",
     "session_london_end": "11:00",

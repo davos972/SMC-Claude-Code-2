@@ -324,62 +324,71 @@ def _check_exit(trade: Dict[str, Any], c: Dict[str, Any], spread_price: float,
     equity_curve.append({"time": _to_iso(c["time"]), "equity": last_eq})
 
 
-def _update_trailing(trade: Dict[str, Any], c: Dict[str, Any],
-                     ltf_window: List[Dict[str, Any]], params: Dict[str, Any]) -> None:
-    """Resserre le SL d'un trade ouvert (jamais l'inverse). Appelé APRÈS la
-    vérification de sortie, donc le nouveau SL ne s'applique qu'aux bougies
-    suivantes (pas de triche intra-bougie). Modifie trade['sl'] en place.
+def compute_trailing_sl(side: str, entry: float, current_sl: float, R: float, max_fav: float,
+                        cur_high: float, cur_low: float, cur_close: float,
+                        recent_lows: List[float], recent_highs: List[float],
+                        params: Dict[str, Any]):
+    """Logique UNIQUE de trailing partagée live (bot_loop) + backtest.
 
+    Retourne (new_sl | None, new_max_fav). new_sl n'est renvoyé que s'il RESSERRE le SL
+    (jamais l'inverse) et reste du bon côté du prix courant.
     Modes :
-      - breakeven : à +trigger_r, SL → entrée (+buffer) = trade « gratuit »
+      - breakeven : à +trigger_r, SL → entrée (±buffer) = trade « gratuit »
       - r_trail   : à partir de +trigger_r, SL verrouille (excursion − distance_r)·R
-      - structure : à partir de +trigger_r, SL suit le plus bas/haut des
-                    `lookback` dernières bougies (−/+ buffer)
+      - structure : à partir de +trigger_r, SL suit le plus bas/haut des `lookback`
+                    dernières bougies (∓ buffer)
     """
-    side = trade["side"]
-    entry = trade["entry"]
-    R = trade.get("_R", 0.0)
     if R <= 0:
-        return
+        return None, max_fav
     mode = params["mode"]
     trigger = params["trigger_r"]
     buf = params["buffer"]
 
     if side == "buy":
-        trade["_max_fav"] = max(trade["_max_fav"], c["high"])
-        prof_r = (trade["_max_fav"] - entry) / R
-        if prof_r < trigger:
-            return
+        max_fav = max(max_fav, cur_high)
+        if (max_fav - entry) / R < trigger:
+            return None, max_fav
         if mode == "breakeven":
             cand = entry + buf
         elif mode == "r_trail":
-            cand = trade["_max_fav"] - params["distance_r"] * R
+            cand = max_fav - params["distance_r"] * R
         elif mode == "structure":
-            lows = [x["low"] for x in ltf_window[-params["lookback"]:]] or [c["low"]]
-            cand = min(lows) - buf
+            cand = (min(recent_lows) if recent_lows else cur_low) - buf
         else:
-            return
-        # On ne relâche jamais le SL, et il doit rester sous le prix courant.
-        new_sl = max(trade["sl"], cand)
-        if new_sl > trade["sl"] and new_sl < c["close"]:
-            trade["sl"] = new_sl
+            return None, max_fav
+        new_sl = max(current_sl, cand)
+        if new_sl > current_sl and new_sl < cur_close:
+            return new_sl, max_fav
+        return None, max_fav
     else:  # sell
-        trade["_max_fav"] = min(trade["_max_fav"], c["low"])
-        prof_r = (entry - trade["_max_fav"]) / R
-        if prof_r < trigger:
-            return
+        max_fav = min(max_fav, cur_low)
+        if (entry - max_fav) / R < trigger:
+            return None, max_fav
         if mode == "breakeven":
             cand = entry - buf
         elif mode == "r_trail":
-            cand = trade["_max_fav"] + params["distance_r"] * R
+            cand = max_fav + params["distance_r"] * R
         elif mode == "structure":
-            highs = [x["high"] for x in ltf_window[-params["lookback"]:]] or [c["high"]]
-            cand = max(highs) + buf
+            cand = (max(recent_highs) if recent_highs else cur_high) + buf
         else:
-            return
-        new_sl = min(trade["sl"], cand)
-        if new_sl < trade["sl"] and new_sl > c["close"]:
-            trade["sl"] = new_sl
+            return None, max_fav
+        new_sl = min(current_sl, cand)
+        if new_sl < current_sl and new_sl > cur_close:
+            return new_sl, max_fav
+        return None, max_fav
+
+
+def _update_trailing(trade: Dict[str, Any], c: Dict[str, Any],
+                     ltf_window: List[Dict[str, Any]], params: Dict[str, Any]) -> None:
+    """Backtest : resserre trade['sl'] via la logique commune. Appelé APRÈS _check_exit,
+    donc le nouveau SL ne s'applique qu'à la bougie suivante (pas de triche intra-bougie)."""
+    recent = ltf_window[-params["lookback"]:] if ltf_window else []
+    new_sl, trade["_max_fav"] = compute_trailing_sl(
+        trade["side"], trade["entry"], trade["sl"], trade.get("_R", 0.0), trade["_max_fav"],
+        c["high"], c["low"], c["close"],
+        [x["low"] for x in recent], [x["high"] for x in recent], params)
+    if new_sl is not None:
+        trade["sl"] = new_sl
 
 
 def _compute_metrics(trades: List[Dict[str, Any]], equity_curve: List[Dict[str, Any]]) -> Dict[str, Any]:

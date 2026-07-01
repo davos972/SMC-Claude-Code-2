@@ -252,6 +252,24 @@ class MetaApiWrapper:
             self._last_error = "close_position: timeout"
             raise MetaApiConnectionError(self._last_error) from e
 
+    async def modify_position(self, position_id: str, sl: float, tp: float) -> Dict[str, Any]:
+        """Modifie le SL/TP d'une position ouverte chez le broker (trailing stop live).
+        Timeout 30s, SANS retry (une modification est une écriture : un retry pourrait
+        entrer en conflit avec l'évolution du marché)."""
+        await self._connect()
+        try:
+            return await asyncio.wait_for(
+                self._connection.modify_position(position_id, stop_loss=sl, take_profit=tp),
+                timeout=30.0,
+            )
+        except asyncio.TimeoutError as e:
+            self._mark_disconnected()
+            self._last_error = "modify_position: timeout"
+            raise MetaApiConnectionError(self._last_error) from e
+        except Exception as e:
+            self._last_error = f"modify_position: {e}"
+            raise MetaApiConnectionError(self._last_error) from e
+
     async def get_deals_by_position(self, position_id: str) -> List[Dict[str, Any]]:
         """Broker deal history for one position — used to read the REAL realized P&L
         (profit + swap + commission) of a closed trade, instead of inferring it from

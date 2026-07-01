@@ -294,6 +294,48 @@ export default function Settings({ settings, refresh }) {
                 </div>
             </Section>
 
+            {/* Trailing stop */}
+            <Section title="Trailing stop">
+                <div className="text-xs text-text-secondary -mt-1">
+                    Resserre automatiquement le SL des trades en cours (modifié chez le broker). OFF par défaut.
+                    Mes backtests : n&apos;augmente pas le profit mais réduit le drawdown ; éviter « break-even seul ».
+                </div>
+                <Field label="Mode">
+                    <select
+                        value={local.trailing_mode || "off"}
+                        onChange={(e) => setAndSave("trailing_mode", e.target.value)}
+                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
+                        data-testid="settings-trailing-mode"
+                    >
+                        <option value="off">Désactivé</option>
+                        <option value="breakeven">Break-even (SL → entrée)</option>
+                        <option value="r_trail">R-trail (distance fixe)</option>
+                        <option value="structure">Structure (suit les bougies)</option>
+                    </select>
+                </Field>
+                {local.trailing_mode && local.trailing_mode !== "off" && (
+                    <>
+                        <NumberField label="Déclenchement (en R)" value={local.trailing_trigger_r}
+                            onChange={(v) => setAndSaveDebounced("trailing_trigger_r", v)} step="0.1"
+                            testid="settings-trailing-trigger"
+                            hint="Profit atteint (en multiples du risque) avant d'activer le trailing." />
+                        {local.trailing_mode === "r_trail" && (
+                            <NumberField label="Distance verrouillée (en R)" value={local.trailing_distance_r}
+                                onChange={(v) => setAndSaveDebounced("trailing_distance_r", v)} step="0.1"
+                                testid="settings-trailing-distance" />
+                        )}
+                        {local.trailing_mode === "structure" && (
+                            <NumberField label="Bougies suivies" value={local.trailing_lookback}
+                                onChange={(v) => setAndSaveDebounced("trailing_lookback", v)} step="1"
+                                testid="settings-trailing-lookback" />
+                        )}
+                        <NumberField label="Marge / buffer (en prix)" value={local.trailing_buffer}
+                            onChange={(v) => setAndSaveDebounced("trailing_buffer", v)} step="0.01"
+                            testid="settings-trailing-buffer" />
+                    </>
+                )}
+            </Section>
+
             {/* Sessions */}
             <Section title="Sessions de trading">
                 <div className="text-xs text-text-secondary -mt-1">

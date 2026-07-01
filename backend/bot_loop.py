@@ -18,6 +18,7 @@ import sessions as sess
 import store
 from metaapi_client import MetaApiConnectionError, metaapi_client
 from smc import analyze
+from backtest import compute_trailing_sl  # logique de trailing partagée live + backtest
 
 logger = logging.getLogger("goldflow.bot")
 
@@ -219,6 +220,58 @@ async def _check_closed_positions(current_equity: float, magic_number: int) -> N
         logger.warning("_check_closed_positions failed: %s", e)
 
 
+async def _apply_trailing(s: Dict, magic_number: int) -> None:
+    """Trailing stop LIVE : resserre le SL des positions du bot CHEZ LE BROKER.
+    Même logique que le backtest (compute_trailing_sl). Tourne à chaque tour (~30 s),
+    y compris hors session (les positions restent gérées 24 h). OFF par défaut."""
+    mode = s.get("trailing_mode", "off")
+    if mode == "off" or not _open_positions:
+        return
+    params = {
+        "mode": mode,
+        "trigger_r": float(s.get("trailing_trigger_r", 1.0)),
+        "distance_r": float(s.get("trailing_distance_r", 1.0)),
+        "lookback": int(s.get("trailing_lookback", 5)),
+        "buffer": float(s.get("trailing_buffer", 0.0)),
+    }
+    ltf = (s.get("scalping_ltf", "M1") if s.get("trading_mode") == "scalping"
+           else s.get("intraday_ltf", "M5"))
+    try:
+        positions = await metaapi_client.get_positions()
+    except MetaApiConnectionError as e:
+        logger.warning("Trailing: lecture positions échouée: %s", e)
+        return
+    for p in positions:
+        if int(p.get("magic", 0)) != magic_number:
+            continue
+        pid = str(p.get("id", ""))
+        tr = _open_positions.get(pid)
+        if not tr or tr.get("R", 0) <= 0:
+            continue
+        try:
+            candles = await metaapi_client.get_candles(tr["symbol"], ltf, None,
+                                                       max(params["lookback"] + 2, 5))
+        except MetaApiConnectionError as e:
+            logger.warning("Trailing: bougies %s indisponibles: %s", tr["symbol"], e)
+            continue
+        if not candles:
+            continue
+        last = candles[-1]
+        recent = candles[-params["lookback"]:]
+        new_sl, tr["max_fav"] = compute_trailing_sl(
+            tr["side"], tr["entry"], tr["sl"], tr["R"], tr["max_fav"],
+            float(last["high"]), float(last["low"]), float(last["close"]),
+            [float(c["low"]) for c in recent], [float(c["high"]) for c in recent], params)
+        if new_sl is None:
+            continue
+        try:
+            await metaapi_client.modify_position(pid, new_sl, tr["tp"])
+            logger.info("Trailing %s: SL %.5f -> %.5f (pos %s)", mode, tr["sl"], new_sl, pid)
+            tr["sl"] = new_sl
+        except MetaApiConnectionError as e:
+            logger.warning("Trailing: modify_position(%s) échec: %s", pid, e)
+
+
 async def _bot_trading_loop() -> None:
     """Main loop: every 30 s, check for new candle close and run analysis."""
     logger.info("Trading loop started.")
@@ -278,6 +331,9 @@ async def _bot_trading_loop() -> None:
             # ── Check for position closes (update consec_losses) ──
             await _check_closed_positions(equity, magic)
             state = await store.get_bot_state()  # reload after update
+
+            # ── Trailing stop live : gère les positions ouvertes du bot (même hors session) ──
+            await _apply_trailing(s, magic)
 
             # ── Session check ──
             session_info = sess.is_in_session(now, s)
@@ -541,6 +597,12 @@ async def _bot_trading_loop() -> None:
                         "equity_at_open": equity,
                         "symbol": symbol,
                         "side": sig["side"],
+                        # Suivi pour le trailing stop live (SL modifié chez le broker).
+                        "entry": float(sig["entry"]),
+                        "sl": float(sig["sl"]),
+                        "tp": float(sig["tp"]),
+                        "R": abs(float(sig["entry"]) - float(sig["sl"])),
+                        "max_fav": float(sig["entry"]),
                     }
                 else:
                     logger.error("Ordre placé sans identifiant de position exploitable — "
