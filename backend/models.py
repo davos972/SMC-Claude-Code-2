@@ -51,6 +51,10 @@ DEFAULT_SETTINGS = {
     "require_sweep_then_choch": False, # confluence séquence sweep→CHoCH (OFF par défaut)
     "require_unmitigated_ob": False,   # OB POI non invalidé (OFF par défaut)
 
+    # Journal — mode diagnostic : journalise AUSSI les rejets précoces (pas de biais / pas de POI /
+    # hors zone), regroupés. OFF par défaut (sinon spam). Sert à comprendre les setups écartés.
+    "verbose_journal": False,
+
     # Risk
     "risk_per_trade_pct": 1.0,
     "min_rr": 2.0,

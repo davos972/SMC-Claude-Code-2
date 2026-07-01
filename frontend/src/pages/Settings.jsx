@@ -269,6 +269,13 @@ export default function Settings({ settings, refresh }) {
                     onChange={(v) => setAndSave("require_unmitigated_ob", v)}
                     testid="settings-require-unmitigated"
                 />
+                <Toggle
+                    label="Journal diagnostic (voir tous les rejets)"
+                    description="Journalise aussi les setups écartés tôt (pas de biais, pas de POI, hors zone), regroupés. À activer ponctuellement pour comprendre pourquoi des setups sont ignorés — laisse OFF en temps normal."
+                    value={local.verbose_journal}
+                    onChange={(v) => setAndSave("verbose_journal", v)}
+                    testid="settings-verbose-journal"
+                />
                 <div className="text-[10px] uppercase font-bold tracking-widest text-text-secondary pt-1">
                     Intraday — biais / structure / entrée
                 </div>

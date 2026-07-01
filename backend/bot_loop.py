@@ -462,16 +462,18 @@ async def _bot_trading_loop() -> None:
             }
 
             if not sig:
-                # On ne journalise QUE les vrais quasi-setups (stade "near_miss" : prix
-                # DANS la POI + bonne zone, seul le déclencheur/RR manquait). Les minutes
+                # En temps normal on ne journalise QUE les vrais quasi-setups (stade "near_miss" :
+                # prix DANS la POI + bonne zone, seul le déclencheur/RR manquait). Les minutes
                 # "pas de biais / pas de POI / prix mal placé" sont du bruit (la cause des
-                # centaines de lignes/jour) → ignorées. Les rejets de même nature
-                # consécutifs sont regroupés (compteur) au lieu d'être dupliqués chaque min.
-                if result.get("reject_stage") == "near_miss":
-                    rec["reject_stage"] = "near_miss"
-                    # Clé de regroupement : on neutralise les nombres (ex. "RR 1.85 < min 2.0")
-                    # pour que toutes les variantes RR fusionnent en une seule ligne.
-                    rec["reason_key"] = re.sub(r"[-+]?[0-9]*\.?[0-9]+", "N", rec["reason"] or "")
+                # centaines de lignes/jour) → ignorées. Le mode DIAGNOSTIC (verbose_journal)
+                # journalise AUSSI ces rejets précoces pour comprendre pourquoi des setups sont
+                # écartés. Dans les deux cas, les rejets de même nature consécutifs sont regroupés.
+                stage = result.get("reject_stage")
+                if stage == "near_miss" or (s.get("verbose_journal", False) and stage):
+                    rec["reject_stage"] = stage
+                    # Clé de regroupement : stade + raison aux nombres neutralisés (ex.
+                    # "RR 1.85 < min 2.0" → "RR N < min N") pour fusionner les variantes.
+                    rec["reason_key"] = f"{stage}|" + re.sub(r"[-+]?[0-9]*\.?[0-9]+", "N", rec["reason"] or "")
                     await store.add_or_merge_signal(rec)
                 continue
 

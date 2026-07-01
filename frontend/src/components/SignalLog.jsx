@@ -35,6 +35,15 @@ const iconForStatus = (s, side) => {
     );
 };
 
+// Libellés courts des stades de rejet (mode journal diagnostic).
+const STAGE_LABELS = {
+    no_bias: "Pas de biais",
+    no_poi: "Pas de POI",
+    out_of_zone: "Hors zone",
+    near_miss: "Quasi-setup",
+    insufficient: "Données insuff.",
+};
+
 const titleForStatus = (s, side) => {
     if (s === "executed") return side === "buy" ? "BUY exécuté" : "SELL exécuté";
     if (s === "accepted") return side === "buy" ? "Signal BUY" : "Signal SELL";
@@ -66,6 +75,11 @@ export default function SignalLog({ signals }) {
                             {s.count > 1 && (
                                 <span className="text-[11px] font-bold px-2 py-0.5 rounded-full border border-bd text-text-secondary num">
                                     ×{s.count}
+                                </span>
+                            )}
+                            {s.status === "rejected" && s.reject_stage && STAGE_LABELS[s.reject_stage] && (
+                                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full border border-bd text-text-secondary">
+                                    {STAGE_LABELS[s.reject_stage]}
                                 </span>
                             )}
                             {s.rr && (
