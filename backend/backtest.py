@@ -5,7 +5,7 @@ import asyncio
 import bisect
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from smc import analyze
@@ -55,6 +55,53 @@ def _parse_dt(t: Any) -> Optional[datetime]:
         return None
 
 
+def _bt_day_key(dt: datetime, settings: Dict[str, Any]) -> str:
+    """Cle du jour de trading — miroir de bot_loop._trading_day_key (reset 17h EST en prop, sinon UTC)."""
+    if settings.get("prop_firm_enabled") and settings.get("prop_daily_reset_hour_est") is not None:
+        reset_h = int(settings.get("prop_daily_reset_hour_est", 17))
+        ny = dt.astimezone(sess.NEWYORK)
+        d = ny.date()
+        if ny.hour >= reset_h:
+            d = d + timedelta(days=1)
+        return d.isoformat()
+    return dt.date().isoformat()
+
+
+def _bt_calc_lot(balance: float, risk_pct: float, entry: float, sl: float,
+                 contract_size: float, max_lot: float) -> float:
+    """Taille de lot au risque % — miroir de bot_loop.calc_lot_size (dimensionnement et
+    drawdown comparables au live)."""
+    risk_dollars = balance * (risk_pct / 100.0)
+    sl_distance = abs(entry - sl)
+    if sl_distance <= 0:
+        return 0.01
+    lot = risk_dollars / (sl_distance * contract_size)
+    return max(0.01, min(max_lot, round(lot * 100) / 100))
+
+
+def _register_close(rm: Dict[str, Any], closed_trade: Dict[str, Any], open_trade: Dict[str, Any],
+                    equity: float, max_consec: int, max_dd_pct: float,
+                    cdt: Optional[datetime], sinfo: Dict[str, Any], settings: Dict[str, Any]) -> None:
+    """A la fermeture d'un trade, met a jour pertes consecutives + drawdown jour et declenche
+    l'arret auto comme bot_loop (break-even = +/-0.1% ne compte pas comme perte)."""
+    be_threshold = open_trade.get("_equity_at_open", equity) * 0.001
+    delta = closed_trade.get("pnl", 0.0)  # deja en $
+    if delta >= -be_threshold:
+        rm["consec"] = 0
+    else:
+        rm["consec"] += 1
+    stop = rm["consec"] >= max_consec
+    if not stop:
+        dse = rm.get("day_start_equity") or equity
+        dd = (dse - equity) / dse * 100 if dse > 0 else 0
+        stop = dd >= max_dd_pct
+    if stop:
+        rm["stopped"] = True
+        day_key = _bt_day_key(cdt, settings) if cdt else rm["day"]
+        rm["stop_day"] = day_key
+        rm["stop_session"] = f"{day_key}|{sinfo.get('session')}"
+
+
 async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
                         on_progress=None, settings: Optional[Dict[str, Any]] = None,
                         point_size: float = 0.01, contract_size: float = 100.0) -> Dict[str, Any]:
@@ -93,6 +140,15 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     spread_points = float(req.get("spread_points", 25))
     spread_price = spread_points * point_size  # 1 point = tickSize du symbole
 
+    # Risque & limites du bot live — pour que le backtest reflete le NOMBRE de trades reel
+    # et un dimensionnement/drawdown comparables au live (lus depuis les Reglages).
+    risk_pct = float(settings.get("risk_per_trade_pct", 1.0))
+    max_lot = float(settings.get("max_lot_per_trade", 10.0))
+    max_trades_per_day = int(settings.get("max_trades_per_day", 5))
+    max_consec = int(settings.get("max_consec_losses", 3))
+    max_dd_pct = float(settings.get("max_drawdown_pct", 3.0))
+    resume_policy = settings.get("resume_policy", "next_session")
+
     if not candles_m1:
         return {"trades": [], "metrics": {}, "equity_curve": []}
 
@@ -115,6 +171,12 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     htf_times = [h["time"] for h in htf_candles]
     mtf_times = [h["time"] for h in mtf_candles]
 
+    # Etat des limites de risque (simule l'arret jour / pertes consecutives / drawdown du live).
+    rm: Dict[str, Any] = {
+        "day": None, "trades_today": 0, "consec": 0, "day_start_equity": equity,
+        "stopped": False, "stop_day": None, "stop_session": None,
+    }
+
     open_trade: Optional[Dict[str, Any]] = None
     step = max(1, len(ltf_candles) // 100)
 
@@ -128,6 +190,8 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
 
         c = ltf_candles[i]
         cur_time = c["time"]
+        cdt = _parse_dt(cur_time)
+        sinfo = sess.is_in_session(cdt, settings) if cdt is not None else {"in_session": False, "session": None}
         hk = bisect.bisect_right(htf_times, cur_time)
         mk = bisect.bisect_right(mtf_times, cur_time)
         htf_window = htf_candles[max(0, hk - 100):hk]
@@ -140,6 +204,9 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
             _check_exit(open_trade, c, spread_price, trades, equity_curve, contract_size)
             if open_trade.get("_closed"):
                 equity = equity_curve[-1]["equity"]
+                # MAJ des limites (pertes consécutives + drawdown) comme le bot live.
+                _register_close(rm, trades[-1], open_trade, equity,
+                                max_consec, max_dd_pct, cdt, sinfo, settings)
                 open_trade = None
             elif trailing["mode"] != "off":
                 # Sortie non déclenchée avec le SL courant : on resserre le SL
@@ -151,8 +218,27 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
 
         # Sessions: comme le bot live, on n'OUVRE de position que pendant Londres/NY.
         # (Les positions déjà ouvertes, elles, sont gérées 24h via SL/TP ci-dessus.)
-        cdt = _parse_dt(cur_time)
-        if cdt is not None and not sess.is_in_session(cdt, settings)["in_session"]:
+        if not sinfo["in_session"]:
+            continue
+
+        # ── Limites du bot live : reset quotidien, reprise après arrêt auto, plafonds ──
+        day_key = _bt_day_key(cdt, settings)
+        if day_key != rm["day"]:
+            rm["day"] = day_key
+            rm["trades_today"] = 0
+            rm["day_start_equity"] = equity
+        if rm["stopped"]:
+            if resume_policy == "next_day":
+                resumed = day_key != rm["stop_day"]
+            else:  # next_session : on reprend à la prochaine session distincte
+                resumed = f"{day_key}|{sinfo['session']}" != rm["stop_session"]
+            if not resumed:
+                continue
+            rm["stopped"] = False
+            rm["consec"] = 0
+            rm["trades_today"] = 0
+            rm["day_start_equity"] = equity
+        if rm["trades_today"] >= max_trades_per_day:
             continue
 
         result = analyze(htf_window, mtf_window, ltf_window, fractal_n=fractal_n, min_rr=min_rr,
@@ -162,6 +248,8 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         sig = result.get("signal")
         if sig:
             entry_price = sig["entry"] + (spread_price if sig["side"] == "buy" else -spread_price)
+            # Dimensionnement au risque % comme le live (et non plus 1 lot fixe).
+            lot = _bt_calc_lot(equity, risk_pct, entry_price, float(sig["sl"]), contract_size, max_lot)
             open_trade = {
                 "id": str(uuid.uuid4()),
                 "side": sig["side"],
@@ -170,6 +258,7 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
                 "sl": sig["sl"],
                 "tp": sig["tp"],
                 "rr": sig["rr"],
+                "lot": lot,
                 "reason": sig["reason"],
                 "exit_time": "",
                 "exit_price": 0.0,
@@ -178,7 +267,9 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
                 # Suivi pour le trailing (préfixe _ → retiré du trade exporté).
                 "_R": abs(entry_price - float(sig["sl"])),  # distance de risque = 1R
                 "_max_fav": entry_price,                     # meilleure excursion favorable
+                "_equity_at_open": equity,
             }
+            rm["trades_today"] += 1
 
     # Close any trade still open at the end of the period at the last candle's
     # close — otherwise it is silently omitted from the metrics (biasing winrate).
@@ -187,13 +278,14 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         side = open_trade["side"]
         exit_price = last_c["close"]
         # Spread already paid once via the worse entry fill — do not subtract again.
-        pnl = (exit_price - open_trade["entry"]) if side == "buy" else (open_trade["entry"] - exit_price)
-        result = "win" if pnl > 0 else ("loss" if pnl < 0 else "be")
+        pnl_price = (exit_price - open_trade["entry"]) if side == "buy" else (open_trade["entry"] - exit_price)
+        result = "win" if pnl_price > 0 else ("loss" if pnl_price < 0 else "be")
+        pnl_money = pnl_price * contract_size * open_trade.get("lot", 1.0)
         open_trade.update(exit_time=_to_iso(last_c["time"]), exit_price=exit_price,
-                          pnl=pnl, result=result, _closed=True)
+                          pnl=pnl_money, result=result, _closed=True)
         trades.append({k: v for k, v in open_trade.items() if not k.startswith("_")})
         equity_curve.append({"time": _to_iso(last_c["time"]),
-                             "equity": equity_curve[-1]["equity"] + pnl * contract_size})
+                             "equity": equity_curve[-1]["equity"] + pnl_money})
 
     if on_progress:
         try:
@@ -219,14 +311,16 @@ def _check_exit(trade: Dict[str, Any], c: Dict[str, Any], spread_price: float,
     exit_price = sl if hit_sl else tp
     # Spread is already paid once via the worse entry fill (entry_price adjusted at open),
     # which models the full round-trip cost — do NOT subtract it again here (double-counting).
-    pnl = (exit_price - entry) if side == "buy" else (entry - exit_price)
+    pnl_price = (exit_price - entry) if side == "buy" else (entry - exit_price)
     # Classer par le SIGNE du P&L (pas par le niveau touché) : avec un trailing,
     # un SL remonté au-dessus de l'entrée donne un SL touché... GAGNANT.
     eps = trade.get("_R", 0.0) * 1e-6
-    result = "win" if pnl > eps else ("loss" if pnl < -eps else "be")
-    trade.update(exit_time=_to_iso(c["time"]), exit_price=exit_price, pnl=pnl, result=result, _closed=True)
+    result = "win" if pnl_price > eps else ("loss" if pnl_price < -eps else "be")
+    # P&L en $ pondéré par la taille de lot (risque %), comme le live.
+    pnl_money = pnl_price * contract_size * trade.get("lot", 1.0)
+    trade.update(exit_time=_to_iso(c["time"]), exit_price=exit_price, pnl=pnl_money, result=result, _closed=True)
     trades.append({k: v for k, v in trade.items() if not k.startswith("_")})
-    last_eq = equity_curve[-1]["equity"] + pnl * contract_size
+    last_eq = equity_curve[-1]["equity"] + pnl_money
     equity_curve.append({"time": _to_iso(c["time"]), "equity": last_eq})
 
 
