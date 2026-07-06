@@ -73,6 +73,22 @@ async def _on_startup() -> None:
     except Exception:
         logger.exception("Orphan backtest recovery failed")
 
+    # Auto-reprise du bot après un redémarrage du serveur (déploiement Render
+    # OU redémarrage spontané de la plateforme). Sans ceci, la boucle de trading
+    # ne redémarre jamais alors que la base indique toujours running=true : le
+    # bot affiche « en marche » mais ne trade plus, sans alerte. On relance la
+    # boucle dès que l'état persisté dit qu'elle doit tourner ET que MetaApi est
+    # configuré. La boucle tolère une connexion MetaApi encore indisponible (elle
+    # se reconnecte toute seule au tour suivant).
+    try:
+        bstate = await store.get_bot_state()
+        if bstate.get("running") and metaapi_client.is_configured():
+            bot_loop.start(day_start_equity=float(bstate.get("day_start_equity", 0) or 0))
+            logger.info("Bot en marche détecté au démarrage — boucle de trading "
+                        "relancée automatiquement.")
+    except Exception:
+        logger.exception("Auto-reprise du bot au démarrage échouée")
+
 
 @app.on_event("shutdown")
 async def _on_shutdown() -> None:
