@@ -81,7 +81,9 @@ export default function Header({ botState, settings }) {
     const st = statusMap[status] || statusMap.stopped;
 
     return (
-        <header className="sticky top-0 z-40 bg-bg/95 backdrop-blur-md border-b border-bd" data-testid="app-header">
+        <header className="sticky top-0 z-40 bg-bg/95 backdrop-blur-md border-b border-bd"
+                style={{ paddingTop: "env(safe-area-inset-top)" }}
+                data-testid="app-header">
             <div className="px-4 py-3 flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3 min-w-0">
                     <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-gold to-amber-700 flex items-center justify-center text-bg font-bold shadow-glow-gold flex-shrink-0">

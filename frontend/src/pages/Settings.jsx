@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { toast } from "sonner";
-import { Lock, AlertTriangle, Save, Plug, CheckCircle2, Loader2 } from "lucide-react";
+import { Lock, AlertTriangle, Save, Plug, CheckCircle2, Loader2, Globe } from "lucide-react";
 import SegmentedControl from "../components/SegmentedControl";
-import { endpoints } from "../api/client";
+import { endpoints, getBackendUrl, setBackendUrl } from "../api/client";
 
 const TRADING_MODE_OPTIONS = [
     { value: "intraday", label: "Intraday (H1 → M5)" },
@@ -27,6 +27,7 @@ export default function Settings({ settings, refresh }) {
     const [connectionStatus, setConnectionStatus] = useState(null);
     const [mtStatus, setMtStatus] = useState(null);
     const [loadTimedOut, setLoadTimedOut] = useState(false);
+    const [backendUrl, setBackendUrlLocal] = useState(getBackendUrl());
     const initialized = useRef(false);
     const debounceTimers = useRef({});
 
@@ -157,6 +158,32 @@ export default function Settings({ settings, refresh }) {
 
     return (
         <div className="space-y-4 animate-fade-in" data-testid="settings-page">
+            {/* Backend server URL (per-device override, used by the mobile app) */}
+            <Section title="Serveur" icon={<Globe className="w-4 h-4" />}>
+                <Field label="URL du serveur backend">
+                    <input
+                        type="url"
+                        value={backendUrl}
+                        onChange={(e) => setBackendUrlLocal(e.target.value)}
+                        placeholder="ex. https://goldflow-backend.onrender.com"
+                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-3 focus:border-gold focus:outline-none"
+                        data-testid="settings-backend-url"
+                    />
+                </Field>
+                <div className="text-xs text-text-secondary">
+                    Adresse du backend que cette application utilise (mémorisée sur cet appareil).
+                    Changer d&apos;adresse recharge l&apos;application.
+                </div>
+                <button
+                    onClick={() => { setBackendUrl(backendUrl); window.location.reload(); }}
+                    className="w-full py-3 border border-bd rounded-xl text-text-primary hover:border-gold/50 transition-colors flex items-center justify-center gap-2"
+                    data-testid="settings-backend-url-apply"
+                >
+                    <Save className="w-4 h-4" />
+                    <span className="text-sm">Appliquer et recharger</span>
+                </button>
+            </Section>
+
             {/* MetaApi connection */}
             <Section title="Connexion MetaApi" icon={<Plug className="w-4 h-4" />}>
                 <MetaApiStatusBanner status={mtStatus} />

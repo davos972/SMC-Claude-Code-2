@@ -1,0 +1,52 @@
+# Compile l'APK Android GoldFlow SMC dans le cloud (aucun outil Android requis en local).
+# Déclenchement : manuel (bouton « Run workflow » sur GitHub) ou à chaque tag `apk-*`.
+# Résultat : fichier goldflow-smc.apk téléchargeable dans les « Artifacts » du run.
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "apk-*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: corepack yarn install --frozen-lockfile
+
+      - name: Build web app (pointed at the Render backend)
+        env:
+          REACT_APP_BACKEND_URL: https://goldflow-backend.onrender.com
+        run: corepack yarn build
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug
+        working-directory: frontend/android
+
+      - name: Rename APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk goldflow-smc.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goldflow-smc-apk
+          path: frontend/goldflow-smc.apk
+          retention-days: 30

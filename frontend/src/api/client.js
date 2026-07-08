@@ -1,6 +1,29 @@
 import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+// Backend URL resolution order:
+// 1. Override saved on this device (Réglages → « URL du serveur ») — lets the
+//    mobile APK or any browser point to another backend without rebuilding.
+// 2. Build-time env (REACT_APP_BACKEND_URL) — default for the web app.
+function resolveBackendUrl() {
+    try {
+        const stored = window.localStorage.getItem("goldflow_backend_url");
+        if (stored && stored.trim()) return stored.trim().replace(/\/+$/, "");
+    } catch { /* localStorage indisponible : on retombe sur l'env */ }
+    return (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
+}
+
+export function getBackendUrl() {
+    return resolveBackendUrl();
+}
+
+export function setBackendUrl(url) {
+    try {
+        if (url && url.trim()) window.localStorage.setItem("goldflow_backend_url", url.trim());
+        else window.localStorage.removeItem("goldflow_backend_url");
+    } catch { /* ignore */ }
+}
+
+const BACKEND_URL = resolveBackendUrl();
 export const API = `${BACKEND_URL}/api`;
 
 export const api = axios.create({

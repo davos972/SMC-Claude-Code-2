@@ -8,6 +8,8 @@ import Stats from "./pages/Stats";
 import Settings from "./pages/Settings";
 import { endpoints } from "./api/client";
 import { registerServiceWorker, requestPermission, sendPushNotification } from "./lib/pushNotifications";
+import { Capacitor } from "@capacitor/core";
+import { StatusBar, Style } from "@capacitor/status-bar";
 
 const TOASTER_OPTIONS = {
     style: { background: "#151B24", border: "1px solid #242E3D", color: "#E9ECF2" },
@@ -21,6 +23,14 @@ function App() {
     // Register service worker and request push notification permission
     useEffect(() => {
         registerServiceWorker().then(() => requestPermission());
+    }, []);
+
+    // Native app (APK): status bar in theme color, no overlap with the content
+    useEffect(() => {
+        if (!Capacitor.isNativePlatform()) return;
+        StatusBar.setOverlaysWebView({ overlay: false }).catch(() => {});
+        StatusBar.setBackgroundColor({ color: "#0D1117" }).catch(() => {});
+        StatusBar.setStyle({ style: Style.Dark }).catch(() => {});
     }, []);
 
     const refresh = useCallback(async () => {
