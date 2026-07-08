@@ -291,6 +291,24 @@ class MetaApiWrapper:
             pass
         self._connected = False
 
+    async def force_reconnect(self) -> None:
+        """Réinitialise complètement la connexion en gardant token/accountId.
+
+        Utilisé par le gardien de vivacité (bot_loop) quand la boucle est figée
+        sur une connexion coincée : on jette connexion/compte/API pour forcer un
+        ``_connect()`` neuf (redéploiement + resynchronisation) au prochain appel.
+        Volontairement SANS le verrou de connexion — appelé juste après
+        l'annulation de la boucle figée, il ne doit jamais rester bloqué."""
+        try:
+            if self._connection:
+                await asyncio.wait_for(self._connection.close(), timeout=10.0)
+        except Exception:
+            pass
+        self._connected = False
+        self._connection = None
+        self._account = None
+        self._api = None
+
 
 # Global singleton, configured at startup from DB
 metaapi_client = MetaApiWrapper()

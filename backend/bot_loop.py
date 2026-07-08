@@ -27,6 +27,9 @@ _resume_task: Optional[asyncio.Task] = None  # auto-resume watcher (tracked so i
 _last_candle_time: Dict[str, str] = {}  # "symbol:timeframe" -> last seen ISO time
 _open_positions: Dict[str, Dict] = {}   # position_id -> {equity_at_open, symbol, side}
 _news_outage_active: bool = False       # True while the news calendar is unreachable
+_watchdog_task: Optional[asyncio.Task] = None       # gardien de vivacité (tâche unique)
+_last_heartbeat: Optional[datetime] = None          # pouls : dernier tour de boucle réussi (lecture compte OK)
+_last_watchdog_notify: Optional[datetime] = None    # dernière notif du gardien (anti-spam)
 
 
 def calc_lot_size(balance: float, risk_pct: float, entry: float, sl: float,
@@ -274,6 +277,7 @@ async def _apply_trailing(s: Dict, magic_number: int) -> None:
 
 async def _bot_trading_loop() -> None:
     """Main loop: every 30 s, check for new candle close and run analysis."""
+    global _last_heartbeat
     logger.info("Trading loop started.")
     while True:
         await asyncio.sleep(30)
@@ -297,6 +301,8 @@ async def _bot_trading_loop() -> None:
                 account_info = await metaapi_client.get_account_information()
                 equity = float(account_info.get("equity", 0))
                 balance = float(account_info.get("balance", 0))
+                # Pouls du gardien : arriver ici prouve que la boucle tourne ET que MetaApi répond.
+                _last_heartbeat = datetime.now(timezone.utc)
             except MetaApiConnectionError as e:
                 logger.warning("Cannot get account info: %s", e)
                 continue
@@ -630,8 +636,9 @@ async def _bot_trading_loop() -> None:
 
 def start(day_start_equity: float = 0.0) -> None:
     """Start the trading loop. Call from bot_start() endpoint."""
-    global _bot_task, _open_positions
+    global _bot_task, _open_positions, _last_heartbeat
     _open_positions = {}
+    _last_heartbeat = datetime.now(timezone.utc)  # période de grâce avant le 1er pouls réel
     if _bot_task and not _bot_task.done():
         _bot_task.cancel()
     _bot_task = asyncio.create_task(_bot_trading_loop())
@@ -647,4 +654,79 @@ def stop() -> None:
     # Also cancel any pending auto-resume watcher so a manual stop stays stopped.
     if _resume_task and not _resume_task.done():
         _resume_task.cancel()
+
+
+# ─────────────────────────── Gardien de vivacité ───────────────────────────
+# Relance la boucle si elle cesse de « battre » — qu'elle soit morte OU vivante
+# mais bloquée sur une connexion MetaApi coincée (cas vécu 2026-07-08 : boucle
+# figée ~2 jours, current_day périmé, bot affiché « running » mais idle). Comble
+# le trou de l'auto-reprise au démarrage (qui, elle, ne couvre que le
+# redémarrage du serveur). Voir DECISIONS.md.
+_WATCHDOG_INTERVAL_S = 60      # fréquence de vérification du pouls
+_WATCHDOG_STALE_S = 300        # pouls périmé > 5 min = boucle figée (> reconnexion à froid ~4 min → pas de fausse alerte)
+_WATCHDOG_NOTIFY_GAP_S = 900   # anti-spam : au plus 1 notif / 15 min pendant une panne prolongée
+
+
+async def _watchdog_check_once(now: datetime, stale_after_s: int = _WATCHDOG_STALE_S) -> bool:
+    """Un tour de vérification du gardien. Renvoie True si la boucle a été relancée.
+
+    Ne relance QUE si le bot est censé tourner (running=true) ET que le pouls est
+    périmé. Un arrêt manuel (running=false) est donc respecté."""
+    global _last_watchdog_notify
+    state = await store.get_bot_state()
+    if not state.get("running"):
+        return False
+    hb = _last_heartbeat
+    if hb is not None and (now - hb).total_seconds() < stale_after_s:
+        return False  # pouls frais → rien à faire
+    age = (now - hb).total_seconds() if hb else -1
+    logger.warning("Gardien : boucle figée (pouls périmé, %.0fs) — reconnexion MetaApi + relance.", age)
+    # 1. Couper la boucle figée et attendre sa fin (libère tout verrou de connexion tenu).
+    old = _bot_task
+    if old is not None and not old.done():
+        old.cancel()
+        try:
+            await old
+        except (asyncio.CancelledError, Exception):
+            pass
+    # 2. Reconnexion MetaApi à neuf.
+    try:
+        await metaapi_client.force_reconnect()
+    except Exception:
+        logger.exception("Gardien : force_reconnect a échoué (relance de la boucle quand même).")
+    # 3. Relance de la boucle (réinitialise aussi le pouls → période de grâce).
+    start(day_start_equity=float(state.get("day_start_equity", 0) or 0))
+    if _last_watchdog_notify is None or (now - _last_watchdog_notify).total_seconds() >= _WATCHDOG_NOTIFY_GAP_S:
+        _last_watchdog_notify = now
+        await _notify("warning", "bot_resume", "Bot relancé automatiquement",
+                      "La boucle de trading était figée : reconnexion MetaApi et relance par le gardien.")
+    return True
+
+
+async def _liveness_watchdog() -> None:
+    logger.info("Gardien de vivacité démarré (seuil %ds, vérif toutes les %ds).",
+                _WATCHDOG_STALE_S, _WATCHDOG_INTERVAL_S)
+    while True:
+        await asyncio.sleep(_WATCHDOG_INTERVAL_S)
+        try:
+            await _watchdog_check_once(datetime.now(timezone.utc))
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Gardien : erreur inattendue (on continue).")
+
+
+def start_watchdog() -> None:
+    """Lance le gardien de vivacité (tâche unique). Appelé au démarrage du serveur."""
+    global _watchdog_task
+    if _watchdog_task and not _watchdog_task.done():
+        return
+    _watchdog_task = asyncio.create_task(_liveness_watchdog())
+
+
+def stop_watchdog() -> None:
+    global _watchdog_task
+    if _watchdog_task and not _watchdog_task.done():
+        _watchdog_task.cancel()
+    _watchdog_task = None
     _resume_task = None

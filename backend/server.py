@@ -89,6 +89,13 @@ async def _on_startup() -> None:
     except Exception:
         logger.exception("Auto-reprise du bot au démarrage échouée")
 
+    # Gardien de vivacité : relance la boucle si elle cesse de battre (morte OU
+    # bloquée sur une connexion MetaApi coincée), même sans redémarrage serveur.
+    try:
+        bot_loop.start_watchdog()
+    except Exception:
+        logger.exception("Démarrage du gardien de vivacité échoué")
+
 
 @app.on_event("shutdown")
 async def _on_shutdown() -> None:
