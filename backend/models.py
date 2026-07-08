@@ -148,6 +148,7 @@ class Signal(BaseModel):
     last_time: Optional[str] = None  # heure du dernier rejet identique (plage horaire)
     reject_stage: Optional[str] = None  # insufficient | no_bias | no_poi | out_of_zone | near_miss
     reason_key: Optional[str] = None    # raison normalisée (nombres neutralisés) pour le regroupement
+    bias: Optional[str] = None          # bullish | bearish — direction du setup (surtout utile sur les rejets)
 
 
 # ---------- Notifications ----------

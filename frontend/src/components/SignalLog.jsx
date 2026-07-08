@@ -77,6 +77,13 @@ export default function SignalLog({ signals }) {
                                     ×{s.count}
                                 </span>
                             )}
+                            {s.status === "rejected" && (s.bias === "bullish" || s.bias === "bearish") && (
+                                <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${
+                                    s.bias === "bullish" ? "border-green/40 text-green" : "border-red/40 text-red"
+                                }`}>
+                                    {s.bias === "bullish" ? "Haussier" : "Baissier"}
+                                </span>
+                            )}
                             {s.status === "rejected" && s.reject_stage && STAGE_LABELS[s.reject_stage] && (
                                 <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full border border-bd text-text-secondary">
                                     {STAGE_LABELS[s.reject_stage]}

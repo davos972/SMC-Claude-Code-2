@@ -513,6 +513,8 @@ async def _bot_trading_loop() -> None:
                 "symbol": symbol,
                 "timeframe": ltf,
                 "side": sig["side"] if sig else "buy",
+                # Direction du setup (biais HTF) — sert à afficher Haussier/Baissier même sur un rejet.
+                "bias": result.get("bias"),
                 "status": "rejected",
                 "reason": sig["reason"] if sig else reject_reason,
                 "rr": sig["rr"] if sig else None,
@@ -535,7 +537,9 @@ async def _bot_trading_loop() -> None:
                     rec["reject_stage"] = stage
                     # Clé de regroupement : stade + raison aux nombres neutralisés (ex.
                     # "RR 1.85 < min 2.0" → "RR N < min N") pour fusionner les variantes.
-                    rec["reason_key"] = f"{stage}|" + re.sub(r"[-+]?[0-9]*\.?[0-9]+", "N", rec["reason"] or "")
+                    # On inclut la direction dans la clé → les rejets haussiers et baissiers de même
+                    # raison forment deux groupes distincts, chacun affichant sa bonne direction.
+                    rec["reason_key"] = f"{stage}|{rec.get('bias')}|" + re.sub(r"[-+]?[0-9]*\.?[0-9]+", "N", rec["reason"] or "")
                     await store.add_or_merge_signal(rec)
                 continue
 
