@@ -28,6 +28,8 @@ jobs:
       - name: Build web app (pointed at the Render backend)
         env:
           REACT_APP_BACKEND_URL: https://goldflow-backend.onrender.com
+          # CRA transforme les warnings eslint en erreurs quand CI=true — on garde le comportement local
+          CI: "false"
         run: corepack yarn build
 
       - uses: actions/setup-java@v4
