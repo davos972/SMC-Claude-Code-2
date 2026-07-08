@@ -83,3 +83,59 @@ Le code (revue complète faite) est globalement conforme. Problème en cours : *
 - Ne jamais envoyer d'ordre sans SL/TP
 - Ne pas activer le compte réel ni assouplir sa double confirmation
 - Préserver le mode dégradé explicite : si MetaApi n'est pas configuré/connecté, afficher l'erreur, jamais de données factices
+
+## 10. Environnement local et commandes (Windows 11, PowerShell)
+
+- Backend : `cd backend` puis `py -m uvicorn server:app --reload --port 8000` — le frontend attend le backend sur `http://localhost:8000` (cf. `frontend/.env`, `REACT_APP_BACKEND_URL`). App FastAPI : `app` dans `server.py`. Dépendances : `py -m pip install -r requirements.txt` (Python 3.14 système, pas de venv dans ce dépôt)
+- Frontend : `cd frontend` puis `npm start` (CRA + CRACO)
+- Nécessite un MongoDB accessible (cf. `backend/.env`) ; sans MetaApi configuré, l'app démarre en mode dégradé — c'est normal et attendu
+
+## 11. Convention : fichiers préfixés `_` dans `backend/`
+
+Tous les fichiers `_*.py`, `_*.txt`, `_*.log`, `_m1_cache_*.json` sont des **scripts d'expérimentation et des caches jetables** (backtests mensuels, comparaisons de modèles, essais de trailing). Ils ne font PAS partie de l'application : l'app ne doit jamais les importer, ils sont à ignorer en revue de code, et ils sont supprimables sans risque. Ne jamais y placer de logique dont l'app dépend.
+
+## 12. Tests — état réel (au 2026-07-07)
+
+`backend/tests/backend_test.py` tourne maintenant en local sur Windows. Les chemins
+`/app/...` codés en dur ont été remplacés par des chemins résolus depuis `__file__`
+(racine du dépôt), et `REACT_APP_BACKEND_URL` est lu depuis `frontend/.env` avec
+priorité à la variable d'environnement si elle est déjà définie.
+
+**Ce sont des tests d'intégration : le backend doit tourner AVANT de lancer pytest.**
+Ils tapent sur l'API HTTP (`http://localhost:8000/api`), ils ne démarrent pas le
+serveur eux-mêmes. Ils s'exécutent en **mode dégradé** (sans token MetaApi valide) —
+c'est voulu : ils vérifient que l'app refuse de simuler des données quand MetaApi
+n'est pas connecté.
+
+Procédure exacte (deux terminaux PowerShell), depuis `SMC App/repo/` :
+
+1. **Terminal A — démarrer le backend en mode dégradé, sur une base jetable.**
+   Il faut vider `METAAPI_TOKEN`/`METAAPI_ACCOUNT_ID` (sinon le `.env` fournit un
+   token et l'app démarre « configurée »), et utiliser une base de test dédiée
+   (les tests écrivent en base ; ne pas polluer `goldflow`) :
+   ```powershell
+   cd backend
+   $env:METAAPI_TOKEN=""; $env:METAAPI_ACCOUNT_ID=""; $env:DB_NAME="goldflow_test"
+   py -m uvicorn server:app --port 8000
+   ```
+   Prérequis : MongoDB accessible (cf. `backend/.env`, `MONGO_URL`) et
+   `py -m pip install -r requirements.txt` + `py -m pip install pytest`.
+   Vérifier que `http://localhost:8000/api/health` renvoie `"configured": false`.
+
+2. **Terminal B — lancer les tests :**
+   ```powershell
+   py -m pytest backend/tests/backend_test.py -v
+   ```
+   Attendu : `25 passed`.
+
+**Piège — base propre à chaque exécution.** Un test (`TestZTokenPreservation`) écrit
+un faux token en base ; à la relance suivante le backend redémarre « configuré » et
+2 tests échouent à tort. Pour rejouer proprement : soit repartir d'une base neuve
+(changer `DB_NAME`, ex. `goldflow_test2`), soit supprimer la base de test avant de
+relancer le backend. Ne jamais pointer les tests sur la base de production `goldflow`.
+
+## 13. Traces à laisser (pour tout modèle qui travaille ici)
+
+- Décision structurante prise en cours de tâche → entrée dans `DECISIONS.md` (décision, pourquoi, alternatives écartées)
+- Piège découvert ou erreur corrigée → ligne dans ce fichier (§9 si c'est un garde-fou)
+- Les protocoles complets de travail sont dans les skills `/implementer` et `/revue`, et la méthode générale dans `../../METHODE.md`

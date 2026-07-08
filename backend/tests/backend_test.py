@@ -16,15 +16,20 @@ import pytest
 import requests
 from dotenv import load_dotenv
 
-# Load frontend .env to get the public REACT_APP_BACKEND_URL (preview URL)
-load_dotenv(Path("/app/frontend/.env"))
+# Repo root resolved from this file (backend/tests/backend_test.py) so the
+# tests run from any machine, not just the Emergent /app container.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Load frontend .env to get REACT_APP_BACKEND_URL. load_dotenv does not
+# override an already-set environment variable, so an explicit env var wins.
+load_dotenv(REPO_ROOT / "frontend" / ".env")
 BASE_URL = (os.environ.get("REACT_APP_BACKEND_URL") or "").rstrip("/")
-assert BASE_URL, "REACT_APP_BACKEND_URL must be set in /app/frontend/.env"
+assert BASE_URL, "REACT_APP_BACKEND_URL must be set (env var or frontend/.env)"
 API = f"{BASE_URL}/api"
 
 # Allow the shared smc module to be imported for the engine unit test
 import sys
-sys.path.insert(0, "/app/backend")
+sys.path.insert(0, str(REPO_ROOT / "backend"))
 from smc import analyze  # noqa: E402
 
 
@@ -179,7 +184,10 @@ class TestBot:
         assert r.status_code == 200
         d = r.json()
         assert "running" in d
-        assert d["effective_status"] in ("active", "out_of_session", "stopped")
+        assert d["effective_status"] in (
+            "active", "out_of_session", "news_pause",
+            "stopped", "stopped_manual", "stopped_losses", "stopped_drawdown",
+        )
         assert "session" in d
         assert "rail" in d
         rail = d["rail"]
@@ -335,8 +343,9 @@ def _synthetic_candles(n: int = 120, seed: float = 1900.0) -> List[Dict[str, Any
 class TestSmcEngine:
     def test_analyze_returns_expected_keys(self):
         htf = _synthetic_candles(150, seed=2000.0)
+        mtf = _synthetic_candles(150, seed=2000.0)
         ltf = _synthetic_candles(150, seed=2000.0)
-        res = analyze(htf, ltf, fractal_n=3, min_rr=2.0)
+        res = analyze(htf, mtf, ltf, fractal_n=3, min_rr=2.0)
         assert isinstance(res, dict)
         for key in ("bias", "signal", "reject_reason", "swings_htf",
                     "structure_htf", "order_blocks_htf", "fvgs_ltf",
@@ -346,7 +355,7 @@ class TestSmcEngine:
         assert res["signal"] is not None or res["reject_reason"] is not None
 
     def test_analyze_insufficient_candles(self):
-        res = analyze([], [], fractal_n=3, min_rr=2.0)
+        res = analyze([], [], [], fractal_n=3, min_rr=2.0)
         assert res["reject_reason"] == "Insufficient candles"
         assert res["signal"] is None
 
