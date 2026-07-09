@@ -90,6 +90,16 @@ async def clear_signals() -> None:
 
 async def add_notification(n: Dict[str, Any]) -> None:
     db = get_db()
+    # Respect des interrupteurs « Notifications » des Réglages (notif_<catégorie>).
+    # Avant ce correctif, les toggles existaient dans l'UI mais n'étaient vérifiés
+    # nulle part côté backend : ils n'avaient AUCUN effet. Catégorie sans
+    # interrupteur (ex. backtest, bot_resume) = toujours activée.
+    try:
+        s = await get_settings()
+        if s.get(f"notif_{n.get('category', '')}", True) is False:
+            return
+    except Exception:
+        pass  # en cas de doute, on notifie (ne jamais perdre une alerte par erreur technique)
     await db.notifications.insert_one(n)
     # Push vers les téléphones enregistrés (canal « au mieux », jamais bloquant)
     try:

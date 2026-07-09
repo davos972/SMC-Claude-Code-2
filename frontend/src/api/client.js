@@ -23,6 +23,21 @@ export function setBackendUrl(url) {
     } catch { /* ignore */ }
 }
 
+// Clé API (header X-API-Key) : requise si le backend définit la variable
+// d'environnement API_KEY. Stockée par appareil, comme l'URL du serveur.
+export function getApiKey() {
+    try {
+        return (window.localStorage.getItem("goldflow_api_key") || "").trim();
+    } catch { return ""; }
+}
+
+export function setApiKey(key) {
+    try {
+        if (key && key.trim()) window.localStorage.setItem("goldflow_api_key", key.trim());
+        else window.localStorage.removeItem("goldflow_api_key");
+    } catch { /* ignore */ }
+}
+
 const BACKEND_URL = resolveBackendUrl();
 export const API = `${BACKEND_URL}/api`;
 
@@ -36,6 +51,15 @@ export const apiLong = axios.create({
     baseURL: API,
     timeout: 5 * 60 * 1000,
 });
+
+// Attache la clé API à chaque requête (si configurée sur cet appareil).
+const _attachKey = (config) => {
+    const key = getApiKey();
+    if (key) config.headers["X-API-Key"] = key;
+    return config;
+};
+api.interceptors.request.use(_attachKey);
+apiLong.interceptors.request.use(_attachKey);
 
 export const endpoints = {
     health: () => api.get("/health"),
@@ -52,18 +76,4 @@ export const endpoints = {
     botState: () => api.get("/bot/state"),
     runAnalysis: (symbol, persist = false, timeframe = null) => apiLong.post("/analysis/run", { symbol, persist, timeframe }),
     signals: (limit = 50) => api.get(`/signals?limit=${limit}`),
-    clearSignals: () => api.delete("/signals"),
-    notifications: () => api.get("/notifications"),
-    readAllNotifications: () => api.post("/notifications/read-all"),
-    deleteNotification: (id) => api.delete(`/notifications/${id}`),
-    news: (currency = "USD") => api.get(`/news?currency=${currency}`),
-    closePosition: (id) => api.post(`/positions/${id}/close`),
-    cancelBacktest: (id) => api.delete(`/backtest/${id}`),
-    analysisAtTime: (symbol, timestamp, mode = "intraday") =>
-        apiLong.get(`/analysis/at-time`, { params: { symbol, timestamp, mode } }),
-    startBacktest: (payload) => apiLong.post("/backtest", payload),
-    getBacktest: (id) => api.get(`/backtest/${id}`),
-    listBacktests: () => api.get("/backtests"),
-    symbolSpread: (symbol = "XAUUSD") => api.get(`/symbol/spread?symbol=${symbol}`),
-    stats: () => api.get("/stats"),
-};
+    clearSignals: () => api.d

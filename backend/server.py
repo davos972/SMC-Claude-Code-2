@@ -15,9 +15,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, HTTPException, Body
+from fastapi import APIRouter, FastAPI, HTTPException, Body, Request
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -40,6 +41,26 @@ logger = logging.getLogger("goldflow")
 
 app = FastAPI(title="GoldFlow SMC")
 api = APIRouter(prefix="/api")
+
+
+# ---------------- API key protection ----------------
+# L'API pilote un compte de trading RÉEL et est exposée publiquement (Render).
+# Si la variable d'environnement API_KEY est définie, toute requête /api doit
+# porter le header X-API-Key correspondant. Si API_KEY est absente, l'auth est
+# désactivée (compatibilité : permet de déployer ce code AVANT de créer la clé).
+# /api/ et /api/health restent ouverts (statut sans donnée sensible).
+_API_KEY = os.environ.get("API_KEY", "").strip()
+_PUBLIC_PATHS = {"/api", "/api/", "/api/health"}
+
+
+@app.middleware("http")
+async def _require_api_key(request: Request, call_next):
+    if _API_KEY and request.url.path.startswith("/api") \
+            and request.url.path not in _PUBLIC_PATHS \
+            and request.method != "OPTIONS":  # laisser passer les preflights CORS
+        if request.headers.get("x-api-key", "") != _API_KEY:
+            return JSONResponse(status_code=401, content={"detail": "Clé API manquante ou invalide."})
+    return await call_next(request)
 
 
 # ---------------- bootstrap ----------------
@@ -141,6 +162,15 @@ async def get_settings() -> Dict[str, Any]:
 @api.put("/settings")
 async def put_settings(payload: SettingsPayload) -> Dict[str, Any]:
     updates = payload.updates or {}
+    # Liste blanche : seules les clés connues de DEFAULT_SETTINGS sont acceptées.
+    # Sans ce filtre, n'importe quelle clé arbitraire serait injectée dans le
+    # document Mongo (le frontend renvoie d'ailleurs des clés dérivées comme
+    # metaapi_token_masked qu'il ne faut jamais stocker).
+    from models import DEFAULT_SETTINGS
+    unknown = [k for k in updates if k not in DEFAULT_SETTINGS]
+    if unknown:
+        logger.info("put_settings: clés ignorées (hors liste blanche): %s", unknown)
+    updates = {k: v for k, v in updates.items() if k in DEFAULT_SETTINGS}
     # Validation guardrails
     if "account_type" in updates and updates["account_type"] == "real":
         if not updates.get("real_confirmed"):
@@ -472,7 +502,8 @@ async def run_analysis(symbol: str = Body(default="XAUUSD", embed=True),
                      recent_window=int(s.get("recent_window", 6)),
                      require_fvg=bool(s.get("require_fvg_entry", True)),
                      require_sequence=bool(s.get("require_sweep_then_choch", True)),
-                     require_unmitigated=bool(s.get("require_unmitigated_ob", True)))
+                     require_unmitigated=bool(s.get("require_unmitigated_ob", True)),
+                     require_pd=bool(s.get("require_premium_discount", True)))
 
     if persist:
         sig = result.get("signal")
@@ -482,7 +513,8 @@ async def run_analysis(symbol: str = Body(default="XAUUSD", embed=True),
             "id": str(uuid.uuid4()),
             "symbol": symbol,
             "timeframe": ltf,
-            "side": sig["side"] if sig else "buy",
+            # Sur un rejet, la direction affichée = biais HTF du setup (pas "buy" arbitraire).
+            "side": sig["side"] if sig else ("sell" if result.get("bias") == "bearish" else "buy"),
             "status": "accepted" if sig else "rejected",
             "reason": (sig["reason"] if sig else result.get("reject_reason", "Setup invalide")),
             "rr": sig["rr"] if sig else None,
@@ -541,7 +573,8 @@ async def analysis_at_time(symbol: str = "XAUUSD", timestamp: str = "",
                      recent_window=int(s.get("recent_window", 6)),
                      require_fvg=bool(s.get("require_fvg_entry", True)),
                      require_sequence=bool(s.get("require_sweep_then_choch", True)),
-                     require_unmitigated=bool(s.get("require_unmitigated_ob", True)))
+                     require_unmitigated=bool(s.get("require_unmitigated_ob", True)),
+                     require_pd=bool(s.get("require_premium_discount", True)))
     return {
         "configured": True, "result": result, "candles_ltf": ltf_norm,
         "mode": mode, "htf": htf, "mtf": mtf, "ltf": ltf, "timestamp": timestamp,
@@ -641,7 +674,9 @@ class BacktestPayload(BaseModel):
     end_date: str
     mode: str = "intraday"
     spread_points: float = 25.0
-    # Trailing stop — BACKTEST UNIQUEMENT (le bot live ne l'applique jamais). Optionnel.
+    # Trailing stop — paramètres du RUN de backtest (prioritaires sur les Réglages).
+    # NB : le trailing existe AUSSI en live (bot_loop._apply_trailing, OFF par défaut,
+    # piloté par les Réglages) — même logique partagée compute_trailing_sl.
     trailing_mode: Optional[str] = None  # off | breakeven | r_trail | structure
     trailing_trigger_r: Optional[float] = None
     trailing_distance_r: Optional[float] = None
@@ -680,7 +715,7 @@ async def _fail_backtest(bt_id: str, error: str) -> None:
     bt["error"] = error
     bt["finished_at"] = datetime.now(timezone.utc).isoformat()
     await store.save_backtest(bt)
-    await _notify("error", "bot_stop", "Backtest échoué", error[:200])
+    await _notify("error", "backtest", "Backtest échoué", error[:200])
 
 
 async def _execute_backtest(bt_id: str, req: Dict[str, Any]) -> None:
@@ -757,7 +792,7 @@ async def _execute_backtest(bt_id: str, req: Dict[str, Any]) -> None:
     bt["finished_at"] = datetime.now(timezone.utc).isoformat()
     await store.save_backtest(bt)
     await _notify(
-        "success", "bot_stop", "Backtest terminé",
+        "success", "backtest", "Backtest terminé",
         f"{result['metrics'].get('trades_count', 0)} trades · "
         f"winrate {result['metrics'].get('winrate', 0)}%",
     )
@@ -765,6 +800,12 @@ async def _execute_backtest(bt_id: str, req: Dict[str, Any]) -> None:
 
 @api.post("/backtest")
 async def start_backtest(payload: BacktestPayload) -> Dict[str, Any]:
+    # Un seul backtest à la fois : le replay est gourmand en CPU et partage
+    # l'event loop avec la boucle de trading LIVE — plusieurs backtests en
+    # parallèle affameraient le bot (pouls périmé → relances du gardien).
+    if any(not t.done() for t in _running_backtests.values()):
+        raise HTTPException(status_code=409,
+                            detail="Un backtest est déjà en cours. Attends sa fin ou annule-le.")
     bt_id = str(uuid.uuid4())
     bt = {
         "id": bt_id, "status": "pending", "progress": 0.0, "progress_label": "En file d'attente…",
@@ -828,14 +869,19 @@ async def get_stats() -> Dict[str, Any]:
     }
 
 
-# ---------------- mount ----------------
+# ---------------- montage ----------------
 
 app.include_router(api)
 
+# CORS. Piège Starlette : allow_credentials=True avec l'origine joker "*" fait
+# refléter l'origine appelante dans Access-Control-Allow-Origin AVEC credentials —
+# c'est-à-dire ouvrir les credentials à tous les sites. On ne les autorise donc
+# que si CORS_ORIGINS liste des origines explicites.
+_cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_credentials="*" not in _cors_origins,
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

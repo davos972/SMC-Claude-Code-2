@@ -20,7 +20,7 @@ from metaapi_client import MetaApiConnectionError, metaapi_client
 from smc import analyze
 from backtest import compute_trailing_sl  # logique de trailing partagée live + backtest
 
-logger = logging.getLogger("goldflow.bot")
+logger = logging.getLogger("goldflow.bot")  # boucle de trading
 
 _bot_task: Optional[asyncio.Task] = None
 _resume_task: Optional[asyncio.Task] = None  # auto-resume watcher (tracked so it can be cancelled)
@@ -499,7 +499,8 @@ async def _bot_trading_loop() -> None:
                                  recent_window=int(s.get("recent_window", 6)),
                                  require_fvg=bool(s.get("require_fvg_entry", True)),
                                  require_sequence=bool(s.get("require_sweep_then_choch", True)),
-                                 require_unmitigated=bool(s.get("require_unmitigated_ob", True)))
+                                 require_unmitigated=bool(s.get("require_unmitigated_ob", True)),
+                                 require_pd=bool(s.get("require_premium_discount", True)))
             except Exception as e:
                 logger.warning("SMC analysis failed: %s", e)
                 continue
@@ -512,7 +513,8 @@ async def _bot_trading_loop() -> None:
                 "id": str(uuid.uuid4()),
                 "symbol": symbol,
                 "timeframe": ltf,
-                "side": sig["side"] if sig else "buy",
+                # Sur un rejet, la direction affichée = biais HTF du setup (pas "buy" arbitraire).
+                "side": sig["side"] if sig else ("sell" if result.get("bias") == "bearish" else "buy"),
                 # Direction du setup (biais HTF) — sert à afficher Haussier/Baissier même sur un rejet.
                 "bias": result.get("bias"),
                 "status": "rejected",
@@ -729,8 +731,13 @@ def start_watchdog() -> None:
 
 
 def stop_watchdog() -> None:
-    global _watchdog_task
+    global _watchdog_task, _resume_task
     if _watchdog_task and not _watchdog_task.done():
         _watchdog_task.cancel()
     _watchdog_task = None
+    # Annuler aussi l'auto-reprise en attente (bug corrigé : sans `global`,
+    # l'ancienne affectation créait une variable locale morte et la tâche
+    # n'était jamais annulée).
+    if _resume_task and not _resume_task.done():
+        _resume_task.cancel()
     _resume_task = None

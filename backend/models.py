@@ -50,6 +50,7 @@ DEFAULT_SETTINGS = {
     "require_fvg_entry": False,        # confluence FVG (OFF par défaut — backtests: dégrade les résultats en verrou dur)
     "require_sweep_then_choch": False, # confluence séquence sweep→CHoCH (OFF par défaut)
     "require_unmitigated_ob": False,   # OB POI non invalidé (OFF par défaut)
+    "require_premium_discount": True,  # achat en discount / vente en premium (utilisé live + backtest)
 
     # Journal — mode diagnostic : journalise AUSSI les rejets précoces (pas de biais / pas de POI /
     # hors zone), regroupés. OFF par défaut (sinon spam). Sert à comprendre les setups écartés.

@@ -16,7 +16,7 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
 2. **SL et TP toujours placés chez le broker** dans l'ordre envoyé — jamais gérés uniquement par l'app
 3. **Un seul moteur SMC** (`backend/smc.py`) partagé entre trading live et backtest — interdiction d'avoir deux logiques
 4. Chaque ordre du bot porte un **magic number/commentaire** ; le bot ne touche jamais aux positions sans cet identifiant
-5. Base **MongoDB**, app **mono-utilisateur sans login**, secrets dans `backend/.env` (non versionné)
+5. Base **MongoDB**, app **mono-utilisateur sans login**, secrets dans `backend/.env` (non versionné). Depuis l'audit 2026-07-09 : l'API publique (Render) se protège par **clé API** (`API_KEY` côté serveur + header `X-API-Key`, saisie dans Réglages → Serveur) — indispensable en prod, sinon l'API de trading est ouverte à tous
 6. Pas de widget TradingView : graphique **lightweight-charts** alimenté par les bougies MetaApi
 
 ## 3. Stratégie SMC (règles du moteur)
@@ -36,10 +36,10 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
 - **Arrêt auto après 3 pertes consécutives** (break-even ne compte pas) — reprise paramétrable : prochaine session (défaut) ou lendemain
 - **Arrêt auto sur drawdown max** (défaut 3%) — même politique de reprise
 - Max 5 trades/jour, une seule position par symbole
-- **Mode prop firm** activable (règles FTMO : DD jour/total, marge de sécurité 20% — s'arrête AVANT les limites réelles)
+- **Mode prop firm** activable (défauts calés BlueGuardian Instant Funding : DD jour/total, Guardian Shield, reset 17h EST, high watermark trailing ; marge de sécurité 20% — s'arrête AVANT les limites réelles ; paramétrable pour d'autres firmes)
 - **Filtre news** : pause 30 min avant/après les annonces USD à fort impact (flux Forex Factory / faireconomy, `backend/news.py`)
 - **Mode « Signal uniquement »** : détecte et journalise sans exécuter — mode par défaut au premier lancement
-- TP partiels et trailing stop : NON implémentés volontairement (points d'extension prévus)
+- **Trailing stop** : implémenté (logique unique `compute_trailing_sl` partagée live + backtest ; modes breakeven / r_trail / structure), **OFF par défaut**. TP partiels : NON implémentés volontairement
 
 ## 5. Fonctionnalités de l'app
 
@@ -65,6 +65,7 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
 - **La prod tourne sur Render** : `goldflow-backend` (+ `goldflow-frontend` statique), auto-déployée à chaque push GitHub `main`. Base : **MongoDB Atlas** (`cluster0.lfishca…`, base `goldflow`) — c'est LA mémoire vivante ; un Mongo local ne sert qu'aux tests. ⚠️ Ne jamais lancer un backend local pointé sur Atlas pendant que Render tourne : l'auto-reprise ferait courir DEUX bots sur le même compte.
 - **App mobile Android** : Capacitor (`frontend/android/`, appId `com.goldflow.smc`), APK compilé par GitHub Actions (`.github/workflows/android-apk.yml`, « Run workflow », artifact `goldflow-smc-apk`). URL backend modifiable par appareil (Réglages → Serveur). `CORS_ORIGINS` sur Render doit contenir `https://localhost` (origine Capacitor).
 - **Notifications push app fermée** : Firebase FCM (`backend/push.py`), clé de service dans l'env `FIREBASE_SERVICE_ACCOUNT` (Render/`.env`, JAMAIS dans Git — `google-services.json` versionné est OK, c'est une config client). Endpoints `/api/push/register` et `/api/push/test`. Toute notification in-app part aussi en push.
+- **Clé API (audit 2026-07-09)** : définir `API_KEY` dans Render → toute requête `/api` (sauf `/` et `/health`) exige le header `X-API-Key`. La clé se saisit dans l'app : Réglages → Serveur → Clé API (stockée par appareil). Sans `API_KEY` définie, l'auth est désactivée (ordre de déploiement sûr : pousser le code, puis créer la clé, puis la saisir dans l'app).
 
 ## 7. État actuel et problèmes connus
 
@@ -89,6 +90,7 @@ Le code (revue complète faite) est globalement conforme. ~~Problème en cours~~
 - Ne jamais envoyer d'ordre sans SL/TP
 - Ne pas activer le compte réel ni assouplir sa double confirmation
 - Préserver le mode dégradé explicite : si MetaApi n'est pas configuré/connecté, afficher l'erreur, jamais de données factices
+- Ne pas affaiblir la protection par clé API (`API_KEY`/`X-API-Key`) ni élargir `_PUBLIC_PATHS` dans `server.py`
 
 ## 10. Environnement local et commandes (Windows 11, PowerShell)
 
@@ -98,7 +100,7 @@ Le code (revue complète faite) est globalement conforme. ~~Problème en cours~~
 
 ## 11. Convention : fichiers préfixés `_` dans `backend/`
 
-Tous les fichiers `_*.py`, `_*.txt`, `_*.log`, `_m1_cache_*.json` sont des **scripts d'expérimentation et des caches jetables** (backtests mensuels, comparaisons de modèles, essais de trailing). Ils ne font PAS partie de l'application : l'app ne doit jamais les importer, ils sont à ignorer en revue de code, et ils sont supprimables sans risque. Ne jamais y placer de logique dont l'app dépend.
+Tous les fichiers `_*.py`, `_*.txt`, `_*.log`, `_m1_cache_*.json` sont des **scripts d'expérimentation et des caches jetables** (backtests mensuels, comparaisons de modèles, essais de trailing). Ils ne font PAS partie de l'application : l'app ne doit jamais les importer, ils sont à ignorer en revue de code, et ils sont supprimables sans risque. Ne jamais y placer de logique dont l'app dépend. Le `.gitignore` couvre désormais tout `backend/_*`.
 
 ## 12. Tests — état réel (au 2026-07-07)
 
@@ -127,6 +129,8 @@ Procédure exacte (deux terminaux PowerShell), depuis `SMC App/repo/` :
    Prérequis : MongoDB accessible (cf. `backend/.env`, `MONGO_URL`) et
    `py -m pip install -r requirements.txt` + `py -m pip install pytest`.
    Vérifier que `http://localhost:8000/api/health` renvoie `"configured": false`.
+   NB : ne pas définir `API_KEY` dans l'environnement de test (sinon toutes les
+   requêtes des tests seraient rejetées en 401).
 
 2. **Terminal B — lancer les tests :**
    ```powershell

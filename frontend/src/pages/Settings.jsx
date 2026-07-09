@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef, useCallback } from "react";
 import { toast } from "sonner";
 import { Lock, AlertTriangle, Save, Plug, CheckCircle2, Loader2, Globe } from "lucide-react";
 import SegmentedControl from "../components/SegmentedControl";
-import { endpoints, getBackendUrl, setBackendUrl } from "../api/client";
+import { endpoints, getBackendUrl, setBackendUrl, getApiKey, setApiKey } from "../api/client";
 
 const TRADING_MODE_OPTIONS = [
     { value: "intraday", label: "Intraday (H1 → M5)" },
@@ -28,6 +28,7 @@ export default function Settings({ settings, refresh }) {
     const [mtStatus, setMtStatus] = useState(null);
     const [loadTimedOut, setLoadTimedOut] = useState(false);
     const [backendUrl, setBackendUrlLocal] = useState(getBackendUrl());
+    const [apiKey, setApiKeyLocal] = useState(getApiKey());
     const initialized = useRef(false);
     const debounceTimers = useRef({});
 
@@ -174,8 +175,22 @@ export default function Settings({ settings, refresh }) {
                     Adresse du backend que cette application utilise (mémorisée sur cet appareil).
                     Changer d&apos;adresse recharge l&apos;application.
                 </div>
+                <Field label="Clé API (si le serveur en exige une)">
+                    <input
+                        type="password"
+                        value={apiKey}
+                        onChange={(e) => setApiKeyLocal(e.target.value)}
+                        placeholder="Clé secrète (header X-API-Key)"
+                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-3 focus:border-gold focus:outline-none"
+                        data-testid="settings-api-key"
+                    />
+                </Field>
+                <div className="text-xs text-text-secondary">
+                    Doit correspondre à la variable d&apos;environnement API_KEY du backend
+                    (mémorisée sur cet appareil). Laisser vide si le serveur n&apos;en exige pas.
+                </div>
                 <button
-                    onClick={() => { setBackendUrl(backendUrl); window.location.reload(); }}
+                    onClick={() => { setBackendUrl(backendUrl); setApiKey(apiKey); window.location.reload(); }}
                     className="w-full py-3 border border-bd rounded-xl text-text-primary hover:border-gold/50 transition-colors flex items-center justify-center gap-2"
                     data-testid="settings-backend-url-apply"
                 >

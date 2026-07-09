@@ -1,0 +1,18 @@
+# Normalisation des fins de ligne : LF dans le dépôt pour tous les fichiers texte.
+# Évite les 95 fichiers « modifiés » fantômes après un déplacement Windows (CRLF).
+* text=auto
+
+# Scripts shell / gradle : LF obligatoire (exécutés sous Linux en CI)
+*.sh text eol=lf
+gradlew text eol=lf
+
+# Scripts Windows : CRLF
+*.bat text eol=crlf
+
+# Binaires : jamais de conversion
+*.png binary
+*.jpg binary
+*.ico binary
+*.jar binary
+*.apk binary
+*.keystore binary

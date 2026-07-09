@@ -10,6 +10,8 @@ services:
     envVars:
       - key: MONGO_URL
         sync: false          # à renseigner manuellement dans Render
+      - key: API_KEY
+        sync: false          # clé secrète exigée sur /api (header X-API-Key). Vide = auth désactivée
       - key: CORS_ORIGINS
         sync: false          # sera remplacé par l'URL du frontend
       - key: METAAPI_TOKEN
@@ -29,8 +31,3 @@ services:
         sync: false          # URL du backend Render, ex: https://goldflow-backend.onrender.com
     headers:
       - path: /sw.js
-        name: Service-Worker-Allowed
-        value: /
-      - path: /*
-        name: Cache-Control
-        value: no-cache

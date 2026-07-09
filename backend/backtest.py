@@ -123,8 +123,9 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     require_sequence = bool(settings.get("require_sweep_then_choch", True))
     require_unmitigated = bool(settings.get("require_unmitigated_ob", True))
     require_pd = bool(settings.get("require_premium_discount", True))
-    # Trailing / break-even (expérimental, OFF par défaut = aucun changement vs baseline).
-    # N'affecte QUE le backtest : le bot live n'applique jamais le trailing.
+    # Trailing / break-even (OFF par défaut = aucun changement vs baseline).
+    # Logique PARTAGÉE avec le live (bot_loop._apply_trailing utilise le même
+    # compute_trailing_sl ; en live il est piloté par les Réglages).
     # Priorité à la requête (réglé par run depuis l'UI Backtest), sinon settings (scripts), sinon défaut.
     def _tparam(key, default):
         v = req.get(key)
@@ -181,12 +182,17 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     step = max(1, len(ltf_candles) // 100)
 
     for i in range(60, len(ltf_candles)):
+        # Rendre la main à l'event loop régulièrement : le replay partage le
+        # process avec la boucle de trading LIVE. Ne céder qu'aux paliers de
+        # progression (~1%) laissait des blocs de calcul de plusieurs secondes
+        # qui affamaient le bot et le gardien de vivacité.
+        if i % 25 == 0:
+            await asyncio.sleep(0)
         if on_progress and i % step == 0:
             try:
                 await on_progress(min(99.0, i / max(1, len(ltf_candles)) * 100.0))
             except Exception:
                 pass
-            await asyncio.sleep(0)
 
         c = ltf_candles[i]
         cur_time = c["time"]
