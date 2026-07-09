@@ -91,6 +91,43 @@ async def clear_signals() -> None:
 async def add_notification(n: Dict[str, Any]) -> None:
     db = get_db()
     await db.notifications.insert_one(n)
+    # Push vers les téléphones enregistrés (canal « au mieux », jamais bloquant)
+    try:
+        import push
+        await push.send_to_all(
+            title=n.get("title", "GoldFlow SMC"),
+            body=n.get("message", ""),
+            category=n.get("category", "goldflow"),
+        )
+    except Exception:
+        pass
+
+
+# ---------- Push devices (téléphones enregistrés pour les notifications) ----------
+
+async def upsert_push_device(token: str, platform: str = "android") -> None:
+    from datetime import datetime, timezone
+    db = get_db()
+    await db.push_devices.update_one(
+        {"token": token},
+        {"$set": {
+            "token": token,
+            "platform": platform,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+
+
+async def list_push_devices() -> List[Dict[str, Any]]:
+    db = get_db()
+    cur = db.push_devices.find({}, {"_id": 0})
+    return await cur.to_list(length=100)
+
+
+async def remove_push_device(token: str) -> None:
+    db = get_db()
+    await db.push_devices.delete_one({"token": token})
 
 
 async def list_notifications(limit: int = 100) -> List[Dict[str, Any]]:

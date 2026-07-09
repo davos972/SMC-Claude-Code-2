@@ -10,6 +10,7 @@ import { endpoints } from "./api/client";
 import { registerServiceWorker, requestPermission, sendPushNotification } from "./lib/pushNotifications";
 import { Capacitor } from "@capacitor/core";
 import { StatusBar, Style } from "@capacitor/status-bar";
+import { registerNativePush } from "./lib/nativePush";
 
 const TOASTER_OPTIONS = {
     style: { background: "#151B24", border: "1px solid #242E3D", color: "#E9ECF2" },
@@ -31,6 +32,7 @@ function App() {
         StatusBar.setOverlaysWebView({ overlay: false }).catch(() => {});
         StatusBar.setBackgroundColor({ color: "#0D1117" }).catch(() => {});
         StatusBar.setStyle({ style: Style.Dark }).catch(() => {});
+        registerNativePush();
     }, []);
 
     const refresh = useCallback(async () => {

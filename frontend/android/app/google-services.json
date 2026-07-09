@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "374858950574",
+    "project_id": "goldflow-smc",
+    "storage_bucket": "goldflow-smc.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:374858950574:android:900d066ab03b4352968a3f",
+        "android_client_info": {
+          "package_name": "com.goldflow.smc"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB8_yEzsyZ4jzuiX1scF9pQoXdEghlJBqo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

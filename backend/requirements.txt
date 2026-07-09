@@ -8,4 +8,5 @@ python-dotenv==1.2.2
 httpx==0.28.1
 pytz==2026.2
 metaapi-cloud-sdk==29.1.1
+google-auth==2.43.0
 python-multipart==0.0.30

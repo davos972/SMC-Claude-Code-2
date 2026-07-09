@@ -1186,6 +1186,11 @@
   dependencies:
     tslib "^2.1.0"
 
+"@capacitor/push-notifications@^8.1.1":
+  version "8.1.1"
+  resolved "https://registry.yarnpkg.com/@capacitor/push-notifications/-/push-notifications-8.1.1.tgz#ee910f95350395b9a0362d5b5a7bd3d5ca8ef095"
+  integrity sha512-WqzjPKIbYbARMN+GC0XMAJcxJpUUzqgzS/Ny8RODLrro38pQhm3GXYwX2Mwd+LZlLY39rGImkCkrKyQSNfuikA==
+
 "@capacitor/status-bar@^8.0.2":
   version "8.0.2"
   resolved "https://registry.yarnpkg.com/@capacitor/status-bar/-/status-bar-8.0.2.tgz#bf2900c1a79b4481f71cd841d46050895d28d9fe"

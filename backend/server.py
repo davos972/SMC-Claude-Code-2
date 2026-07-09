@@ -591,6 +591,32 @@ async def delete_notification(notif_id: str) -> Dict[str, Any]:
     return {"ok": deleted}
 
 
+# ---------------- push (téléphones) ----------------
+
+@api.post("/push/register")
+async def register_push_device(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Enregistre un téléphone pour les notifications push (app mobile)."""
+    token = str(payload.get("token", "")).strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="token manquant")
+    await store.upsert_push_device(token, platform=str(payload.get("platform", "android")))
+    import push
+    return {"ok": True, "push_configured": push.is_configured()}
+
+
+@api.post("/push/test")
+async def send_test_push() -> Dict[str, Any]:
+    """Envoie une notification de test à tous les téléphones enregistrés."""
+    import push
+    if not push.is_configured():
+        raise HTTPException(status_code=503, detail="Push non configuré (FIREBASE_SERVICE_ACCOUNT absent)")
+    devices = await store.list_push_devices()
+    if not devices:
+        raise HTTPException(status_code=404, detail="Aucun téléphone enregistré")
+    await push.send_to_all("Test GoldFlow SMC", "Les notifications push fonctionnent ✅", "test")
+    return {"ok": True, "devices": len(devices)}
+
+
 # ---------------- news ----------------
 
 @api.get("/news")
