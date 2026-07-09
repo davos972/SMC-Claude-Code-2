@@ -60,9 +60,15 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
   - BOS/CHoCH : **ligne horizontale bleue pointillée** + label « BOS ↑/↓ » ou « CHoCH ↑/↓ »
   - Les zones s'étendent à droite jusqu'à mitigation, puis disparaissent ou passent en opacité réduite. Légende sous le graphique
 
+## 6bis. Déploiement réel et app mobile (état au 2026-07-08)
+
+- **La prod tourne sur Render** : `goldflow-backend` (+ `goldflow-frontend` statique), auto-déployée à chaque push GitHub `main`. Base : **MongoDB Atlas** (`cluster0.lfishca…`, base `goldflow`) — c'est LA mémoire vivante ; un Mongo local ne sert qu'aux tests. ⚠️ Ne jamais lancer un backend local pointé sur Atlas pendant que Render tourne : l'auto-reprise ferait courir DEUX bots sur le même compte.
+- **App mobile Android** : Capacitor (`frontend/android/`, appId `com.goldflow.smc`), APK compilé par GitHub Actions (`.github/workflows/android-apk.yml`, « Run workflow », artifact `goldflow-smc-apk`). URL backend modifiable par appareil (Réglages → Serveur). `CORS_ORIGINS` sur Render doit contenir `https://localhost` (origine Capacitor).
+- **Notifications push app fermée** : Firebase FCM (`backend/push.py`), clé de service dans l'env `FIREBASE_SERVICE_ACCOUNT` (Render/`.env`, JAMAIS dans Git — `google-services.json` versionné est OK, c'est une config client). Endpoints `/api/push/register` et `/api/push/test`. Toute notification in-app part aussi en push.
+
 ## 7. État actuel et problèmes connus
 
-Le code (revue complète faite) est globalement conforme. Problème en cours : **échec de connexion MetaApi** après changement d'environnement. Diagnostic confirmé :
+Le code (revue complète faite) est globalement conforme. ~~Problème en cours~~ **Résolu (2026-07-08)** — l'échec de connexion venait du `.env` local pointé sur un Mongo local vide alors que la prod Render/Atlas tournait ; le `.env` local pointe désormais sur Atlas. Diagnostic d'époque conservé :
 1. `backend/.env` non versionné → base MongoDB neuve → token perdu (à ressaisir dans Réglages)
 2. `metaapi_client.py/_connect` : timeouts `deploy()` et `wait_connected()` de 30 s trop courts — un redéploiement de compte inactif prend 1-2 min → porter à **240 s**
 3. `frontend/src/api/client.js` : timeout axios global 30 s → créer une instance `apiLong` (300 s) pour `testConnection`, `candles`, `startBacktest`
