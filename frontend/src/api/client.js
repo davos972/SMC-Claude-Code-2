@@ -76,4 +76,18 @@ export const endpoints = {
     botState: () => api.get("/bot/state"),
     runAnalysis: (symbol, persist = false, timeframe = null) => apiLong.post("/analysis/run", { symbol, persist, timeframe }),
     signals: (limit = 50) => api.get(`/signals?limit=${limit}`),
-    clearSignals: () => api.d
+    clearSignals: () => api.delete("/signals"),
+    notifications: () => api.get("/notifications"),
+    readAllNotifications: () => api.post("/notifications/read-all"),
+    deleteNotification: (id) => api.delete(`/notifications/${id}`),
+    news: (currency = "USD") => api.get(`/news?currency=${currency}`),
+    closePosition: (id) => api.post(`/positions/${id}/close`),
+    cancelBacktest: (id) => api.delete(`/backtest/${id}`),
+    analysisAtTime: (symbol, timestamp, mode = "intraday") =>
+        apiLong.get(`/analysis/at-time`, { params: { symbol, timestamp, mode } }),
+    startBacktest: (payload) => apiLong.post("/backtest", payload),
+    getBacktest: (id) => api.get(`/backtest/${id}`),
+    listBacktests: () => api.get("/backtests"),
+    symbolSpread: (symbol = "XAUUSD") => api.get(`/symbol/spread?symbol=${symbol}`),
+    stats: () => api.get("/stats"),
+};

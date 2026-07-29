@@ -31,3 +31,8 @@ services:
         sync: false          # URL du backend Render, ex: https://goldflow-backend.onrender.com
     headers:
       - path: /sw.js
+        name: Service-Worker-Allowed
+        value: /
+      - path: /*
+        name: Cache-Control
+        value: no-cache
