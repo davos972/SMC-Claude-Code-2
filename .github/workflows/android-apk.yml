@@ -37,6 +37,25 @@ jobs:
           distribution: temurin
           java-version: 21
 
+      # Signature PERMANENTE : sans cette étape, chaque build serait signé avec une
+      # clé jetable générée sur le runner → Android refuserait d'installer la mise à
+      # jour par-dessus l'app existante (il faudrait désinstaller à chaque fois).
+      # La clé (PKCS12, alias/mot de passe standard du keystore de debug Android) vit
+      # dans le secret ANDROID_DEBUG_KEYSTORE_B64 ; copie de secours chez David
+      # (dossier cles-apk/ hors dépôt). On échoue EXPLICITEMENT si le secret manque.
+      - name: Install persistent signing key
+        working-directory: .
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::Secret ANDROID_DEBUG_KEYSTORE_B64 manquant — l'APK serait signé avec une clé jetable (mise à jour impossible sans désinstaller). Ajouter le secret depuis cles-apk/goldflow-debug.keystore.b64."
+            exit 1
+          fi
+          mkdir -p ~/.android
+          echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+          keytool -list -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey
+
       - name: Sync Capacitor
         run: npx cap sync android
 
