@@ -123,6 +123,7 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     require_sequence = bool(settings.get("require_sweep_then_choch", True))
     require_unmitigated = bool(settings.get("require_unmitigated_ob", True))
     require_pd = bool(settings.get("require_premium_discount", True))
+    ob_entry_mode = str(settings.get("ob_entry_mode", "close"))
     # Trailing / break-even (OFF par défaut = aucun changement vs baseline).
     # Logique PARTAGÉE avec le live (bot_loop._apply_trailing utilise le même
     # compute_trailing_sl ; en live il est piloté par les Réglages).
@@ -250,7 +251,7 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         result = analyze(htf_window, mtf_window, ltf_window, fractal_n=fractal_n, min_rr=min_rr,
                          recent_window=recent_window, require_fvg=require_fvg,
                          require_sequence=require_sequence, require_unmitigated=require_unmitigated,
-                         require_pd=require_pd)
+                         require_pd=require_pd, ob_entry_mode=ob_entry_mode)
         sig = result.get("signal")
         if sig:
             entry_price = sig["entry"] + (spread_price if sig["side"] == "buy" else -spread_price)

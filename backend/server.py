@@ -503,7 +503,8 @@ async def run_analysis(symbol: str = Body(default="XAUUSD", embed=True),
                      require_fvg=bool(s.get("require_fvg_entry", True)),
                      require_sequence=bool(s.get("require_sweep_then_choch", True)),
                      require_unmitigated=bool(s.get("require_unmitigated_ob", True)),
-                     require_pd=bool(s.get("require_premium_discount", True)))
+                     require_pd=bool(s.get("require_premium_discount", True)),
+                     ob_entry_mode=str(s.get("ob_entry_mode", "close")))
 
     if persist:
         sig = result.get("signal")
@@ -574,7 +575,8 @@ async def analysis_at_time(symbol: str = "XAUUSD", timestamp: str = "",
                      require_fvg=bool(s.get("require_fvg_entry", True)),
                      require_sequence=bool(s.get("require_sweep_then_choch", True)),
                      require_unmitigated=bool(s.get("require_unmitigated_ob", True)),
-                     require_pd=bool(s.get("require_premium_discount", True)))
+                     require_pd=bool(s.get("require_premium_discount", True)),
+                     ob_entry_mode=str(s.get("ob_entry_mode", "close")))
     return {
         "configured": True, "result": result, "candles_ltf": ltf_norm,
         "mode": mode, "htf": htf, "mtf": mtf, "ltf": ltf, "timestamp": timestamp,

@@ -343,12 +343,14 @@ _OUT_OF_ZONE_REASONS = {
     "Prix hors zone discount",
     "Prix hors zone premium",
     "Prix hors de l'order block POI",
+    "Aucun order block touché récemment (tap)",
 }
 
 
-def _build_signal(direction, candles_entry, last_close, last_idx, poi, pd_struct,
+def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_struct,
                   swings_target, sweeps_entry, events_entry, fvgs_entry,
-                  min_rr, recent_window, require_fvg, require_sequence, require_pd=True):
+                  min_rr, recent_window, require_fvg, require_sequence, require_pd=True,
+                  ob_entry_mode="close"):
     """Evaluate the entry trigger on the entry timeframe for a given HTF bias direction.
     Returns (Signal, None) if all conditions pass, else (None, reject_reason)."""
     bullish = direction == "bullish"
@@ -360,13 +362,27 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi, pd_struct
         if not bullish and last_close < pd_struct["mid"]:
             return None, "Prix hors zone premium"
 
-    # 2) Price must be inside the POI (structure-tier order block)
-    if bullish:
-        if not (poi.bottom <= last_close <= poi.top * 1.001):
-            return None, "Prix hors de l'order block POI"
+    # 2) POI (structure-tier order block) — deux modes d'entrée (Réglages → ob_entry_mode) :
+    #    "close" (défaut, validé backtest) : la DERNIÈRE CLÔTURE doit être DANS le corps
+    #      de l'OB le plus récent. Strict — c'est la sélectivité qui rend le bot rentable.
+    #    "tap" (expérimental, perdant en backtest 6 mois 2025-12→2026-06 : PF 0.85-0.92,
+    #      DD jusqu'à 68% — voir DECISIONS.md 2026-07-28) : une des `recent_window`
+    #      dernières bougies a TOUCHÉ un OB (mèches comprises). Beaucoup plus de trades.
+    if ob_entry_mode == "tap":
+        recent_candles = candles_entry[max(0, last_idx - recent_window + 1): last_idx + 1]
+        poi = next((ob for ob in reversed(poi_list)
+                    if any(c["low"] <= ob.top and c["high"] >= ob.bottom for c in recent_candles)),
+                   None)
+        if poi is None:
+            return None, "Aucun order block touché récemment (tap)"
     else:
-        if not (poi.bottom * 0.999 <= last_close <= poi.top):
-            return None, "Prix hors de l'order block POI"
+        poi = poi_list[-1]
+        if bullish:
+            if not (poi.bottom <= last_close <= poi.top * 1.001):
+                return None, "Prix hors de l'order block POI"
+        else:
+            if not (poi.bottom * 0.999 <= last_close <= poi.top):
+                return None, "Prix hors de l'order block POI"
 
     # 3) Entry-tier confirmation
     want_sweep = "low_sweep" if bullish else "high_sweep"
@@ -433,7 +449,8 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi, pd_struct
 def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_entry: List[Candle],
             fractal_n: int = 3, min_rr: float = 2.0, recent_window: int = 6,
             require_fvg: bool = True, require_sequence: bool = True,
-            require_unmitigated: bool = True, require_pd: bool = True) -> Dict[str, Any]:
+            require_unmitigated: bool = True, require_pd: bool = True,
+            ob_entry_mode: str = "close") -> Dict[str, Any]:
     """Top-down 3-tier SMC analysis: bias (HTF) → structure/POI (MTF) → entry trigger (LTF).
     Returns dict with detections + optional signal at the latest entry candle."""
     out: Dict[str, Any] = {
@@ -502,7 +519,6 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
                                 else "Aucun order block dans le sens du biais")
         out["reject_stage"] = "no_poi"
         return out
-    poi = poi_obs[-1]
 
     # Build the entry candidate from the latest entry-tier candle.
     # recent_window is in candles: 6 candles = 6 min in M1 scalping, 30 min in M5 intraday.
@@ -513,9 +529,10 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
     # TP cible la liquidité du niveau STRUCTURE (MTF, ex. M15) — même étage que la POI —
     # et non plus un swing HTF lointain : cibles plus proches → meilleur taux de réussite.
     sig, reason = _build_signal(
-        bias, candles_entry, last_close, last_idx, poi, pd_struct,
+        bias, candles_entry, last_close, last_idx, poi_obs, pd_struct,
         swings_struct, sweeps_entry, events_entry, fvgs_entry,
         min_rr, recent_window, require_fvg, require_sequence, require_pd,
+        ob_entry_mode,
     )
     if sig is None:
         out["reject_reason"] = reason

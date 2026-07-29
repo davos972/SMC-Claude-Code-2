@@ -51,6 +51,10 @@ DEFAULT_SETTINGS = {
     "require_sweep_then_choch": False, # confluence séquence sweep→CHoCH (OFF par défaut)
     "require_unmitigated_ob": False,   # OB POI non invalidé (OFF par défaut)
     "require_premium_discount": True,  # achat en discount / vente en premium (utilisé live + backtest)
+    # Mode d'entrée sur l'order block POI (comparaison backtest 2026-07-28, cf. DECISIONS.md) :
+    #   "close" (défaut) = la clôture doit être DANS le corps de l'OB — strict, seul mode rentable en backtest
+    #   "tap" = une bougie récente a touché l'OB (mèches comprises) — beaucoup plus de trades, PERDANT en backtest
+    "ob_entry_mode": "close",
 
     # Journal — mode diagnostic : journalise AUSSI les rejets précoces (pas de biais / pas de POI /
     # hors zone), regroupés. OFF par défaut (sinon spam). Sert à comprendre les setups écartés.

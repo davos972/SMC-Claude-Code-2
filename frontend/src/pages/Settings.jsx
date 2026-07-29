@@ -312,6 +312,36 @@ export default function Settings({ settings, refresh }) {
                     testid="settings-require-unmitigated"
                 />
                 <Toggle
+                    label="Premium/Discount obligatoire"
+                    description="Achat uniquement en zone discount, vente uniquement en premium. Backtest 6 mois : le désactiver ajoute ~45% de trades mais divise le profit par 4 et double le drawdown."
+                    value={local.require_premium_discount}
+                    onChange={(v) => setAndSave("require_premium_discount", v)}
+                    testid="settings-require-pd"
+                />
+                <Field label="Mode d'entrée order block">
+                    <select
+                        value={local.ob_entry_mode || "close"}
+                        onChange={(e) => setAndSave("ob_entry_mode", e.target.value)}
+                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
+                        data-testid="settings-ob-entry-mode"
+                    >
+                        <option value="close">Clôture dans l&apos;OB (strict — recommandé)</option>
+                        <option value="tap">Touche récente de l&apos;OB (tap — expérimental)</option>
+                    </select>
+                </Field>
+                {local.ob_entry_mode === "tap" && (
+                    <div className="text-xs text-gold bg-gold/10 border border-gold/30 rounded-xl p-3 flex items-start gap-2">
+                        <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                        <span>
+                            Mode tap : il suffit qu&apos;une bougie récente ait touché l&apos;order block
+                            (mèches comprises) au lieu d&apos;exiger une clôture dedans. Prend beaucoup
+                            plus de trades, mais <b>perdant sur le backtest 6 mois</b> (déc. 2025 → juin 2026 :
+                            profit factor 0,85–0,92, drawdown jusqu&apos;à 68%). À tester en backtest ou en
+                            mode signal uniquement — pas recommandé en exécution réelle.
+                        </span>
+                    </div>
+                )}
+                <Toggle
                     label="Journal diagnostic (voir tous les rejets)"
                     description="Journalise aussi les setups écartés tôt (pas de biais, pas de POI, hors zone), regroupés. À activer ponctuellement pour comprendre pourquoi des setups sont ignorés — laisse OFF en temps normal."
                     value={local.verbose_journal}

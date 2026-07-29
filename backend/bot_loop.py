@@ -500,7 +500,8 @@ async def _bot_trading_loop() -> None:
                                  require_fvg=bool(s.get("require_fvg_entry", True)),
                                  require_sequence=bool(s.get("require_sweep_then_choch", True)),
                                  require_unmitigated=bool(s.get("require_unmitigated_ob", True)),
-                                 require_pd=bool(s.get("require_premium_discount", True)))
+                                 require_pd=bool(s.get("require_premium_discount", True)),
+                                 ob_entry_mode=str(s.get("ob_entry_mode", "close")))
             except Exception as e:
                 logger.warning("SMC analysis failed: %s", e)
                 continue
