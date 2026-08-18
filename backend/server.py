@@ -686,19 +686,39 @@ class BacktestPayload(BaseModel):
     trailing_buffer: Optional[float] = None
 
 
-BACKTEST_GLOBAL_TIMEOUT_SECONDS = 15 * 60  # 15 minutes
+BACKTEST_GLOBAL_TIMEOUT_SECONDS = 15 * 60  # 15 minutes — plancher (periodes courtes)
+BACKTEST_MAX_TIMEOUT_SECONDS = 60 * 60      # plafond dur, quelle que soit la periode
 _running_backtests: Dict[str, asyncio.Task] = {}
+
+
+def _backtest_timeout(req: Dict[str, Any]) -> int:
+    """Budget temps proportionnel a la periode demandee.
+
+    Le telechargement M1 par lots (~1 lot de 1000 bougies/seconde de latence) et le
+    replay coutent chacun a peu pres lineairement en jours : 15 min fixes suffisaient
+    pour 6 mois mais coupaient un run de 10-12 mois en cours de route.
+    """
+    try:
+        from datetime import datetime as _dt
+        start = _dt.fromisoformat(req["start_date"]).replace(tzinfo=timezone.utc)
+        end = _dt.fromisoformat(req["end_date"]).replace(tzinfo=timezone.utc)
+        days = max(0, (end - start).days)
+    except Exception:
+        days = 0
+    return int(min(BACKTEST_MAX_TIMEOUT_SECONDS,
+                   max(BACKTEST_GLOBAL_TIMEOUT_SECONDS, days * 8)))
 
 
 async def _run_backtest_task(bt_id: str, req: Dict[str, Any]) -> None:
     """Wrapper enforcing global timeout + try/except. Stores any error in DB."""
+    budget = _backtest_timeout(req)
     try:
         await asyncio.wait_for(
             _execute_backtest(bt_id, req),
-            timeout=BACKTEST_GLOBAL_TIMEOUT_SECONDS,
+            timeout=budget,
         )
     except asyncio.TimeoutError:
-        await _fail_backtest(bt_id, f"Timeout global ({BACKTEST_GLOBAL_TIMEOUT_SECONDS // 60} min) atteint.")
+        await _fail_backtest(bt_id, f"Timeout global ({budget // 60} min) atteint.")
     except asyncio.CancelledError:
         await _fail_backtest(bt_id, "Backtest annulé par l'utilisateur.")
         raise
@@ -743,8 +763,10 @@ async def _execute_backtest(bt_id: str, req: Dict[str, Any]) -> None:
         return
 
     days_span = (end_dt - start_dt).days
-    if days_span > 186:
-        await _fail_backtest(bt_id, f"Plage trop longue ({days_span} jours). Maximum 6 mois.")
+    # Plafond porte a 12 mois (etait 6) : le telechargement M1 par lots + le replay
+    # tiennent la charge, et les comparaisons de config demandent des periodes longues.
+    if days_span > 372:
+        await _fail_backtest(bt_id, f"Plage trop longue ({days_span} jours). Maximum 12 mois.")
         return
 
     async def on_status(label: str, pct: float) -> None:

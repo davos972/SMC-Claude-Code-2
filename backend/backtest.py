@@ -260,6 +260,9 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
             open_trade = {
                 "id": str(uuid.uuid4()),
                 "side": sig["side"],
+                # Session d'OUVERTURE (london | newyork | asia) — permet de ventiler
+                # le rapport par session et de mesurer l'apport de chacune.
+                "session": sinfo.get("session"),
                 "entry_time": _to_iso(c["time"]),
                 "entry": entry_price,
                 "sl": sig["sl"],
@@ -398,6 +401,35 @@ def _update_trailing(trade: Dict[str, Any], c: Dict[str, Any],
         trade["sl"] = new_sl
 
 
+def _session_breakdown(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Ventile les trades par session d'ouverture (london / newyork / asia).
+
+    Sert a repondre a « la session asiatique apporte-t-elle quelque chose ? » sans
+    relancer un backtest par session.
+    """
+    out: Dict[str, Any] = {}
+    for t in trades:
+        key = t.get("session") or "unknown"
+        b = out.setdefault(key, {"trades_count": 0, "wins": 0, "losses": 0,
+                                 "win_pnl": 0.0, "loss_pnl": 0.0, "total_pnl": 0.0})
+        b["trades_count"] += 1
+        if t["result"] == "win":
+            b["wins"] += 1
+            b["win_pnl"] += t["pnl"]
+        elif t["result"] == "loss":
+            b["losses"] += 1
+            b["loss_pnl"] += t["pnl"]
+        b["total_pnl"] += t["pnl"]
+    for b in out.values():
+        n = b["trades_count"]
+        loss_pnl = b.pop("loss_pnl")
+        win_pnl = b.pop("win_pnl")
+        b["winrate"] = round(b["wins"] / n * 100, 2) if n else 0.0
+        b["profit_factor"] = round(win_pnl / abs(loss_pnl), 2) if loss_pnl != 0 else (999.0 if win_pnl > 0 else 0.0)
+        b["total_pnl"] = round(b["total_pnl"], 2)
+    return out
+
+
 def _compute_metrics(trades: List[Dict[str, Any]], equity_curve: List[Dict[str, Any]]) -> Dict[str, Any]:
     wins = [t for t in trades if t["result"] == "win"]
     losses = [t for t in trades if t["result"] == "loss"]
@@ -417,6 +449,7 @@ def _compute_metrics(trades: List[Dict[str, Any]], equity_curve: List[Dict[str, 
 
     final_equity = equity_curve[-1]["equity"] if equity_curve else 10000.0
     return {
+        "by_session": _session_breakdown(trades),
         "trades_count": len(trades),
         "wins": len(wins),
         "losses": len(losses),
@@ -445,7 +478,9 @@ async def download_m1_history(metaapi_client, symbol: str, start_dt: datetime, e
     cursor = end_dt
     chunk_size = 1000
     chunk_idx = 0
-    max_chunks = 300  # 300k candles safety cap
+    # Garde-fou : 600 lots = 600k bougies M1. 300 suffisaient pour 6 mois mais
+    # tronquaient SILENCIEUSEMENT un historique de 10-12 mois (~310-375k bougies).
+    max_chunks = 600
     seen_times = set()
 
     while cursor > start_dt and chunk_idx < max_chunks:

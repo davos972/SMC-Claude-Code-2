@@ -27,7 +27,7 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
 - **Deux modes** (un seul actif à la fois) : Intraday (H1 → M5) et Scalping (M15 → M1), timeframes paramétrables
 - **Swing high/low** : méthode fractale, N bougies de chaque côté (défaut 3, paramétrable)
 - **Analyse à la clôture de bougie** de la timeframe d'entrée (pas tick par tick)
-- **Sessions strictes** : trading UNIQUEMENT pendant Londres (8h–11h heure de Londres) et New York (8h–11h heure de NY), heure d'été gérée via pytz (`backend/sessions.py`). Les positions ouvertes restent ouvertes après la session (protégées par SL/TP broker)
+- **Sessions strictes** : trading UNIQUEMENT pendant Londres (8h–11h heure de Londres) et New York (8h–11h heure de NY), heure d'été gérée via pytz (`backend/sessions.py`). Une **session asiatique (Tokyo, 8h–11h locale ≈ 23h–02h UTC) est disponible en option**, OFF par défaut (`session_asia_enabled` dans Réglages → Sessions) — à valider en backtest avant activation. Les positions ouvertes restent ouvertes après la session (protégées par SL/TP broker)
 
 ## 4. Gestion du risque (tout paramétrable dans Réglages)
 
@@ -44,7 +44,7 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
 ## 5. Fonctionnalités de l'app
 
 - **Dashboard** : bouton START/STOP manuel rond + rail des sessions 24h avec marqueur « maintenant », solde/équité/P&L jour, graphique avec zones SMC, positions ouvertes avec clôture d'urgence, journal des signaux (y compris setups REJETÉS avec la raison), annonces éco du jour
-- **Backtest** (simple) : config actuelle sur période choisie (max 6 mois), données M1 MetaApi, spread simulé paramétrable (défaut 25 points XAUUSD), rapport (winrate, profit factor, RR, DD max, courbe d'équité, liste des trades cliquables sur le graphique), avertissement performances passées
+- **Backtest** (simple) : config actuelle sur période choisie (max 12 mois), données M1 MetaApi, spread simulé paramétrable (défaut 25 points XAUUSD), rapport (winrate, profit factor, RR, DD max, courbe d'équité, **ventilation par session** Londres/NY/Asie, liste des trades cliquables sur le graphique), avertissement performances passées. Comparaison A/B avec/sans session asiatique sur les mêmes bougies : `py -m tools.backtest_asia_compare --months 10` depuis `backend/`
 - **Stats live** : winrate, RR moyen, profit factor, stats par session et jour de semaine
 - **Notifications** : in-app (cloche + historique) + push navigateur (Web Push), chaque événement activable
 - **Réglages** : token MetaApi + accountId (masqué, jamais exposé au frontend), démo/réel verrouillé, tous les paramètres ci-dessus

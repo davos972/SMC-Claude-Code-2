@@ -420,6 +420,19 @@ export default function Settings({ settings, refresh }) {
                     <TimeField label="New York début" value={local.session_newyork_start} onChange={(v) => setAndSave("session_newyork_start", v)} testid="settings-ny-start" />
                     <TimeField label="New York fin" value={local.session_newyork_end} onChange={(v) => setAndSave("session_newyork_end", v)} testid="settings-ny-end" />
                 </div>
+                <Toggle
+                    label="Session asiatique (Tokyo)"
+                    description="Ajoute une 3e fenêtre de trading (08h–11h Tokyo ≈ 23h–02h UTC). À tester en backtest ou en mode signal avant de l'activer en exécution."
+                    value={local.session_asia_enabled}
+                    onChange={(v) => setAndSave("session_asia_enabled", v)}
+                    testid="settings-asia-enabled"
+                />
+                {local.session_asia_enabled && (
+                    <div className="grid grid-cols-2 gap-3">
+                        <TimeField label="Tokyo début" value={local.session_asia_start} onChange={(v) => setAndSave("session_asia_start", v)} testid="settings-asia-start" />
+                        <TimeField label="Tokyo fin" value={local.session_asia_end} onChange={(v) => setAndSave("session_asia_end", v)} testid="settings-asia-end" />
+                    </div>
+                )}
             </Section>
 
             {/* Risk */}

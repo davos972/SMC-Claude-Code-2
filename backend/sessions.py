@@ -1,13 +1,14 @@
-"""Trading session helpers (London / New York local times with DST)."""
+"""Trading session helpers (London / New York / Asia local times with DST)."""
 from __future__ import annotations
 
-from datetime import datetime, time
-from typing import Dict, Optional
+from datetime import datetime, time, timedelta
+from typing import Dict, List, Optional, Tuple
 import pytz
 
 
 LONDON = pytz.timezone("Europe/London")
 NEWYORK = pytz.timezone("America/New_York")
+TOKYO = pytz.timezone("Asia/Tokyo")
 
 
 def _parse_hhmm(s: str) -> time:
@@ -15,42 +16,51 @@ def _parse_hhmm(s: str) -> time:
     return time(int(h), int(m))
 
 
+def _in_window(now_local: time, start: time, end: time) -> bool:
+    """Fenêtre horaire locale, en gérant le passage de minuit (start > end).
+
+    La session asiatique peut être réglée à cheval sur minuit (ex. 23:00→02:00),
+    ce que la comparaison simple `start <= t < end` renverrait toujours faux.
+    """
+    if start <= end:
+        return start <= now_local < end
+    return now_local >= start or now_local < end
+
+
+def _windows(settings: Dict) -> List[Tuple[str, pytz.BaseTzInfo, time, time]]:
+    """Sessions actives, dans l'ordre de priorité (Londres, New York, Asie).
+
+    L'Asie n'est présente que si `session_asia_enabled` est vrai — OFF par défaut,
+    donc le comportement historique (Londres + NY seulement) est inchangé.
+    """
+    out: List[Tuple[str, pytz.BaseTzInfo, time, time]] = [
+        ("london", LONDON,
+         _parse_hhmm(settings.get("session_london_start", "08:00")),
+         _parse_hhmm(settings.get("session_london_end", "11:00"))),
+        ("newyork", NEWYORK,
+         _parse_hhmm(settings.get("session_newyork_start", "08:00")),
+         _parse_hhmm(settings.get("session_newyork_end", "11:00"))),
+    ]
+    if settings.get("session_asia_enabled"):
+        out.append(("asia", TOKYO,
+                    _parse_hhmm(settings.get("session_asia_start", "08:00")),
+                    _parse_hhmm(settings.get("session_asia_end", "11:00"))))
+    return out
+
+
 def is_in_session(now_utc: datetime, settings: Dict) -> Dict[str, object]:
-    """Return {in_session: bool, session: 'london'|'newyork'|None, next_session: str}."""
-    london_start = _parse_hhmm(settings.get("session_london_start", "08:00"))
-    london_end = _parse_hhmm(settings.get("session_london_end", "11:00"))
-    ny_start = _parse_hhmm(settings.get("session_newyork_start", "08:00"))
-    ny_end = _parse_hhmm(settings.get("session_newyork_end", "11:00"))
-
-    now_london = now_utc.astimezone(LONDON).time()
-    now_ny = now_utc.astimezone(NEWYORK).time()
-
-    in_london = london_start <= now_london < london_end
-    in_ny = ny_start <= now_ny < ny_end
-
-    if in_london:
-        return {"in_session": True, "session": "london", "next_session": None}
-    if in_ny:
-        return {"in_session": True, "session": "newyork", "next_session": None}
+    """Return {in_session: bool, session: 'london'|'newyork'|'asia'|None, next_session: str}."""
+    for name, tz, start, end in _windows(settings):
+        if _in_window(now_utc.astimezone(tz).time(), start, end):
+            return {"in_session": True, "session": name, "next_session": None}
     return {"in_session": False, "session": None, "next_session": "london"}
 
 
 def session_rail_segments(settings: Dict, now_utc: Optional[datetime] = None) -> Dict[str, object]:
     """Compute current-time marker position (0..1) on a 24h rail, and
-    the % positions of London + NY windows mapped to UTC for visual."""
+    the % positions of the active session windows mapped to UTC for visual."""
     if now_utc is None:
         now_utc = datetime.now(pytz.UTC)
-
-    london_start = _parse_hhmm(settings.get("session_london_start", "08:00"))
-    london_end = _parse_hhmm(settings.get("session_london_end", "11:00"))
-    ny_start = _parse_hhmm(settings.get("session_newyork_start", "08:00"))
-    ny_end = _parse_hhmm(settings.get("session_newyork_end", "11:00"))
-
-    # Convert local times today to UTC fractions of 24h
-    today_london = LONDON.localize(datetime.combine(now_utc.astimezone(LONDON).date(), london_start))
-    today_london_end = LONDON.localize(datetime.combine(now_utc.astimezone(LONDON).date(), london_end))
-    today_ny = NEWYORK.localize(datetime.combine(now_utc.astimezone(NEWYORK).date(), ny_start))
-    today_ny_end = NEWYORK.localize(datetime.combine(now_utc.astimezone(NEWYORK).date(), ny_end))
 
     def frac(d: datetime) -> float:
         utc = d.astimezone(pytz.UTC)
@@ -58,11 +68,17 @@ def session_rail_segments(settings: Dict, now_utc: Optional[datetime] = None) ->
 
     now_frac = (now_utc.hour * 3600 + now_utc.minute * 60 + now_utc.second) / 86400.0
 
-    return {
+    out: Dict[str, object] = {
         "now_frac": now_frac,
-        "london_start_frac": frac(today_london),
-        "london_end_frac": frac(today_london_end),
-        "newyork_start_frac": frac(today_ny),
-        "newyork_end_frac": frac(today_ny_end),
         "now_utc_iso": now_utc.isoformat(),
+        "asia_enabled": bool(settings.get("session_asia_enabled")),
     }
+    for name, tz, start, end in _windows(settings):
+        today = now_utc.astimezone(tz).date()
+        d_start = tz.localize(datetime.combine(today, start))
+        d_end = tz.localize(datetime.combine(today, end))
+        if end <= start:  # fenêtre à cheval sur minuit → la fin est le lendemain
+            d_end += timedelta(days=1)
+        out[f"{name}_start_frac"] = frac(d_start)
+        out[f"{name}_end_frac"] = frac(d_end)
+    return out

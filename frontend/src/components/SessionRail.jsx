@@ -16,10 +16,25 @@ export default function SessionRail({ rail }) {
 
     if (!rail) return null;
 
-    const lStart = (rail.london_start_frac || 0) * 100;
-    const lEnd = (rail.london_end_frac || 0) * 100;
-    const nStart = (rail.newyork_start_frac || 0) * 100;
-    const nEnd = (rail.newyork_end_frac || 0) * 100;
+    // Une session peut être à cheval sur minuit UTC (typiquement l'Asie :
+    // 08h–11h Tokyo ≈ 23h–02h UTC) → on la coupe en deux segments visuels.
+    const windows = [
+        { key: "london", label: "LONDRES", start: rail.london_start_frac, end: rail.london_end_frac },
+        { key: "newyork", label: "NEW\nYORK", start: rail.newyork_start_frac, end: rail.newyork_end_frac },
+    ];
+    if (rail.asia_enabled) {
+        windows.push({ key: "asia", label: "ASIE", start: rail.asia_start_frac, end: rail.asia_end_frac });
+    }
+    const segments = [];
+    windows.forEach((w) => {
+        if (w.start == null || w.end == null) return;
+        if (w.end >= w.start) {
+            segments.push({ ...w, id: w.key, left: w.start * 100, width: (w.end - w.start) * 100 });
+        } else {
+            segments.push({ ...w, id: `${w.key}-a`, left: w.start * 100, width: (1 - w.start) * 100 });
+            segments.push({ ...w, id: `${w.key}-b`, left: 0, width: w.end * 100, label: "" });
+        }
+    });
     const nowPct = nowFrac * 100;
 
     return (
@@ -38,24 +53,19 @@ export default function SessionRail({ rail }) {
                         <div key={`tick-${i}`} className="flex-1 border-r border-bd/40 last:border-none" />
                     ))}
                 </div>
-                {/* London window */}
-                <div
-                    className="absolute top-0 bottom-0 bg-gradient-to-b from-gold/30 to-gold/10 border-x border-gold/50"
-                    style={{ left: `${lStart}%`, width: `${lEnd - lStart}%` }}
-                >
-                    <div className="absolute inset-0 flex items-center justify-center text-[10px] font-bold text-gold tracking-wider">
-                        LONDRES
+                {/* Fenêtres de session (Londres / New York / Asie si activée) */}
+                {segments.map((seg) => (
+                    <div
+                        key={seg.id}
+                        data-testid={`session-window-${seg.id}`}
+                        className="absolute top-0 bottom-0 bg-gradient-to-b from-gold/30 to-gold/10 border-x border-gold/50"
+                        style={{ left: `${seg.left}%`, width: `${seg.width}%` }}
+                    >
+                        <div className="absolute inset-0 flex items-center justify-center text-[10px] font-bold text-gold tracking-wider leading-tight text-center px-1 whitespace-pre">
+                            {seg.label}
+                        </div>
                     </div>
-                </div>
-                {/* New York window */}
-                <div
-                    className="absolute top-0 bottom-0 bg-gradient-to-b from-gold/30 to-gold/10 border-x border-gold/50"
-                    style={{ left: `${nStart}%`, width: `${nEnd - nStart}%` }}
-                >
-                    <div className="absolute inset-0 flex items-center justify-center text-[10px] font-bold text-gold tracking-wider leading-tight text-center px-1">
-                        NEW<br />YORK
-                    </div>
-                </div>
+                ))}
                 {/* Current time marker */}
                 <div
                     className="absolute top-0 bottom-0 w-0.5 bg-text-primary shadow-[0_0_8px_#E9ECF2] z-10"

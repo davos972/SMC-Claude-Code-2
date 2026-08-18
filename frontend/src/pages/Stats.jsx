@@ -80,11 +80,12 @@ export default function Stats() {
 }
 
 function bySession(signals) {
-    const counts = { Londres: 0, "New York": 0, Autre: 0 };
+    const counts = { Londres: 0, "New York": 0, Asie: 0, Autre: 0 };
     signals.forEach((s) => {
         const sess = s.session;
         if (sess === "london") counts["Londres"] += 1;
         else if (sess === "newyork") counts["New York"] += 1;
+        else if (sess === "asia") counts["Asie"] += 1;
         else counts["Autre"] += 1;
     });
     return counts;

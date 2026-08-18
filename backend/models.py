@@ -83,6 +83,12 @@ DEFAULT_SETTINGS = {
     "session_london_end": "11:00",
     "session_newyork_start": "08:00",
     "session_newyork_end": "11:00",
+    # Session asiatique (Tokyo) — OFF par défaut : l'activer AJOUTE une 3e fenêtre
+    # de trading (08:00–11:00 Tokyo ≈ 23:00–02:00 UTC), le reste de la stratégie
+    # est inchangé. Fenêtre à cheval sur minuit UTC : géré par sessions._in_window.
+    "session_asia_enabled": False,
+    "session_asia_start": "08:00",
+    "session_asia_end": "11:00",
 
     # News
     "news_filter_enabled": True,
@@ -148,7 +154,7 @@ class Signal(BaseModel):
     sl: Optional[float] = None
     tp: Optional[float] = None
     time: str
-    session: Optional[str] = None  # london | newyork | unknown
+    session: Optional[str] = None  # london | newyork | asia | unknown
     count: int = 1                 # nb de rejets identiques regroupés sous cette ligne
     last_time: Optional[str] = None  # heure du dernier rejet identique (plage horaire)
     reject_stage: Optional[str] = None  # insufficient | no_bias | no_poi | out_of_zone | near_miss

@@ -363,6 +363,33 @@ export default function Backtest({ settings }) {
     );
 }
 
+const SESSION_LABELS = { london: "Londres", newyork: "New York", asia: "Asie", unknown: "Inconnue" };
+
+function SessionBreakdown({ bySession }) {
+    const rows = Object.entries(bySession || {}).filter(([, v]) => v && v.trades_count > 0);
+    if (rows.length === 0) return null;
+    return (
+        <div className="bg-panel border border-bd rounded-card p-4" data-testid="backtest-by-session">
+            <div className="text-[11px] font-bold uppercase tracking-widest text-text-secondary mb-3">
+                Par session
+            </div>
+            <div className="space-y-2">
+                {rows.map(([key, v]) => (
+                    <div key={key} className="flex items-center justify-between text-sm">
+                        <span className="text-text-primary">{SESSION_LABELS[key] || key}</span>
+                        <span className="num text-text-secondary text-xs">
+                            {v.trades_count} tr · {fmtPct(v.winrate)} · PF {(v.profit_factor || 0).toFixed(2)}
+                        </span>
+                        <span className={`num text-sm font-bold ${v.total_pnl >= 0 ? "text-green" : "text-red"}`}>
+                            {v.total_pnl >= 0 ? "+" : ""}{(v.total_pnl || 0).toFixed(2)}
+                        </span>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
 function Results({ bt, onSelectTrade }) {
     const m = bt.metrics || {};
     return (
@@ -381,6 +408,8 @@ function Results({ bt, onSelectTrade }) {
                 </div>
                 <EquityCurve curve={bt.equity_curve || []} />
             </div>
+
+            <SessionBreakdown bySession={m.by_session} />
 
             <div className="bg-panel border border-bd rounded-card p-4">
                 <div className="text-[11px] font-bold uppercase tracking-widest text-text-secondary mb-3">
