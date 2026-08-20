@@ -10,7 +10,7 @@ import asyncio
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -496,7 +496,17 @@ async def run_analysis(symbol: str = Body(default="XAUUSD", embed=True),
     htf_norm = _norm(htf_candles)
     mtf_norm = _norm(mtf_candles)
     ltf_norm = _norm(ltf_candles)
-    result = analyze(htf_norm, mtf_norm, ltf_norm,
+    # Analyse 3 niveaux : MÊMES fenêtres que le backtest et le bot live. La branche
+    # mono-timeframe (graphique) garde ses 300 bougies : c'est de l'affichage de
+    # zones, pas une décision de trading — les tronquer ferait disparaître les
+    # zones anciennes du graphique.
+    if timeframe:
+        htf_in, mtf_in, ltf_in = htf_norm, mtf_norm, ltf_norm
+    else:
+        htf_in = htf_norm[-bt_engine.WINDOW_HTF:]
+        mtf_in = mtf_norm[-bt_engine.WINDOW_MTF:]
+        ltf_in = ltf_norm[-bt_engine.WINDOW_LTF:]
+    result = analyze(htf_in, mtf_in, ltf_in,
                      fractal_n=int(s.get("fractal_n", 3)),
                      min_rr=float(s.get("min_rr", 2.0)),
                      recent_window=int(s.get("recent_window", 6)),
@@ -568,7 +578,10 @@ async def analysis_at_time(symbol: str = "XAUUSD", timestamp: str = "",
     htf_norm = _norm(htf_candles)
     mtf_norm = _norm(mtf_candles)
     ltf_norm = _norm(ltf_candles)
-    result = analyze(htf_norm, mtf_norm, ltf_norm,
+    # Rejeu : mêmes fenêtres d'analyse que le backtest/live ; l'affichage (candles_ltf)
+    # garde toutes les bougies demandées.
+    result = analyze(htf_norm[-bt_engine.WINDOW_HTF:], mtf_norm[-bt_engine.WINDOW_MTF:],
+                     ltf_norm[-bt_engine.WINDOW_LTF:],
                      fractal_n=int(s.get("fractal_n", 3)),
                      min_rr=float(s.get("min_rr", 2.0)),
                      recent_window=int(s.get("recent_window", 6)),
@@ -869,6 +882,261 @@ async def get_stats() -> Dict[str, Any]:
         "by_day": {},  # placeholder for later
         "by_session": {},
     }
+
+
+# ---------------- journal de trading ----------------
+# Le journal s'appuie sur la collection `trades` alimentee par bot_loop
+# (ouverture -> cloture avec le P&L REEL du broker). Les metriques reutilisent
+# _compute_metrics du backtest : une seule definition de winrate / profit factor /
+# drawdown dans toute l'app.
+
+# Libelles lisibles des reglages recopies dans chaque trade. Sert a afficher
+# « reglage particulier » quand la valeur differait du defaut de l'app.
+_SETTINGS_LABELS = {
+    "trading_mode": "Mode",
+    "risk_per_trade_pct": "Risque par trade (%)",
+    "min_rr": "RR minimum",
+    "max_lot_per_trade": "Lot max",
+    "trailing_mode": "Trailing stop",
+    "trailing_trigger_r": "Trailing — declenchement (R)",
+    "trailing_distance_r": "Trailing — distance (R)",
+    "trailing_lookback": "Trailing — bougies suivies",
+    "require_fvg_entry": "Confluence FVG exigee",
+    "require_sweep_then_choch": "Sequence sweep -> CHoCH exigee",
+    "require_unmitigated_ob": "Order block non mitige exige",
+    "require_premium_discount": "Premium/discount exige",
+    "ob_entry_mode": "Mode d'entree sur l'OB",
+    "fractal_n": "Fractale N",
+    "recent_window": "Fenetre recente",
+    "max_trades_per_day": "Trades max / jour",
+    "max_consec_losses": "Pertes consecutives max",
+    "max_drawdown_pct": "Drawdown max (%)",
+    "news_filter_enabled": "Filtre news",
+    "prop_firm_enabled": "Mode prop firm",
+}
+
+
+def _fmt_setting(v: Any) -> str:
+    if isinstance(v, bool):
+        return "active" if v else "desactive"
+    return str(v)
+
+
+def _settings_notes(snapshot: Optional[Dict[str, Any]]) -> List[str]:
+    """Reglages du trade qui DIFFERENT des valeurs par defaut de l'app."""
+    from models import DEFAULT_SETTINGS
+    notes: List[str] = []
+    for k, v in (snapshot or {}).items():
+        if k not in DEFAULT_SETTINGS or v is None:
+            continue
+        if v != DEFAULT_SETTINGS[k]:
+            notes.append(f"{_SETTINGS_LABELS.get(k, k)} : {_fmt_setting(v)}")
+    return notes
+
+
+@api.get("/journal")
+async def get_journal(limit: int = 500) -> Dict[str, Any]:
+    """Journal de trading : trades reels + metriques globales + courbe d'evolution."""
+    s = await store.get_settings()
+    trades = await store.list_trades(limit)
+    for t in trades:
+        t["settings_notes"] = _settings_notes(t.get("settings_snapshot"))
+
+    # Seuls les trades clotures AVEC un P&L connu entrent dans les statistiques.
+    # Un trade au P&L inconnu (historique broker indisponible) reste visible dans
+    # la liste mais n'est jamais compte comme un gain ni une perte.
+    closed = [t for t in trades
+              if t.get("status") == "closed" and isinstance(t.get("pnl"), (int, float))]
+    chrono = sorted(closed, key=lambda t: t.get("close_time") or t.get("open_time") or "")
+    total_pnl = sum(float(t["pnl"]) for t in chrono)
+
+    account: Dict[str, Any] = {}
+    if metaapi_client.is_configured():
+        try:
+            account = await metaapi_client.get_account_information() or {}
+        except Exception as e:
+            logger.info("Journal: solde du compte indisponible (%s)", e)
+
+    # Capital de depart : reglage explicite, sinon deduit du solde actuel moins le
+    # P&L cumule du journal. Jamais invente : sans reglage ET sans MetaApi, on
+    # renvoie null et le drawdown en % n'est pas calcule (seul celui en devise l'est).
+    initial = float(s.get("journal_initial_balance") or 0)
+    initial_source = "setting"
+    if initial <= 0:
+        balance = account.get("balance")
+        if balance is None:
+            initial, initial_source = 0.0, "unknown"
+        else:
+            initial, initial_source = float(balance) - total_pnl, "auto"
+            if initial <= 0:
+                initial, initial_source = 0.0, "unknown"
+
+    equity_curve: List[Dict[str, Any]] = []
+    if chrono:
+        equity_curve.append({"time": chrono[0].get("open_time"), "equity": round(initial, 2)})
+        eq = initial
+        for t in chrono:
+            eq += float(t["pnl"])
+            equity_curve.append({"time": t.get("close_time") or t.get("open_time"),
+                                 "equity": round(eq, 2)})
+
+    metrics: Dict[str, Any] = {}
+    if chrono:
+        norm = [{
+            "pnl": float(t["pnl"]),
+            "rr": float(t.get("planned_rr") or 0),
+            "result": t.get("result") or ("win" if float(t["pnl"]) > 0 else "loss"),
+        } for t in chrono]
+        metrics = dict(bt_engine._compute_metrics(norm, equity_curve))
+        # Drawdown en devise : toujours calculable, meme sans capital de depart connu.
+        peak, max_dd_money = initial, 0.0
+        for pt in equity_curve:
+            peak = max(peak, pt["equity"])
+            max_dd_money = max(max_dd_money, peak - pt["equity"])
+        metrics["max_drawdown_money"] = round(max_dd_money, 2)
+        if initial <= 0:
+            metrics.pop("max_drawdown_pct", None)   # % impossible sans capital de depart
+            metrics.pop("final_equity", None)
+        metrics["pnl_pct"] = round(total_pnl / initial * 100, 2) if initial > 0 else None
+    metrics["open_trades"] = len([t for t in trades if t.get("status") == "open"])
+    metrics["unknown_pnl"] = len([t for t in trades
+                                  if t.get("status") == "closed" and t.get("pnl") is None])
+
+    return {
+        "trades": trades,
+        "metrics": metrics,
+        "equity_curve": equity_curve,
+        "initial_balance": round(initial, 2) if initial > 0 else None,
+        "initial_balance_source": initial_source,
+        "currency": account.get("currency"),
+    }
+
+
+class JournalImportPayload(BaseModel):
+    days: int = Field(default=180, ge=1, le=1000)
+
+
+def _match_executed_signal(executed: List[Dict[str, Any]], symbol: str, side: str,
+                           open_time: str) -> Optional[Dict[str, Any]]:
+    """Retrouve le signal execute correspondant a un trade importe (meme symbole,
+    meme sens, a moins de 15 min de l'ouverture) — c'est lui qui porte le RR prevu,
+    le SL/TP et la session. Renvoie None si aucun ne correspond (RR affiche inconnu,
+    jamais invente)."""
+    t0 = _parse_iso(open_time)
+    if t0 is None:
+        return None
+    best, best_gap = None, 900.0
+    for x in executed:
+        if x.get("symbol") != symbol or x.get("side") != side:
+            continue
+        t = _parse_iso(str(x.get("time", "")))
+        if t is None:
+            continue
+        gap = abs((t - t0).total_seconds())
+        if gap < best_gap:
+            best, best_gap = x, gap
+    return best
+
+
+def _parse_iso(value: str) -> Optional[datetime]:
+    try:
+        d = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+@api.post("/journal/import")
+async def import_journal(payload: JournalImportPayload) -> Dict[str, Any]:
+    """Importe dans le journal les trades DEJA realises par le bot chez le broker.
+
+    Source unique : l'historique des transactions MetaApi (P&L, prix et heures
+    reels). Seules les positions portant le magic number du bot sont reprises. Les
+    trades deja presents ne sont jamais ecrases. Le RR prevu et le SL/TP sont
+    retrouves via le journal des signaux quand un signal execute correspond."""
+    if not metaapi_client.is_configured():
+        raise HTTPException(status_code=400,
+                            detail="MetaApi non configure — impossible de lire l'historique du broker.")
+    s = await store.get_settings()
+    magic = int(s.get("magic_number", 990077))
+    end = datetime.now(timezone.utc) + timedelta(days=1)
+    start = end - timedelta(days=payload.days + 1)
+    try:
+        deals = await metaapi_client.get_deals_by_time_range(start, end)
+    except MetaApiConnectionError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for d in deals:
+        pid = str(d.get("positionId") or "")
+        if pid:
+            groups.setdefault(pid, []).append(d)
+
+    executed = [x for x in await store.list_signals(500) if x.get("status") == "executed"]
+    imported = already = still_open = not_ours = 0
+    for pid, ds in groups.items():
+        # Le magic peut n'etre porte que par la transaction d'entree -> on regarde
+        # tout le groupe. Aucune position d'un autre robot / manuelle n'est reprise.
+        if not any(int(x.get("magic", 0) or 0) == magic for x in ds):
+            not_ours += 1
+            continue
+        ds.sort(key=bot_loop._deal_time)
+        ins = [x for x in ds if str(x.get("entryType", "")).endswith("_IN")]
+        outs = [x for x in ds if str(x.get("entryType", "")).endswith("_OUT")]
+        if not ins or not outs:
+            still_open += 1   # position encore ouverte (ou historique incomplet)
+            continue
+        first, last = ins[0], outs[-1]
+        pnl = sum(float(x.get("profit", 0) or 0) + float(x.get("swap", 0) or 0)
+                  + float(x.get("commission", 0) or 0) for x in ds)
+        symbol = first.get("symbol") or last.get("symbol") or ""
+        side = "buy" if "BUY" in str(first.get("type", "")).upper() else "sell"
+        open_time = bot_loop._deal_time(first)
+        entry = float(first.get("price", 0) or 0) or None
+        exit_price = float(last.get("price", 0) or 0) or None
+        sig = _match_executed_signal(executed, symbol, side, open_time)
+        sl = sig.get("sl") if sig else None
+        tp = sig.get("tp") if sig else None
+        trade = {
+            "id": pid,
+            "symbol": symbol,
+            "side": side,
+            "volume": float(first.get("volume", 0) or 0),
+            "entry": entry,
+            "sl": sl,
+            "sl_initial": sl,
+            "tp": tp,
+            "planned_rr": sig.get("rr") if sig else None,
+            "open_time": open_time,
+            "close_time": bot_loop._deal_time(last),
+            "exit_price": exit_price,
+            "pnl": round(pnl, 2),
+            "result": "win" if pnl > 0 else ("loss" if pnl < 0 else "be"),
+            # Meme deduction TP/SL que le live (bot_loop) — une seule logique.
+            "exit_reason": bot_loop._exit_reason({"tp": tp, "sl": sl, "sl_initial": sl},
+                                                 exit_price),
+            "pnl_source": "broker",
+            "status": "closed",
+            "session": sig.get("session") if sig else None,
+            "mode": None,
+            "timeframe": sig.get("timeframe") if sig else None,
+            "reason": sig.get("reason") if sig else None,
+            "source": "import",
+            "settings_snapshot": {},   # reglages de l'epoque inconnus
+        }
+        if await store.add_trade(trade):
+            imported += 1
+        else:
+            already += 1
+
+    logger.info("Journal: import termine — %d importes, %d deja presents, %d encore "
+                "ouverts, %d hors bot (sur %d positions).",
+                imported, already, still_open, not_ours, len(groups))
+    return {"imported": imported, "already_present": already, "still_open": still_open,
+            "ignored_not_bot": not_ours, "positions_scanned": len(groups),
+            "deals_scanned": len(deals)}
 
 
 # ---------------- montage ----------------

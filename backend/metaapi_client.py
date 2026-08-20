@@ -283,6 +283,24 @@ class MetaApiWrapper:
             return result.get("deals", []) or []
         return result or []
 
+    async def get_deals_by_time_range(self, start_time, end_time) -> List[Dict[str, Any]]:
+        """Historique des transactions du broker sur une période.
+
+        Sert à IMPORTER dans le journal les trades réalisés avant que l'app ne les
+        enregistre elle-même. Si le SDK/la connexion n'expose pas cet historique, on
+        lève une erreur explicite plutôt que de renvoyer une liste vide qui passerait
+        pour « aucun trade » (jamais de donnée inventée ni d'ambiguïté silencieuse)."""
+        await self._connect()
+        if getattr(self._connection, "get_deals_by_time_range", None) is None:
+            raise MetaApiConnectionError(
+                "L'historique des transactions n'est pas exposé par cette connexion MetaApi."
+            )
+        result = await self._rpc_read("get_deals_by_time_range", start_time, end_time,
+                                      timeout=120.0)
+        if isinstance(result, dict):
+            return result.get("deals", []) or []
+        return result or []
+
     async def disconnect(self) -> None:
         try:
             if self._connection:

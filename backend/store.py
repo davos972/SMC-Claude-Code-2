@@ -182,6 +182,54 @@ async def list_backtests(limit: int = 20) -> List[Dict[str, Any]]:
     return await cur.to_list(length=limit)
 
 
+# ---------- Trades (journal de trading) ----------
+# Collection `trades` : la mémoire durable des trades RÉELS du bot (ouverture →
+# clôture). Avant, un trade fermé n'était utilisé que pour compter les pertes
+# consécutives puis oublié : aucun historique n'existait.
+
+async def add_trade(trade: Dict[str, Any]) -> bool:
+    """Insère un trade s'il n'existe pas déjà (clé = id de position broker).
+
+    `$setOnInsert` garantit qu'un ré-import ou un doublon d'ouverture ne peut
+    JAMAIS écraser un trade déjà clôturé (P&L réel). Renvoie True si inséré."""
+    db = get_db()
+    res = await db.trades.update_one({"id": trade["id"]}, {"$setOnInsert": trade}, upsert=True)
+    return res.upserted_id is not None
+
+
+async def update_trade(trade_id: str, updates: Dict[str, Any]) -> None:
+    db = get_db()
+    await db.trades.update_one({"id": trade_id}, {"$set": updates})
+
+
+async def close_trade(trade_id: str, updates: Dict[str, Any]) -> bool:
+    """Clôture un trade encore ouvert. Le filtre `status: open` évite qu'une
+    seconde détection de fermeture ne réécrive un P&L déjà enregistré."""
+    db = get_db()
+    payload = dict(updates)
+    payload["status"] = "closed"
+    res = await db.trades.update_one({"id": trade_id, "status": "open"}, {"$set": payload})
+    return res.matched_count > 0
+
+
+async def list_trades(limit: int = 500, status: Optional[str] = None) -> List[Dict[str, Any]]:
+    db = get_db()
+    q: Dict[str, Any] = {} if status is None else {"status": status}
+    cur = db.trades.find(q, {"_id": 0}).sort("open_time", -1).limit(limit)
+    return await cur.to_list(length=limit)
+
+
+async def get_trade(trade_id: str) -> Optional[Dict[str, Any]]:
+    db = get_db()
+    return await db.trades.find_one({"id": trade_id}, {"_id": 0})
+
+
+async def delete_trade(trade_id: str) -> bool:
+    db = get_db()
+    res = await db.trades.delete_one({"id": trade_id})
+    return res.deleted_count > 0
+
+
 # ---------- Bot state ----------
 
 async def set_bot_state(state: Dict[str, Any]) -> None:
@@ -198,6 +246,7 @@ async def get_bot_state() -> Dict[str, Any]:
             "running": False,
             "stop_reason": None,
             "consec_losses": 0,
+            "consec_session": None,
             "trades_today": 0,
             "current_day": None,
             "day_start_equity": 0.0,

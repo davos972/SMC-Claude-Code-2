@@ -117,6 +117,10 @@ DEFAULT_SETTINGS = {
     "bot_running": False,
     "stop_reason": None,  # manual | drawdown | consec_losses | None
 
+    # Journal de trading — capital de référence de la courbe d'évolution.
+    # 0 = déduit automatiquement (solde actuel du compte − P&L cumulé du journal).
+    "journal_initial_balance": 0.0,
+
     # Backtest defaults
     "default_spread_points": 25,
 
@@ -154,6 +158,38 @@ class Signal(BaseModel):
     reject_stage: Optional[str] = None  # insufficient | no_bias | no_poi | out_of_zone | near_miss
     reason_key: Optional[str] = None    # raison normalisée (nombres neutralisés) pour le regroupement
     bias: Optional[str] = None          # bullish | bearish — direction du setup (surtout utile sur les rejets)
+
+
+# ---------- Trades (journal de trading) ----------
+
+class Trade(BaseModel):
+    """Un trade RÉEL du bot, journalisé de son ouverture à sa clôture.
+
+    L'identifiant est celui de la position chez le broker (jamais un UUID) : c'est
+    lui qui permet de retrouver le P&L réalisé réel dans l'historique MetaApi."""
+    id: str
+    symbol: str
+    side: Literal["buy", "sell"]
+    volume: float = 0.0
+    entry: Optional[float] = None
+    sl: Optional[float] = None           # SL au moment de la sortie (trailing inclus)
+    sl_initial: Optional[float] = None   # SL d'origine, avant tout trailing
+    tp: Optional[float] = None
+    planned_rr: Optional[float] = None   # RR prévu au moment de l'entrée
+    open_time: str
+    close_time: Optional[str] = None
+    exit_price: Optional[float] = None
+    pnl: Optional[float] = None          # None = inconnu (jamais 0 par défaut)
+    result: Optional[Literal["win", "loss", "be", "unknown"]] = None
+    exit_reason: Optional[str] = None    # tp | sl | trailing_sl | other | unknown
+    pnl_source: Optional[str] = None     # broker | equity_delta
+    status: Literal["open", "closed"] = "open"
+    session: Optional[str] = None        # london | newyork | unknown
+    mode: Optional[str] = None           # intraday | scalping
+    timeframe: Optional[str] = None
+    reason: Optional[str] = None
+    source: Literal["bot", "import"] = "bot"
+    settings_snapshot: dict = {}         # réglages actifs au moment du trade
 
 
 # ---------- Notifications ----------

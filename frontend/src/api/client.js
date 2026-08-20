@@ -90,4 +90,8 @@ export const endpoints = {
     listBacktests: () => api.get("/backtests"),
     symbolSpread: (symbol = "XAUUSD") => api.get(`/symbol/spread?symbol=${symbol}`),
     stats: () => api.get("/stats"),
+    // Journal de trading (trades reels + metriques). L'import lit l'historique
+    // du broker : long -> instance apiLong.
+    journal: (limit = 500) => api.get(`/journal?limit=${limit}`),
+    importJournal: (days = 180) => apiLong.post("/journal/import", { days }),
 };

@@ -34,6 +34,14 @@ def _aggregate(candles_m1: List[Dict], minutes: int) -> List[Dict]:
 
 TF_MIN = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240}
 
+# Fenêtres d'analyse — SOURCE DE VÉRITÉ partagée backtest + live (cf. DECISIONS.md
+# 2026-07-30) : le live doit analyser le MÊME historique que le backtest, sinon la
+# structure détectée (swings, dernier OB, dealing range) diverge (mesuré : ~20% de
+# trades en moins avec 300/300/300 côté live, et des RR différents sur setups limites).
+WINDOW_HTF = 100   # bougies du niveau biais
+WINDOW_MTF = 150   # bougies du niveau structure/POI
+WINDOW_LTF = 201   # bougies du niveau entrée (200 + la bougie courante)
+
 
 def _to_iso(t: Any) -> str:
     """Coerce any time representation (datetime, ISO str, brokerTime) to ISO 8601 UTC."""
@@ -175,7 +183,8 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
 
     # Etat des limites de risque (simule l'arret jour / pertes consecutives / drawdown du live).
     rm: Dict[str, Any] = {
-        "day": None, "trades_today": 0, "consec": 0, "day_start_equity": equity,
+        "day": None, "session": None, "trades_today": 0, "consec": 0,
+        "day_start_equity": equity,
         "stopped": False, "stop_day": None, "stop_session": None,
     }
 
@@ -201,9 +210,9 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         sinfo = sess.is_in_session(cdt, settings) if cdt is not None else {"in_session": False, "session": None}
         hk = bisect.bisect_right(htf_times, cur_time)
         mk = bisect.bisect_right(mtf_times, cur_time)
-        htf_window = htf_candles[max(0, hk - 100):hk]
-        mtf_window = mtf_candles[max(0, mk - 150):mk]
-        ltf_window = ltf_candles[max(0, i - 200): i + 1]
+        htf_window = htf_candles[max(0, hk - WINDOW_HTF):hk]
+        mtf_window = mtf_candles[max(0, mk - WINDOW_MTF):mk]
+        ltf_window = ltf_candles[max(0, i - (WINDOW_LTF - 1)): i + 1]
         if len(htf_window) < 30 or len(mtf_window) < 30:
             continue
 
@@ -234,6 +243,13 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
             rm["day"] = day_key
             rm["trades_today"] = 0
             rm["day_start_equity"] = equity
+        # Nouvelle session → pertes consécutives remises à zéro : elles ne
+        # s'accumulent que DANS une même session (une perte encaissée hors
+        # session compte pour la session en cours). Miroir de bot_loop.
+        session_key = f"{day_key}|{sinfo['session']}"
+        if session_key != rm["session"]:
+            rm["session"] = session_key
+            rm["consec"] = 0
         if rm["stopped"]:
             if resume_policy == "next_day":
                 resumed = day_key != rm["stop_day"]

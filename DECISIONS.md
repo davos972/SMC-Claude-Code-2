@@ -16,7 +16,45 @@
 
 ---
 
-## 2026-07-30 — APK : signature permanente via secret GitHub (fin des désinstallations forcées)
+## 2026-08-19 — Journal de trading : les trades réels enfin persistés (collection `trades`)
+**Décision :** création d'une collection MongoDB `trades` qui garde chaque trade RÉEL
+du bot de son ouverture à sa clôture (`store.add_trade/close_trade/update_trade`).
+`bot_loop` y écrit à l'ouverture (RR prévu, entrée/SL/TP, session, timeframe, et un
+**instantané des réglages actifs** — 20 clés) et à la clôture (P&L réel lu chez le
+broker, prix/heure de sortie, TP vs SL vs SL suiveur déduit du prix de sortie). La
+page **Stats devient le Journal de trading** (P&L global, nb de trades, winrate,
+profit factor, drawdown max, courbe d'évolution vs capital de départ, détail de
+chaque trade). Les métriques réutilisent `backtest._compute_metrics` : une seule
+définition de winrate / profit factor / drawdown dans toute l'app. Un bouton
+**« Importer l'historique du broker »** (`POST /api/journal/import`) reconstruit les
+trades passés depuis l'historique des transactions MetaApi (filtré sur le magic
+number, jamais les trades manuels), en retrouvant le RR prévu via le journal des
+signaux quand un signal exécuté correspond (±15 min).
+**Pourquoi :** avant, un trade fermé servait uniquement à incrémenter le compteur de
+pertes consécutives, puis était **oublié** — aucun historique n'existait, et la
+« courbe d'équité » de la page Stats était une estimation à partir des signaux, sans
+aucun P&L réel. Impossible pour David de savoir ce que le bot avait accompli.
+Au passage, la reprise du suivi après redémarrage (`_restore_open_trades`) corrige un
+trou réel : `_open_positions` étant en mémoire seule, un redémarrage du serveur avec
+une position ouverte faisait perdre la détection de sa clôture (donc le comptage de
+la perte).
+**Écarté :** (1) recalculer le journal à la volée depuis MetaApi à chaque affichage —
+lent, dépendant de la connexion, et incapable de restituer les réglages de l'époque.
+(2) Déduire les trades du journal des signaux — un signal « exécuté » ne dit ni le
+P&L réel ni la sortie réelle. (3) Inventer un P&L quand l'historique broker est
+indisponible : le trade est marqué `result: "unknown"`, **sans P&L**, et exclu des
+statistiques (jamais compté comme un gain). (4) 5e onglet dédié — David a choisi de
+remplacer le contenu de la page Stats en gardant le nom de l'onglet.
+
+## 2026-08-10 — Pertes consécutives comptées PAR SESSION
+**Décision :** l'arrêt auto après N pertes consécutives (défaut 3) ne compte plus que les pertes d'une MÊME session : le compteur est remis à 0 au début de chaque nouvelle session (clé `jour|session`). Implémenté en miroir dans le live (`bot_loop`, nouveau champ `consec_session` dans `bot_state`) et le backtest (`run_backtest`, `rm["session"]`). Une perte encaissée HORS session (SL touché après la fermeture) compte pour la session en cours et est soldée au début de la suivante.
+**Pourquoi :** demande de David — avant, 2 pertes à Londres + 1 perte à New York stoppaient le bot, alors que chaque session repart sur un contexte de marché neuf. Preuve par scénario synthétique (pertes forcées 2 Londres + 3 NY, analyse monkeypatchée) : avant = arrêt à la 1re perte NY (3 trades) ; après = les 3 signaux NY passent (5 trades) et un 4e signal NY après 3 pertes NY reste bien bloqué. 25/25 tests d'intégration OK.
+**Écarté :** (1) reset au changement de jour seulement — ne répond pas à la demande (le cumul Londres→NY persiste) ; (2) rattacher une perte hors session à la session où le trade a été OUVERT — suivi plus complexe pour le même effet pratique, puisque l'arrêt n'est de toute façon évalué qu'en session.
+
+## 2026-07-30 — Filtre news tolérant aux pannes + fenêtres d'analyse live = backtest
+**Décision :** enquête sur « 4 trades en backtest juillet, 0 en live » — 3 causes identifiées (pause news sur flux injoignable le 01-07 ; boucle figée du 02 au 07 avant le gardien ; RR 0,82 vs 1,05 sur le setup du 08-07 à cause des fenêtres d'analyse différentes). Deux correctifs : (1) `news.py` sert le DERNIER calendrier valide si le flux faireconomy est injoignable et que le cache a < 12 h (`_STALE_MAX_S`, réponse `stale: true`) — au-delà ou sans cache, blocage prudent inchangé ; en juillet le flux a eu 120 micro-coupures qui bloquaient les entrées en pleine session. (2) Les fenêtres d'analyse deviennent des constantes exportées par `backtest.py` (`WINDOW_HTF=100, WINDOW_MTF=150, WINDOW_LTF=201`) et le live (`bot_loop`) + les endpoints `/analysis/run` (branche 3 niveaux) et `/analysis/at-time` analysent EXACTEMENT ces fenêtres au lieu de 300/300/300 — le backtest validé est la référence. La branche mono-timeframe de `/analysis/run` (zones du graphique) garde ses 300 bougies : c'est de l'affichage, les tronquer ferait disparaître les zones anciennes.
+**Pourquoi :** un calendrier hebdo publié à l'avance reste exact des heures — bloquer le trading à chaque hoquet HTTP coûtait des trades validés ; et 300 vs 100-200 bougies changent la structure détectée (~20 % de trades en moins, RR différents sur les setups limites).
+**Écarté :** (1) supprimer le filtre news — non, la protection reste, seule la sensibilité aux pannes du FLUX change ; (2) seuil 12 h paramétrable dans Réglages — inutile pour un choix technique stable, constante commentée ; (3) aligner aussi la bougie en formation (le live analyse la bougie courante naissante, le backtest la bougie close) — écart réel mais changer la sémantique d'entrée du live est un chantier séparé, non traité ici.
 **Décision :** le workflow `android-apk.yml` signait chaque APK avec la clé de debug JETABLE générée par le runner → signature différente à chaque build → Android refusait toute mise à jour par-dessus l'app installée (vécu par David le 29-07). Désormais une clé PKCS12 permanente (alias/mot de passe standard du debug Android) est injectée depuis le secret GitHub `ANDROID_DEBUG_KEYSTORE_B64` vers `~/.android/debug.keystore` avant le build, avec échec EXPLICITE du workflow si le secret manque (sinon retour silencieux à une clé jetable). Copie de secours de la clé chez David : dossier `cles-apk/` À CÔTÉ du dépôt (jamais dedans). Empreinte SHA-256 : B1:96:C0:98:…:FE:7F. Un dernier cycle désinstaller/réinstaller est nécessaire pour passer sur cette signature.
 **Pourquoi :** sans clé stable, chaque mise à jour d'APK exige de désinstaller (perte des réglages d'appareil : URL backend, clé API).
 **Écarté :** (1) committer le keystore dans le dépôt — interdit (garde-fou secrets), même privé ; (2) passer en build release signé via build.gradle — plus propre mais touche le projet Android pour le même résultat ; le keystore de debug standard suffit pour une app mono-utilisateur hors Play Store.

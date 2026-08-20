@@ -2,19 +2,30 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
 
+logger = logging.getLogger("goldflow.news")
+
 CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 
 _cache: Dict[str, Any] = {"ts": None, "data": [], "error": None}
 _CACHE_TTL = 600  # 10 minutes
+# Tolérance aux pannes du flux (décision 2026-07-30, cf. DECISIONS.md) : en cas
+# d'échec, on sert le DERNIER calendrier valide s'il a moins de 12 h — c'est un
+# calendrier hebdomadaire publié à l'avance, il reste exact pendant des heures.
+# Au-delà (ou si jamais récupéré), on renvoie l'erreur → le bot suspend les
+# entrées par prudence, comme avant. En juillet 2026, 120 micro-coupures du flux
+# avaient bloqué le bot en pleine session (trade du 01-07 14h02 manqué).
+_STALE_MAX_S = 12 * 3600
 
 
 async def fetch_calendar(currency: str = "USD") -> Dict[str, Any]:
-    """Return calendar events (filtered by currency by default). Caches 10min."""
+    """Return calendar events (filtered by currency by default). Caches 10min.
+    On fetch failure, serves the last good calendar if younger than 12h (stale=True)."""
     now = datetime.now(timezone.utc)
     if _cache["ts"] and (now - _cache["ts"]).total_seconds() < _CACHE_TTL:
         events = _filter(_cache["data"], currency)
@@ -31,6 +42,13 @@ async def fetch_calendar(currency: str = "USD") -> Dict[str, Any]:
         return {"events": _filter(data, currency), "error": None, "fetched_at": now.isoformat()}
     except Exception as e:
         _cache["error"] = str(e)
+        age_s = (now - _cache["ts"]).total_seconds() if _cache["ts"] else None
+        if age_s is not None and age_s < _STALE_MAX_S:
+            logger.warning("Flux news injoignable (%s) — calendrier en cache servi (âge %.0f min).",
+                           e, age_s / 60)
+            return {"events": _filter(_cache["data"], currency), "error": None,
+                    "stale": True, "fetched_at": _cache["ts"].isoformat(),
+                    "fetch_error": str(e)}
         return {"events": [], "error": f"Calendrier indisponible: {e}", "fetched_at": None}
 
 

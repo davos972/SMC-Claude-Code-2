@@ -18,7 +18,9 @@ import sessions as sess
 import store
 from metaapi_client import MetaApiConnectionError, metaapi_client
 from smc import analyze
-from backtest import compute_trailing_sl  # logique de trailing partagée live + backtest
+# Logique de trailing + fenêtres d'analyse partagées live + backtest (mêmes quantités
+# de bougies analysées → même structure détectée, cf. DECISIONS.md 2026-07-30).
+from backtest import compute_trailing_sl, WINDOW_HTF, WINDOW_MTF, WINDOW_LTF
 
 logger = logging.getLogger("goldflow.bot")  # boucle de trading
 
@@ -30,6 +32,7 @@ _news_outage_active: bool = False       # True while the news calendar is unreac
 _watchdog_task: Optional[asyncio.Task] = None       # gardien de vivacité (tâche unique)
 _last_heartbeat: Optional[datetime] = None          # pouls : dernier tour de boucle réussi (lecture compte OK)
 _last_watchdog_notify: Optional[datetime] = None    # dernière notif du gardien (anti-spam)
+_journal_restored: bool = False                     # journal : trades ouverts deja repris apres redemarrage ?
 
 
 def calc_lot_size(balance: float, risk_pct: float, entry: float, sl: float,
@@ -164,10 +167,16 @@ async def _close_all_bot_positions(magic_number: int, reason: str = "news") -> N
         logger.warning("_close_all_bot_positions failed: %s", e)
 
 
-async def _realized_pnl(position_id: str) -> Optional[float]:
-    """Real realized P&L of a closed position from the broker's deal history
-    (profit + swap + commission). Returns None if the history is unavailable, so
-    the caller can fall back to the (mono-symbol-only) equity-delta estimate."""
+def _deal_time(d: Dict) -> str:
+    t = d.get("time")
+    return t.isoformat() if hasattr(t, "isoformat") else str(t or "")
+
+
+async def _closed_position_info(position_id: str) -> Optional[Dict[str, Any]]:
+    """Infos RÉELLES d'une position clôturée, lues dans l'historique du broker :
+    P&L réalisé (profit + swap + commission), prix et heure de sortie. Renvoie None
+    si l'historique est indisponible, pour que l'appelant retombe sur l'estimation
+    par delta d'équité (valable seulement avec une position ouverte à la fois)."""
     try:
         deals = await metaapi_client.get_deals_by_position(position_id)
     except Exception as e:
@@ -180,7 +189,150 @@ async def _realized_pnl(position_id: str) -> Optional[float]:
         total += float(d.get("profit", 0) or 0)
         total += float(d.get("swap", 0) or 0)
         total += float(d.get("commission", 0) or 0)
-    return total
+    last = sorted(deals, key=_deal_time)[-1]   # la sortie = derniere transaction
+    return {
+        "pnl": total,
+        "exit_price": float(last.get("price", 0) or 0) or None,
+        "close_time": _deal_time(last) or None,
+    }
+
+
+# Reglages recopies dans chaque trade du journal : ceux qui influencent REELLEMENT
+# l'entree, la sortie ou la taille de position. Permet de relire un trade des mois
+# plus tard en sachant sous quelle configuration il a ete pris.
+_SNAPSHOT_KEYS = (
+    "trading_mode", "risk_per_trade_pct", "min_rr", "max_lot_per_trade",
+    "trailing_mode", "trailing_trigger_r", "trailing_distance_r", "trailing_lookback",
+    "require_fvg_entry", "require_sweep_then_choch", "require_unmitigated_ob",
+    "require_premium_discount", "ob_entry_mode", "fractal_n", "recent_window",
+    "max_trades_per_day", "max_consec_losses", "max_drawdown_pct",
+    "news_filter_enabled", "prop_firm_enabled",
+)
+
+
+def _settings_snapshot(s: Dict) -> Dict[str, Any]:
+    return {k: s.get(k) for k in _SNAPSHOT_KEYS}
+
+
+def _exit_reason(tracked: Dict, exit_price: Optional[float]) -> str:
+    """Deduit ce qui a fait sortir : TP, SL, SL deplace par le trailing, ou autre
+    (cloture manuelle / news). MetaApi ne donne pas de motif fiable -> on compare le
+    prix de sortie au TP et au SL courant, avec une tolerance de 15 % de la distance
+    TP<->SL d'origine (glissement/spread). Renvoie "unknown" si l'info manque."""
+    tp, sl = tracked.get("tp"), tracked.get("sl")
+    sl0 = tracked.get("sl_initial", sl)
+    if exit_price is None or tp is None or sl is None:
+        return "unknown"
+    ref = abs(float(tp) - float(sl0 if sl0 is not None else sl)) or 1.0
+    tol = 0.15 * ref
+    if abs(exit_price - float(tp)) <= tol:
+        return "tp"
+    if abs(exit_price - float(sl)) <= tol:
+        moved = sl0 is not None and abs(float(sl) - float(sl0)) > tol
+        return "trailing_sl" if moved else "sl"
+    return "other"
+
+
+async def _journal_open(pos_id: str, s: Dict, symbol: str, sig: Dict, lot: float,
+                        session: str, timeframe: str, when: datetime) -> None:
+    """Ouvre la ligne du trade dans le journal (collection `trades`).
+
+    Ecriture « au mieux » : l'ordre est DEJA place chez le broker quand on arrive
+    ici — une panne de base ne doit jamais faire echouer/annuler un trade."""
+    try:
+        await store.add_trade({
+            "id": pos_id,
+            "symbol": symbol,
+            "side": sig["side"],
+            "volume": float(lot),
+            "entry": float(sig["entry"]),
+            "sl": float(sig["sl"]),
+            "sl_initial": float(sig["sl"]),
+            "tp": float(sig["tp"]),
+            "planned_rr": float(sig["rr"]) if sig.get("rr") is not None else None,
+            "open_time": when.isoformat(),
+            "status": "open",
+            "session": session,
+            "mode": s.get("trading_mode", "intraday"),
+            "timeframe": timeframe,
+            "reason": sig.get("reason"),
+            "source": "bot",
+            "settings_snapshot": _settings_snapshot(s),
+        })
+    except Exception as e:
+        logger.warning("Journal: ouverture du trade %s non enregistree: %s", pos_id, e)
+
+
+async def _journal_close(pos_id: str, tracked: Dict, pnl: float, result: str,
+                         info: Optional[Dict]) -> None:
+    """Cloture la ligne du journal : P&L reel, prix de sortie, TP/SL touche."""
+    exit_price = (info or {}).get("exit_price")
+    try:
+        await store.close_trade(pos_id, {
+            "pnl": round(float(pnl), 2),
+            "result": result,
+            "exit_price": exit_price,
+            "close_time": (info or {}).get("close_time") or datetime.now(timezone.utc).isoformat(),
+            "sl": tracked.get("sl"),          # SL effectif a la sortie (trailing compris)
+            "exit_reason": _exit_reason(tracked, exit_price),
+            "pnl_source": "broker" if info else "equity_delta",
+        })
+    except Exception as e:
+        logger.warning("Journal: cloture du trade %s non enregistree: %s", pos_id, e)
+
+
+async def _restore_open_trades(magic_number: int) -> bool:
+    """Apres un redemarrage du serveur, le suivi memoire (`_open_positions`) repart
+    vide : on le reconstruit depuis le journal. Les trades encore « ouverts » en base
+    dont la position n'existe plus chez le broker sont clotures avec le P&L reel de
+    l'historique ; si cet historique est indisponible, le trade est marque cloture
+    avec un resultat "unknown" et SANS P&L invente (il est alors exclu des
+    statistiques, jamais compte comme un gain). Renvoie False si MetaApi n'a pas
+    repondu (nouvelle tentative au tour suivant)."""
+    try:
+        positions = await metaapi_client.get_positions()
+    except MetaApiConnectionError as e:
+        logger.warning("Reprise du journal impossible (positions): %s", e)
+        return False
+    live = {str(p.get("id", "")) for p in positions
+            if int(p.get("magic", 0)) == magic_number}
+    try:
+        open_trades = await store.list_trades(200, status="open")
+    except Exception as e:
+        logger.warning("Reprise du journal impossible (base): %s", e)
+        return False
+    for t in open_trades:
+        tid = t.get("id", "")
+        tracked = {
+            "equity_at_open": 0.0,
+            "symbol": t.get("symbol", ""),
+            "side": t.get("side", "buy"),
+            "entry": t.get("entry"),
+            "sl": t.get("sl"),
+            "sl_initial": t.get("sl_initial", t.get("sl")),
+            "tp": t.get("tp"),
+            "R": abs(float(t.get("entry") or 0) - float(t.get("sl_initial") or t.get("sl") or 0)),
+            "max_fav": float(t.get("entry") or 0),
+        }
+        if tid in live:
+            _open_positions[tid] = tracked
+            logger.info("Journal: suivi du trade ouvert %s (%s) repris apres redemarrage.",
+                        tid, t.get("symbol"))
+            continue
+        info = await _closed_position_info(tid)
+        if info is None:
+            await store.close_trade(tid, {
+                "result": "unknown", "pnl": None, "exit_reason": "unknown",
+                "close_time": datetime.now(timezone.utc).isoformat(),
+            })
+            logger.warning("Journal: trade %s cloture sans P&L (historique broker "
+                           "indisponible) — exclu des statistiques.", tid)
+            continue
+        pnl = info["pnl"]
+        result = "win" if pnl > 0 else ("loss" if pnl < 0 else "be")
+        await _journal_close(tid, tracked, pnl, result, info)
+        logger.info("Journal: trade %s cloture a posteriori (P&L reel %.2f).", tid, pnl)
+    return True
 
 
 async def _check_closed_positions(current_equity: float, magic_number: int) -> None:
@@ -200,10 +352,16 @@ async def _check_closed_positions(current_equity: float, magic_number: int) -> N
             # Prefer the broker's REAL realized P&L for this exact position. The global
             # equity delta only approximates it with a single open position at a time and
             # becomes wrong with several symbols open at once — so it's only a fallback.
-            delta = await _realized_pnl(pos_id)
+            info = await _closed_position_info(pos_id)
+            delta = info["pnl"] if info else None
             if delta is None:
                 delta = current_equity - equity_at_open
             be_threshold = equity_at_open * 0.001  # 0.1% = break-even
+
+            # Journal de trading : P&L reel, prix de sortie, TP/SL touche.
+            result = ("win" if delta > be_threshold
+                      else ("be" if delta >= -be_threshold else "loss"))
+            await _journal_close(pos_id, tracked, delta, result, info)
 
             state = await store.get_bot_state()
             consec = state.get("consec_losses", 0)
@@ -271,13 +429,17 @@ async def _apply_trailing(s: Dict, magic_number: int) -> None:
             await metaapi_client.modify_position(pid, new_sl, tr["tp"])
             logger.info("Trailing %s: SL %.5f -> %.5f (pos %s)", mode, tr["sl"], new_sl, pid)
             tr["sl"] = new_sl
+            try:
+                await store.update_trade(pid, {"sl": new_sl})
+            except Exception as e:
+                logger.warning("Journal: SL trailing non enregistre (%s): %s", pid, e)
         except MetaApiConnectionError as e:
             logger.warning("Trailing: modify_position(%s) échec: %s", pid, e)
 
 
 async def _bot_trading_loop() -> None:
     """Main loop: every 30 s, check for new candle close and run analysis."""
-    global _last_heartbeat
+    global _last_heartbeat, _journal_restored
     logger.info("Trading loop started.")
     while True:
         await asyncio.sleep(30)
@@ -334,6 +496,12 @@ async def _bot_trading_loop() -> None:
                 logger.info("Nouveau jour %s — compteurs réinitialisés (equity=%.2f, ref=%.2f, hwm=%.2f).",
                             today_str, equity, day_ref, hwm)
 
+            # ── Journal : reprendre les trades encore ouverts apres un redemarrage ──
+            # Doit passer AVANT _check_closed_positions, sinon une position rouverte
+            # en memoire ne serait jamais rapprochee de sa ligne de journal.
+            if not _journal_restored:
+                _journal_restored = await _restore_open_trades(magic)
+
             # ── Check for position closes (update consec_losses) ──
             await _check_closed_positions(equity, magic)
             state = await store.get_bot_state()  # reload after update
@@ -345,6 +513,17 @@ async def _bot_trading_loop() -> None:
             session_info = sess.is_in_session(now, s)
             if not session_info["in_session"]:
                 continue
+
+            # ── Nouvelle session → pertes consécutives remises à zéro ──
+            # L'arrêt après N pertes ne compte que les pertes d'une MÊME session ;
+            # une perte encaissée hors session compte pour la session en cours et
+            # est soldée au début de la suivante. Miroir de backtest.run_backtest.
+            session_key = f"{today_str}|{session_info.get('session')}"
+            if state.get("consec_session") != session_key:
+                await store.set_bot_state({"consec_session": session_key,
+                                           "consec_losses": 0})
+                state["consec_session"] = session_key
+                state["consec_losses"] = 0
 
             # ── News pause check ──
             if s.get("news_filter_enabled", True):
@@ -461,7 +640,7 @@ async def _bot_trading_loop() -> None:
 
             # ── New candle close detection ──
             try:
-                ltf_raw = await metaapi_client.get_candles(symbol, ltf, None, 300)
+                ltf_raw = await metaapi_client.get_candles(symbol, ltf, None, WINDOW_LTF)
                 if not ltf_raw:
                     continue
                 last_t = ltf_raw[-1].get("time")
@@ -479,8 +658,8 @@ async def _bot_trading_loop() -> None:
 
             # ── SMC analysis (top-down 3 niveaux) ──
             try:
-                htf_raw = await metaapi_client.get_candles(symbol, htf, None, 300)
-                mtf_raw = await metaapi_client.get_candles(symbol, mtf, None, 300)
+                htf_raw = await metaapi_client.get_candles(symbol, htf, None, WINDOW_HTF)
+                mtf_raw = await metaapi_client.get_candles(symbol, mtf, None, WINDOW_MTF)
 
                 def _norm(arr):
                     out = []
@@ -613,10 +792,15 @@ async def _bot_trading_loop() -> None:
                         # Suivi pour le trailing stop live (SL modifié chez le broker).
                         "entry": float(sig["entry"]),
                         "sl": float(sig["sl"]),
+                        "sl_initial": float(sig["sl"]),   # SL d'origine (journal : TP/SL vs trailing)
                         "tp": float(sig["tp"]),
                         "R": abs(float(sig["entry"]) - float(sig["sl"])),
                         "max_fav": float(sig["entry"]),
                     }
+                    # Journal de trading : la ligne est ouverte ici, cloturee par
+                    # _check_closed_positions avec le P&L reel du broker.
+                    await _journal_open(pos_id, s, symbol, sig, lot,
+                                        session_info.get("session", "unknown"), ltf, now)
                 else:
                     logger.error("Ordre placé sans identifiant de position exploitable — "
                                  "suivi gain/perte ignoré pour ce trade. Réponse: %s", order)
@@ -643,8 +827,9 @@ async def _bot_trading_loop() -> None:
 
 def start(day_start_equity: float = 0.0) -> None:
     """Start the trading loop. Call from bot_start() endpoint."""
-    global _bot_task, _open_positions, _last_heartbeat
+    global _bot_task, _open_positions, _last_heartbeat, _journal_restored
     _open_positions = {}
+    _journal_restored = False   # les trades encore ouverts seront repris depuis le journal
     _last_heartbeat = datetime.now(timezone.utc)  # période de grâce avant le 1er pouls réel
     if _bot_task and not _bot_task.done():
         _bot_task.cancel()

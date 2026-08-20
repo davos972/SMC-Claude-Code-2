@@ -45,7 +45,15 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
 
 - **Dashboard** : bouton START/STOP manuel rond + rail des sessions 24h avec marqueur « maintenant », solde/équité/P&L jour, graphique avec zones SMC, positions ouvertes avec clôture d'urgence, journal des signaux (y compris setups REJETÉS avec la raison), annonces éco du jour
 - **Backtest** (simple) : config actuelle sur période choisie (max 6 mois), données M1 MetaApi, spread simulé paramétrable (défaut 25 points XAUUSD), rapport (winrate, profit factor, RR, DD max, courbe d'équité, liste des trades cliquables sur le graphique), avertissement performances passées
-- **Stats live** : winrate, RR moyen, profit factor, stats par session et jour de semaine
+- **Journal de trading** (onglet « Stats ») : les trades RÉELS du bot, stockés dans la
+  collection Mongo `trades` (écrite par `bot_loop` à l'ouverture puis à la clôture, avec
+  le P&L réel du broker). P&L global, nb de trades, winrate, profit factor, drawdown max,
+  courbe d'évolution vs capital de départ (réglage `journal_initial_balance`, 0 = déduit
+  du solde), et le détail de chaque trade : jour/heure, RR prévu, TP ou SL touché, SL
+  suiveur, et les **réglages qui différaient des défauts** au moment du trade. Endpoints
+  `GET /api/journal` et `POST /api/journal/import` (import de l'historique broker MetaApi,
+  filtré sur le magic number). Métriques calculées par `backtest._compute_metrics` —
+  ne jamais en écrire une seconde version
 - **Notifications** : in-app (cloche + historique) + push navigateur (Web Push), chaque événement activable
 - **Réglages** : token MetaApi + accountId (masqué, jamais exposé au frontend), démo/réel verrouillé, tous les paramètres ci-dessus
 
@@ -91,6 +99,9 @@ Le code (revue complète faite) est globalement conforme. ~~Problème en cours~~
 - Ne pas activer le compte réel ni assouplir sa double confirmation
 - Préserver le mode dégradé explicite : si MetaApi n'est pas configuré/connecté, afficher l'erreur, jamais de données factices
 - Ne pas affaiblir la protection par clé API (`API_KEY`/`X-API-Key`) ni élargir `_PUBLIC_PATHS` dans `server.py`
+- Journal de trading : ne JAMAIS combler un P&L manquant par une estimation. Si
+  l'historique broker est indisponible, le trade est clôturé avec `result: "unknown"` et
+  `pnl: null`, et il est exclu des statistiques (visible dans la liste, jamais compté)
 
 ## 10. Environnement local et commandes (Windows 11, PowerShell)
 
@@ -137,6 +148,16 @@ Procédure exacte (deux terminaux PowerShell), depuis `SMC App/repo/` :
    py -m pytest backend/tests/backend_test.py -v
    ```
    Attendu : `25 passed`.
+
+**Piège — variables d'environnement vides sous PowerShell (découvert 2026-08-10).**
+`$env:METAAPI_TOKEN=""` SUPPRIME la variable au lieu de la vider → `load_dotenv()`
+recharge alors le vrai token depuis `backend/.env` et le serveur démarre CONNECTÉ
+à MetaApi (pas en mode dégradé). Démarrer le backend de test via un wrapper Python,
+où une variable vide existe réellement :
+```powershell
+cd backend
+py -c "import os; os.environ['METAAPI_TOKEN']=''; os.environ['METAAPI_ACCOUNT_ID']=''; os.environ['DB_NAME']='goldflow_test'; import uvicorn; uvicorn.run('server:app', host='127.0.0.1', port=8000)"
+```
 
 **Piège — base propre à chaque exécution.** Un test (`TestZTokenPreservation`) écrit
 un faux token en base ; à la relance suivante le backend redémarre « configuré » et
