@@ -59,7 +59,18 @@ DEFAULT_SETTINGS = {
     "swing_confirm": 2,             # nb de bougies opposées consécutives qui valident un swing
     "ob_zone": "wick",              # wick (manuel §4.1 : high→low) | body (historique : open/close)
     "structure_break_mode": "close",  # close (conservateur) | wick (agressif) — manuel §1.3
-    "tp_target": "range_bound",     # range_bound (borne opposée du range) | nearest_swing (historique)
+    # range_bound (borne opposée du range, défaut) | liquidity (BSL/SSL la plus proche)
+    # | nearest_swing (historique)
+    "tp_target": "range_bound",
+    # Liquidité BSL/SSL : deux sommets sont « alignés » (= un seul réservoir de
+    # liquidité) si leur écart est sous ce facteur x l'amplitude moyenne d'une bougie.
+    "liquidity_cluster_atr": 0.25,
+    # Placement du SL : "poi" = bord de l'order block / du sweep (historique) ;
+    # "protected" = AU-DELÀ du creux/sommet protégé le plus proche (Synthèse V3
+    # §Étape 8). "protected" ne fait qu'éloigner le SL, jamais le resserrer.
+    "sl_mode": "poi",
+    # Le piège à stops placé juste avant la POI doit avoir été pris avant d'entrer.
+    "require_inducement_swept": False,
     # Fraîcheur de l'OB (manuel §4.1 « OB déjà testé = à éviter », nuancé par la Synthèse
     # V3 §5.8 « facteur de qualité, pas condition absolue ») : 0 = filtre DÉSACTIVÉ, le
     # compteur de touchés reste affiché. N > 0 = écarte un OB déjà retouché N fois.

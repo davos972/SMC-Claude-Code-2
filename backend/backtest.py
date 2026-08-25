@@ -176,6 +176,9 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     require_daily_bias = bool(_dparam("require_daily_bias", False))
     require_po3 = bool(_dparam("require_po3", False))
     po3_wick_ratio = float(_dparam("po3_wick_ratio", 0.20))
+    liquidity_cluster_atr = float(_dparam("liquidity_cluster_atr", 0.25))
+    sl_mode = str(_dparam("sl_mode", "poi"))
+    require_inducement_swept = bool(_dparam("require_inducement_swept", False))
     # Trailing / break-even (OFF par défaut = aucun changement vs baseline).
     # Logique PARTAGÉE avec le live (bot_loop._apply_trailing utilise le même
     # compute_trailing_sl ; en live il est piloté par les Réglages).
@@ -356,7 +359,9 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
                          max_ob_touches=max_ob_touches,
                          require_displacement=require_displacement,
                          require_daily_bias=require_daily_bias, require_po3=require_po3,
-                         po3_wick_ratio=po3_wick_ratio)
+                         po3_wick_ratio=po3_wick_ratio,
+                         liquidity_cluster_atr=liquidity_cluster_atr, sl_mode=sl_mode,
+                         require_inducement_swept=require_inducement_swept)
         sig = result.get("signal")
         if sig:
             entry_price = sig["entry"] + (spread_price if sig["side"] == "buy" else -spread_price)

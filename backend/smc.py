@@ -90,6 +90,48 @@ class LiquiditySweep:
 
 
 @dataclass
+class LiquidityLevel:
+    """BSL / SSL — Manuel §2.1 et §2.2, Synthèse V3 §5.3.
+
+    BSL (Buy Side Liquidity) = zone AU-DESSUS d'un sommet : les stops des vendeurs.
+    SSL (Sell Side Liquidity) = zone SOUS un creux : les stops des acheteurs.
+    Le marché va souvent chercher ces stops avant de repartir dans l'autre sens.
+    """
+    price: float
+    kind: Literal["BSL", "SSL"]
+    idx: int                    # bougie du sommet/creux le plus récent du groupe
+    time: Any
+    # Nombre de sommets/creux ALIGNÉS sur ce niveau. « Plus le niveau a été testé de
+    # fois, plus la liquidité accumulée au-dessus est importante » (Manuel §2.1) —
+    # c'est ce qui distingue un simple sommet d'un vrai réservoir de liquidité.
+    tests: int = 1
+    # Niveau FORT / protégé vs FAIBLE / cible (Synthèse V3 §5.8) : en tendance
+    # haussière les creux sont protégés (référence pour le SL) et les sommets sont
+    # des cibles ; symétrique en tendance baissière.
+    protected: bool = False
+    swept: bool = False         # mèche au-delà PUIS réintégration = prise de liquidité
+    swept_idx: int = -1
+    swept_time: Any = None
+    broken: bool = False        # clôture franchement au-delà = vraie cassure, pas un sweep
+    broken_idx: int = -1
+
+
+@dataclass
+class Inducement:
+    """Inducement — Manuel §2.4, Synthèse V3 §5.3.
+
+    Liquidité « piège » placée juste AVANT la vraie zone d'intérêt, destinée à
+    attirer les entrées prématurées. Le vrai mouvement démarre après ce piège.
+    """
+    price: float
+    idx: int
+    time: Any
+    direction: Literal["bullish", "bearish"]
+    swept: bool = False
+    swept_idx: int = -1
+
+
+@dataclass
 class DailyContext:
     """Contexte journalier — Synthèse V3 §Étape 1 (« Module 1 · Analyse »).
 
@@ -396,6 +438,99 @@ def detect_liquidity_sweeps(candles: List[Candle], swings: List[Swing], lookback
     return sweeps
 
 
+def _mean_range(candles: List[Candle]) -> float:
+    """Amplitude moyenne d'une bougie — sert d'unité de tolérance indépendante du prix
+    (l'or ne se regroupe pas avec la même tolérance qu'un indice)."""
+    if not candles:
+        return 0.0
+    return sum(c["high"] - c["low"] for c in candles) / len(candles)
+
+
+def detect_liquidity_levels(candles: List[Candle], swings: List[Swing],
+                            bias: Optional[str] = None,
+                            cluster_atr: float = 0.25) -> List[LiquidityLevel]:
+    """Regroupe les swings en niveaux de liquidité BSL / SSL.
+
+    Des sommets ALIGNÉS (doubles sommets, séries de sommets au même prix) forment UN
+    SEUL réservoir de liquidité, d'autant plus gros qu'il a été testé souvent — c'est
+    la lecture du Manuel §2.1. Deux swings sont considérés alignés si l'écart de prix
+    est inférieur à `cluster_atr` × l'amplitude moyenne d'une bougie.
+
+    `bias` marque les niveaux PROTÉGÉS (Synthèse V3 §5.8) : en tendance haussière les
+    creux sont protégés (le scénario est invalide s'ils cèdent) et les sommets sont
+    des cibles.
+    """
+    tol = _mean_range(candles) * max(0.0, cluster_atr)
+    levels: List[LiquidityLevel] = []
+    for kind, swing_kind in (("BSL", "high"), ("SSL", "low")):
+        group: List[Swing] = []
+        for sw in sorted((s for s in swings if s.kind == swing_kind), key=lambda s: s.price):
+            if group and abs(sw.price - group[-1].price) <= tol:
+                group.append(sw)
+                continue
+            if group:
+                levels.append(_level_from_group(group, kind, bias))
+            group = [sw]
+        if group:
+            levels.append(_level_from_group(group, kind, bias))
+
+    # Sweep / cassure : on scanne les bougies POSTÉRIEURES au niveau.
+    for lv in levels:
+        for k in range(lv.idx + 1, len(candles)):
+            c = candles[k]
+            if lv.kind == "BSL":
+                if c["close"] > lv.price:
+                    lv.broken, lv.broken_idx = True, k
+                    break
+                if c["high"] > lv.price and not lv.swept:
+                    lv.swept, lv.swept_idx, lv.swept_time = True, k, c["time"]
+            else:
+                if c["close"] < lv.price:
+                    lv.broken, lv.broken_idx = True, k
+                    break
+                if c["low"] < lv.price and not lv.swept:
+                    lv.swept, lv.swept_idx, lv.swept_time = True, k, c["time"]
+    levels.sort(key=lambda l: l.idx)
+    return levels
+
+
+def _level_from_group(group: List[Swing], kind: str, bias: Optional[str]) -> LiquidityLevel:
+    """Un groupe de swings alignés → un niveau. Le prix retenu est l'EXTRÊME du groupe
+    (le vrai bord de la liquidité), l'indice le plus récent."""
+    price = max(s.price for s in group) if kind == "BSL" else min(s.price for s in group)
+    latest = max(group, key=lambda s: s.idx)
+    protected = (bias == "bullish" and kind == "SSL") or (bias == "bearish" and kind == "BSL")
+    return LiquidityLevel(price=price, kind=kind, idx=latest.idx, time=latest.time,
+                          tests=len(group), protected=protected)
+
+
+def detect_inducement(swings: List[Swing], poi: OrderBlock, candles: List[Candle],
+                      direction: str) -> Optional[Inducement]:
+    """Le petit niveau attractif situé juste AVANT la POI, dans le sens du mouvement.
+
+    Setup haussier : le creux mineur le PLUS BAS encore situé au-dessus de l'order
+    block — le dernier obstacle avant la vraie zone. Les traders y achètent avec un
+    stop serré ; le prix vient le chercher, puis seulement ensuite atteint la POI.
+    Symétrique en baissier.
+    """
+    if direction == "bullish":
+        cands = [s for s in swings if s.kind == "low" and s.idx > poi.end_idx and s.price > poi.top]
+        chosen = min(cands, key=lambda s: s.price) if cands else None
+    else:
+        cands = [s for s in swings if s.kind == "high" and s.idx > poi.end_idx and s.price < poi.bottom]
+        chosen = max(cands, key=lambda s: s.price) if cands else None
+    if chosen is None:
+        return None
+    ind = Inducement(price=chosen.price, idx=chosen.idx, time=chosen.time, direction=direction)
+    for k in range(chosen.idx + 1, len(candles)):
+        c = candles[k]
+        if (direction == "bullish" and c["low"] < ind.price) or \
+           (direction == "bearish" and c["high"] > ind.price):
+            ind.swept, ind.swept_idx = True, k
+            break
+    return ind
+
+
 def premium_discount(swings: List[Swing]) -> Optional[Dict[str, float]]:
     """Fallback range premium/discount: most recent swing high and low (méthode brute)."""
     if len(swings) < 2:
@@ -516,7 +651,9 @@ _OUT_OF_ZONE_REASONS = {
 def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_struct,
                   swings_target, sweeps_entry, events_entry, fvgs_entry,
                   min_rr, recent_window, require_fvg, require_sequence, require_pd=True,
-                  ob_entry_mode="close", tp_target="range_bound", require_displacement=False):
+                  ob_entry_mode="close", tp_target="range_bound", require_displacement=False,
+                  liq_levels=None, candles_struct=None, sl_mode="poi",
+                  require_inducement_swept=False, ctx_out=None):
     """Evaluate the entry trigger on the entry timeframe for a given HTF bias direction.
     Returns (Signal, None) if all conditions pass, else (None, reject_reason)."""
     bullish = direction == "bullish"
@@ -584,6 +721,19 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_s
         if not any(e.displacement for e in recent_events):
             return None, "Pas de displacement sur la cassure (entrée)"
 
+    # 3ter) Inducement (Manuel §2.4) : le piège à stops placé juste AVANT la POI doit
+    #       avoir été pris. « Le vrai mouvement démarre après ce piège » (Synthèse V3 §5.3).
+    inducement = None
+    if candles_struct:
+        inducement = detect_inducement(swings_target, poi, candles_struct, direction)
+    if ctx_out is not None:
+        ctx_out["inducement"] = asdict(inducement) if inducement else None
+    if require_inducement_swept:
+        if inducement is None:
+            return None, "Pas d'inducement identifié avant la POI"
+        if not inducement.swept:
+            return None, "Inducement pas encore pris (piège non déclenché)"
+
     # 4) Strict FVG: price must sit inside an unfilled FVG of the bias direction
     if require_fvg:
         fvg_ok = any(
@@ -598,12 +748,25 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_s
     if bullish:
         sweep_low = candles_entry[chosen_sweep.idx]["low"] if chosen_sweep else poi.bottom
         sl = min(poi.bottom, sweep_low) * 0.999
+        # SL au creux PROTÉGÉ (Synthèse V3 §Étape 8 : « placer le SL là où le scénario
+        # devient réellement invalide »). Ne fait qu'ÉLOIGNER le SL, jamais le resserrer.
+        if sl_mode == "protected" and liq_levels:
+            prot = [l.price for l in liq_levels
+                    if l.kind == "SSL" and l.protected and l.price < entry]
+            if prot:
+                sl = min(sl, max(prot) * 0.999)
         # TP — "range_bound" (défaut, B4②) : la borne OPPOSÉE du dealing range, qui EST la
         # liquidité visée (Manuel §5.1, Synthèse V3 §Étape 9 « TP3 : borne opposée du range »).
         # "nearest_swing" : ancien comportement, le swing opposé le plus proche du niveau structure.
         tp = None
         if tp_target == "range_bound" and pd_struct.get("top", 0) > entry:
             tp = pd_struct["top"]
+        elif tp_target == "liquidity" and liq_levels:
+            # BSL non encore cassée la plus PROCHE au-dessus : la liquidité que le
+            # marché va logiquement chercher ensuite (Synthèse V3 §Étape 9).
+            tgt = [l.price for l in liq_levels
+                   if l.kind == "BSL" and not l.broken and l.price > entry]
+            tp = min(tgt) if tgt else None
         if tp is None:
             targets = [s.price for s in swings_target if s.kind == "high" and s.price > entry]
             if not targets:
@@ -613,9 +776,18 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_s
     else:
         sweep_high = candles_entry[chosen_sweep.idx]["high"] if chosen_sweep else poi.top
         sl = max(poi.top, sweep_high) * 1.001
+        if sl_mode == "protected" and liq_levels:
+            prot = [l.price for l in liq_levels
+                    if l.kind == "BSL" and l.protected and l.price > entry]
+            if prot:
+                sl = max(sl, min(prot) * 1.001)
         tp = None
         if tp_target == "range_bound" and 0 < pd_struct.get("bottom", 0) < entry:
             tp = pd_struct["bottom"]
+        elif tp_target == "liquidity" and liq_levels:
+            tgt = [l.price for l in liq_levels
+                   if l.kind == "SSL" and not l.broken and l.price < entry]
+            tp = max(tgt) if tgt else None
         if tp is None:
             targets = [s.price for s in swings_target if s.kind == "low" and s.price < entry]
             if not targets:
@@ -650,7 +822,9 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
             tp_target: str = "range_bound", max_ob_touches: int = 0,
             require_displacement: bool = False,
             require_daily_bias: bool = False, require_po3: bool = False,
-            po3_wick_ratio: float = 0.20) -> Dict[str, Any]:
+            po3_wick_ratio: float = 0.20,
+            liquidity_cluster_atr: float = 0.25, sl_mode: str = "poi",
+            require_inducement_swept: bool = False) -> Dict[str, Any]:
     """Top-down SMC analysis sur 4 étages (Synthèse V3 §2) :
     contexte journalier (D1) → biais (HTF) → structure/POI (MTF) → déclencheur (LTF).
 
@@ -671,6 +845,12 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
         # Contexte journalier (4e etage) : Daily Bias PDH/PDL + Power of 3. None si
         # l'historique D1 n'est pas fourni ou trop court.
         "daily": None,
+        # Liquidite BSL/SSL (Manuel §2) — le seul element du NOYAU de la Synthese V3
+        # qui manquait au moteur. `protected` marque les niveaux forts (reference SL).
+        "liquidity_htf": [],
+        "liquidity_ltf": [],
+        # Inducement : le piege a stops juste avant la POI (None si aucun).
+        "inducement": None,
         "signal": None,
         "reject_reason": None,
         # Stade atteint avant le rejet : insufficient | no_bias | no_poi | entry.
@@ -708,6 +888,8 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
     pd_struct = dealing_range(swings_struct, events_struct)
     out["order_blocks_htf"] = [asdict(o) for o in obs_struct]
     out["premium_discount"] = pd_struct
+    liq_struct = detect_liquidity_levels(candles_struct, swings_struct, bias, liquidity_cluster_atr)
+    out["liquidity_htf"] = [asdict(l) for l in liq_struct]
 
     # --- Tier 3: ENTRY trigger (LTF) — sweeps, CHoCH, FVG ---
     swings_entry = _swings(candles_entry)
@@ -720,6 +902,9 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
     out["order_blocks_ltf"] = [asdict(o) for o in obs_entry]
     out["fvgs_ltf"] = [asdict(f) for f in fvgs_entry]
     out["sweeps_ltf"] = [asdict(s) for s in sweeps_entry]
+    out["liquidity_ltf"] = [asdict(l) for l in
+                            detect_liquidity_levels(candles_entry, swings_entry, bias,
+                                                    liquidity_cluster_atr)]
 
     if not bias or not pd_struct:
         out["reject_reason"] = "Pas de biais HTF ou pas de range défini"
@@ -774,6 +959,7 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
         swings_struct, sweeps_entry, events_entry, fvgs_entry,
         min_rr, recent_window, require_fvg, require_sequence, require_pd,
         ob_entry_mode, tp_target, require_displacement,
+        liq_struct, candles_struct, sl_mode, require_inducement_swept, out,
     )
     if sig is None:
         out["reject_reason"] = reason

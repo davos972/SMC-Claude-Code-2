@@ -701,7 +701,11 @@ async def _bot_trading_loop() -> None:
                                  require_displacement=bool(s.get("require_displacement", False)),
                                  require_daily_bias=bool(s.get("require_daily_bias", False)),
                                  require_po3=bool(s.get("require_po3", False)),
-                                 po3_wick_ratio=float(s.get("po3_wick_ratio", 0.20)))
+                                 po3_wick_ratio=float(s.get("po3_wick_ratio", 0.20)),
+                                 liquidity_cluster_atr=float(s.get("liquidity_cluster_atr", 0.25)),
+                                 sl_mode=str(s.get("sl_mode", "poi")),
+                                 require_inducement_swept=bool(
+                                     s.get("require_inducement_swept", False)))
             except Exception as e:
                 logger.warning("SMC analysis failed: %s", e)
                 continue
