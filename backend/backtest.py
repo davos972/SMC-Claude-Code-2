@@ -32,7 +32,33 @@ def _aggregate(candles_m1: List[Dict], minutes: int) -> List[Dict]:
     return out
 
 
-TF_MIN = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240}
+TF_MIN = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
+
+
+def _aggregate_daily(candles_m1: List[Dict]) -> List[Dict]:
+    """Agrège en bougies JOURNALIÈRES par date calendaire (UTC).
+
+    `_aggregate` regroupe par NOMBRE de bougies : correct à l'échelle H1, faux pour le
+    journalier (l'or a ~1380 bougies M1 par jour, pas 1440, plus les week-ends) — les
+    « jours » dériveraient et le PDH/PDL ne correspondrait à aucune vraie journée.
+    """
+    out: List[Dict] = []
+    cur_date = None
+    for c in candles_m1:
+        dt = _parse_dt(c["time"])
+        if dt is None:
+            continue
+        d = dt.date().isoformat()
+        if d != cur_date:
+            cur_date = d
+            out.append({"date": d, "time": c["time"], "open": c["open"],
+                        "high": c["high"], "low": c["low"], "close": c["close"]})
+        else:
+            b = out[-1]
+            b["high"] = max(b["high"], c["high"])
+            b["low"] = min(b["low"], c["low"])
+            b["close"] = c["close"]
+    return out
 
 # Fenêtres d'analyse — SOURCE DE VÉRITÉ partagée backtest + live (cf. DECISIONS.md
 # 2026-07-30) : le live doit analyser le MÊME historique que le backtest, sinon la
@@ -41,6 +67,7 @@ TF_MIN = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240}
 WINDOW_HTF = 100   # bougies du niveau biais
 WINDOW_MTF = 150   # bougies du niveau structure/POI
 WINDOW_LTF = 201   # bougies du niveau entrée (200 + la bougie courante)
+WINDOW_D1 = 60     # bougies du niveau contexte journalier (PDH/PDL + structure D1)
 
 
 def _to_iso(t: Any) -> str:
@@ -121,6 +148,8 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     """
     settings = settings or {}
     mode = req.get("mode", "intraday")
+    d1_tf = str(settings.get("intraday_d1", "D1") if mode == "intraday"
+                else settings.get("scalping_d1", "H1") or "")
     htf = settings.get("intraday_htf", "H1") if mode == "intraday" else settings.get("scalping_htf", "H1")
     mtf = settings.get("intraday_mtf", "M15") if mode == "intraday" else settings.get("scalping_mtf", "M15")
     ltf = settings.get("intraday_ltf", "M5") if mode == "intraday" else settings.get("scalping_ltf", "M1")
@@ -144,6 +173,9 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     tp_target = str(_dparam("tp_target", "range_bound"))
     max_ob_touches = int(_dparam("max_ob_touches", 0))
     require_displacement = bool(_dparam("require_displacement", False))
+    require_daily_bias = bool(_dparam("require_daily_bias", False))
+    require_po3 = bool(_dparam("require_po3", False))
+    po3_wick_ratio = float(_dparam("po3_wick_ratio", 0.20))
     # Trailing / break-even (OFF par défaut = aucun changement vs baseline).
     # Logique PARTAGÉE avec le live (bot_loop._apply_trailing utilise le même
     # compute_trailing_sl ; en live il est piloté par les Réglages).
@@ -193,6 +225,26 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     htf_times = [h["time"] for h in htf_candles]
     mtf_times = [h["time"] for h in mtf_candles]
 
+    # --- Étage journalier (4e niveau, Synthèse V3 §2) ---
+    # "D1" = vraies journées calendaires. La bougie du jour EN COURS ne peut pas être
+    # pré-agrégée : elle contiendrait le high/low de la fin de journée, que le bot ne
+    # peut pas connaître à 9h du matin (biais de anticipation). Elle est donc
+    # reconstruite au fil de l'eau depuis les bougies LTF déjà écoulées.
+    # Toute autre timeframe (ex. H1 pour le scalping) suit la voie standard : seules
+    # les bougies CLÔTURÉES sont visibles, comme pour le HTF et le MTF.
+    daily_is_calendar = d1_tf == "D1"
+    daily_completed: List[Dict] = []
+    daily_dates: List[str] = []
+    d1_candles: List[Dict] = []
+    d1_times: List[Any] = []
+    if d1_tf and daily_is_calendar:
+        daily_completed = _aggregate_daily(candles_m1)
+        daily_dates = [d["date"] for d in daily_completed]
+    elif d1_tf:
+        d1_candles = _aggregate(candles_m1, TF_MIN.get(d1_tf, 60))
+        d1_times = [h["time"] for h in d1_candles]
+    day_partial: Optional[Dict[str, Any]] = None
+
     # Etat des limites de risque (simule l'arret jour / pertes consecutives / drawdown du live).
     rm: Dict[str, Any] = {
         "day": None, "session": None, "trades_today": 0, "consec": 0,
@@ -220,11 +272,29 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         cur_time = c["time"]
         cdt = _parse_dt(cur_time)
         sinfo = sess.is_in_session(cdt, settings) if cdt is not None else {"in_session": False, "session": None}
+        # Bougie journalière EN COURS, reconstruite sans anticipation.
+        if d1_tf and daily_is_calendar and cdt is not None:
+            dkey = cdt.date().isoformat()
+            if day_partial is None or day_partial["date"] != dkey:
+                day_partial = {"date": dkey, "time": cur_time, "open": c["open"],
+                               "high": c["high"], "low": c["low"], "close": c["close"]}
+            else:
+                day_partial["high"] = max(day_partial["high"], c["high"])
+                day_partial["low"] = min(day_partial["low"], c["low"])
+                day_partial["close"] = c["close"]
         hk = bisect.bisect_right(htf_times, cur_time)
         mk = bisect.bisect_right(mtf_times, cur_time)
         htf_window = htf_candles[max(0, hk - WINDOW_HTF):hk]
         mtf_window = mtf_candles[max(0, mk - WINDOW_MTF):mk]
         ltf_window = ltf_candles[max(0, i - (WINDOW_LTF - 1)): i + 1]
+        if d1_tf and daily_is_calendar and day_partial is not None:
+            di = bisect.bisect_left(daily_dates, day_partial["date"])
+            d1_window = daily_completed[max(0, di - WINDOW_D1 + 1):di] + [day_partial]
+        elif d1_tf and not daily_is_calendar:
+            dk = bisect.bisect_right(d1_times, cur_time)
+            d1_window = d1_candles[max(0, dk - WINDOW_D1):dk]
+        else:
+            d1_window = []
         if len(htf_window) < 30 or len(mtf_window) < 30:
             continue
 
@@ -276,14 +346,17 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         if rm["trades_today"] >= max_trades_per_day:
             continue
 
-        result = analyze(htf_window, mtf_window, ltf_window, fractal_n=fractal_n, min_rr=min_rr,
+        result = analyze(htf_window, mtf_window, ltf_window, d1_window or None,
+                         fractal_n=fractal_n, min_rr=min_rr,
                          recent_window=recent_window, require_fvg=require_fvg,
                          require_sequence=require_sequence, require_unmitigated=require_unmitigated,
                          require_pd=require_pd, ob_entry_mode=ob_entry_mode,
                          swing_method=swing_method, swing_confirm=swing_confirm,
                          ob_zone=ob_zone, break_mode=break_mode, tp_target=tp_target,
                          max_ob_touches=max_ob_touches,
-                         require_displacement=require_displacement)
+                         require_displacement=require_displacement,
+                         require_daily_bias=require_daily_bias, require_po3=require_po3,
+                         po3_wick_ratio=po3_wick_ratio)
         sig = result.get("signal")
         if sig:
             entry_price = sig["entry"] + (spread_price if sig["side"] == "buy" else -spread_price)

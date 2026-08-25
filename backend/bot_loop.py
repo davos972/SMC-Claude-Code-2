@@ -20,7 +20,7 @@ from metaapi_client import MetaApiConnectionError, metaapi_client
 from smc import analyze
 # Logique de trailing + fenêtres d'analyse partagées live + backtest (mêmes quantités
 # de bougies analysées → même structure détectée, cf. DECISIONS.md 2026-07-30).
-from backtest import compute_trailing_sl, WINDOW_HTF, WINDOW_MTF, WINDOW_LTF
+from backtest import compute_trailing_sl, WINDOW_HTF, WINDOW_MTF, WINDOW_LTF, WINDOW_D1
 
 logger = logging.getLogger("goldflow.bot")  # boucle de trading
 
@@ -453,6 +453,8 @@ async def _bot_trading_loop() -> None:
             now = datetime.now(timezone.utc)
             symbol = s.get("active_symbol", "XAUUSD")
             mode = s.get("trading_mode", "intraday")
+            # 4e etage : contexte journalier (Synthese V3 §2). "" = desactive.
+            d1_tf = str(s.get("intraday_d1" if mode == "intraday" else "scalping_d1", "") or "")
             htf = s.get("intraday_htf" if mode == "intraday" else "scalping_htf", "H1")
             mtf = s.get("intraday_mtf" if mode == "intraday" else "scalping_mtf", "M15")
             ltf = s.get("intraday_ltf" if mode == "intraday" else "scalping_ltf", "M5")
@@ -660,6 +662,14 @@ async def _bot_trading_loop() -> None:
             try:
                 htf_raw = await metaapi_client.get_candles(symbol, htf, None, WINDOW_HTF)
                 mtf_raw = await metaapi_client.get_candles(symbol, mtf, None, WINDOW_MTF)
+                # L'etage journalier est un ENRICHISSEMENT : s'il n'est pas
+                # recuperable, l'analyse continue sur 3 etages plutot que d'echouer.
+                d1_raw = []
+                if d1_tf:
+                    try:
+                        d1_raw = await metaapi_client.get_candles(symbol, d1_tf, None, WINDOW_D1)
+                    except MetaApiConnectionError as e:
+                        logger.warning("Contexte journalier (%s) indisponible: %s", d1_tf, e)
 
                 def _norm(arr):
                     out = []
@@ -673,6 +683,7 @@ async def _bot_trading_loop() -> None:
                     return out
 
                 result = analyze(_norm(htf_raw), _norm(mtf_raw), _norm(ltf_raw),
+                                 _norm(d1_raw) if d1_raw else None,
                                  fractal_n=int(s.get("fractal_n", 3)),
                                  min_rr=float(s.get("min_rr", 2.0)),
                                  recent_window=int(s.get("recent_window", 6)),
@@ -687,7 +698,10 @@ async def _bot_trading_loop() -> None:
                                  break_mode=str(s.get("structure_break_mode", "close")),
                                  tp_target=str(s.get("tp_target", "range_bound")),
                                  max_ob_touches=int(s.get("max_ob_touches", 0)),
-                                 require_displacement=bool(s.get("require_displacement", False)))
+                                 require_displacement=bool(s.get("require_displacement", False)),
+                                 require_daily_bias=bool(s.get("require_daily_bias", False)),
+                                 require_po3=bool(s.get("require_po3", False)),
+                                 po3_wick_ratio=float(s.get("po3_wick_ratio", 0.20)))
             except Exception as e:
                 logger.warning("SMC analysis failed: %s", e)
                 continue

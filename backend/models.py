@@ -39,6 +39,12 @@ DEFAULT_SETTINGS = {
 
     # Mode — top-down 3 niveaux : biais (HTF) → structure/POI (MTF) → entrée (LTF)
     "trading_mode": "intraday",  # intraday | scalping
+    # 4e etage journalier (D1) — Synthese V3 §2 : DAILY (contexte) > H1 (zones de fond)
+    # > M15 (structure/POI) > M5 (entree). Le scalping garde son etage M15 valide en
+    # backtest et se voit AJOUTER H1 au-dessus (D8) : le biais monte sans qu'on perde
+    # le niveau qui etait le seul valide. "" = etage journalier desactive.
+    "intraday_d1": "D1",
+    "scalping_d1": "H1",
     "intraday_htf": "H1",        # biais
     "intraday_mtf": "M15",       # structure / order blocks (POI)
     "intraday_ltf": "M5",        # déclencheur / entrée
@@ -78,6 +84,15 @@ DEFAULT_SETTINGS = {
     # Journal — mode diagnostic : journalise AUSSI les rejets précoces (pas de biais / pas de POI /
     # hors zone), regroupés. OFF par défaut (sinon spam). Sert à comprendre les setups écartés.
     "verbose_journal": False,
+
+    # Contexte journalier (Synthese V3 §Etape 1) — les 2 seuls concepts backtestes de
+    # la playlist, mais sur GER40/indices et PAS sur l'or : filtres OFF par defaut,
+    # a valider en backtest sur XAUUSD avant d'en faire des verrous (D2).
+    "require_daily_bias": False,   # le biais HTF doit correspondre au Daily Bias PDH/PDL
+    "require_po3": False,          # le Power of 3 du jour doit aller dans le sens du biais
+    "po3_wick_ratio": 0.20,        # part de la bougie journaliere que doit faire la meche
+                                   # de manipulation pour compter comme Power of 3
+
 
     # Risk
     "risk_per_trade_pct": 1.0,

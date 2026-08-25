@@ -90,6 +90,24 @@ class LiquiditySweep:
 
 
 @dataclass
+class DailyContext:
+    """Contexte journalier — Synthèse V3 §Étape 1 (« Module 1 · Analyse »).
+
+    Deux briques, les SEULES de la playlist appuyées par un backtest à grande échelle
+    (§6). Attention : ces backtests portent sur GER40 et des indices, PAS sur l'or —
+    d'où les filtres OFF par défaut tant qu'ils n'ont pas été validés sur XAUUSD (D2②).
+    """
+    pdh: Optional[float] = None          # Previous Daily High
+    pdl: Optional[float] = None          # Previous Daily Low
+    day_open: Optional[float] = None     # ouverture de la journée en cours
+    bias: Optional[str] = None           # bullish | bearish | None (inside day)
+    bias_reason: str = ""
+    po3_direction: Optional[str] = None  # bullish | bearish | None
+    po3_reason: str = ""
+    structure_bias: Optional[str] = None  # biais de structure du niveau journalier
+
+
+@dataclass
 class Signal:
     side: Literal["buy", "sell"]
     entry: float
@@ -427,6 +445,61 @@ def dealing_range(swings: List[Swing], events: List[StructureEvent]) -> Optional
     return {"top": top, "bottom": bottom, "mid": (top + bottom) / 2}
 
 
+def daily_context(candles_daily: Optional[List[Candle]], po3_wick_ratio: float = 0.20,
+                  swing_method: str = "two_candle", swing_confirm: int = 2,
+                  fractal_n: int = 3, break_mode: str = "close") -> Optional[DailyContext]:
+    """Daily Bias (PDH/PDL) + Power of 3 sur la bougie journalière en cours.
+
+    Daily Bias (Synthèse V3 §Étape 1, ~68% sur GER40 / 10 ans) :
+      - clôture AU-DELÀ du PDH / PDL          → continuation dans ce sens
+      - mèche au-delà PUIS réintégration       → signal de SHIFT (sens opposé)
+      - ni l'un ni l'autre                     → inside day, pas de biais (§8 : ne pas trader)
+
+    Power of 3 / AMD (§Étape 3, ~97,75% des bougies journalières) : une mèche de
+    MANIPULATION par rapport à l'ouverture du jour précède la vraie expansion. Une
+    grande mèche BASSE suivie d'une clôture au-dessus de l'open = manipulation
+    baissière puis distribution haussière.
+
+    Renvoie None si l'historique journalier est absent ou trop court : le contexte
+    journalier ne doit JAMAIS bloquer l'analyse, seulement l'enrichir.
+    """
+    if not candles_daily or len(candles_daily) < 2:
+        return None
+    prev, today = candles_daily[-2], candles_daily[-1]
+    ctx = DailyContext(pdh=prev["high"], pdl=prev["low"], day_open=today["open"])
+
+    c, h, l, o = today["close"], today["high"], today["low"], today["open"]
+    if c > ctx.pdh:
+        ctx.bias, ctx.bias_reason = "bullish", "Clôture au-dessus du PDH (continuation)"
+    elif c < ctx.pdl:
+        ctx.bias, ctx.bias_reason = "bearish", "Clôture sous le PDL (continuation)"
+    elif h > ctx.pdh:
+        ctx.bias, ctx.bias_reason = "bearish", "Sweep du PDH puis réintégration (shift)"
+    elif l < ctx.pdl:
+        ctx.bias, ctx.bias_reason = "bullish", "Sweep du PDL puis réintégration (shift)"
+    else:
+        ctx.bias_reason = "Inside day — pas de biais journalier"
+
+    rng = h - l
+    if rng > 0:
+        if (o - l) / rng >= po3_wick_ratio and c > o:
+            ctx.po3_direction = "bullish"
+            ctx.po3_reason = "Mèche de manipulation basse sous l'open puis expansion haussière"
+        elif (h - o) / rng >= po3_wick_ratio and c < o:
+            ctx.po3_direction = "bearish"
+            ctx.po3_reason = "Mèche de manipulation haute au-dessus de l'open puis expansion baissière"
+        else:
+            ctx.po3_reason = "Pas de manipulation nette par rapport à l'open du jour"
+
+    # Biais de STRUCTURE du niveau journalier (indépendant du PDH/PDL).
+    if len(candles_daily) >= max(fractal_n * 2, swing_confirm * 2) + 5:
+        sw = find_swings(candles_daily, n=fractal_n, method=swing_method, confirm=swing_confirm)
+        ev = detect_structure(candles_daily, sw, break_mode, detect_fvgs(candles_daily))
+        if ev:
+            ctx.structure_bias = ev[-1].direction
+    return ctx
+
+
 # ---------------- analysis pipeline ----------------
 
 # Rejets « prix mal placé » (pas dans la POI / mauvaise zone premium-discount) = bruit,
@@ -567,6 +640,7 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_s
 
 
 def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_entry: List[Candle],
+            candles_daily: Optional[List[Candle]] = None,
             fractal_n: int = 3, min_rr: float = 2.0, recent_window: int = 6,
             require_fvg: bool = True, require_sequence: bool = True,
             require_unmitigated: bool = True, require_pd: bool = True,
@@ -574,8 +648,14 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
             swing_method: str = "two_candle", swing_confirm: int = 2,
             ob_zone: str = "wick", break_mode: str = "close",
             tp_target: str = "range_bound", max_ob_touches: int = 0,
-            require_displacement: bool = False) -> Dict[str, Any]:
-    """Top-down 3-tier SMC analysis: bias (HTF) → structure/POI (MTF) → entry trigger (LTF).
+            require_displacement: bool = False,
+            require_daily_bias: bool = False, require_po3: bool = False,
+            po3_wick_ratio: float = 0.20) -> Dict[str, Any]:
+    """Top-down SMC analysis sur 4 étages (Synthèse V3 §2) :
+    contexte journalier (D1) → biais (HTF) → structure/POI (MTF) → déclencheur (LTF).
+
+    L'étage journalier est OPTIONNEL et non bloquant : sans historique D1 exploitable,
+    l'analyse se déroule exactement comme avant sur 3 étages.
     Returns dict with detections + optional signal at the latest entry candle."""
     out: Dict[str, Any] = {
         "bias": None,
@@ -588,6 +668,9 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
         "fvgs_ltf": [],
         "sweeps_ltf": [],
         "premium_discount": None,
+        # Contexte journalier (4e etage) : Daily Bias PDH/PDL + Power of 3. None si
+        # l'historique D1 n'est pas fourni ou trop court.
+        "daily": None,
         "signal": None,
         "reject_reason": None,
         # Stade atteint avant le rejet : insufficient | no_bias | no_poi | entry.
@@ -602,6 +685,11 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
 
     def _swings(candles):
         return find_swings(candles, n=fractal_n, method=swing_method, confirm=swing_confirm)
+
+    # --- Tier 0: CONTEXTE JOURNALIER (D1) — Daily Bias + Power of 3 ---
+    daily = daily_context(candles_daily, po3_wick_ratio, swing_method, swing_confirm,
+                          fractal_n, break_mode)
+    out["daily"] = asdict(daily) if daily else None
 
     # --- Tier 1: BIAS (HTF) — direction only ---
     swings_bias = _swings(candles_bias)
@@ -635,6 +723,23 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
 
     if not bias or not pd_struct:
         out["reject_reason"] = "Pas de biais HTF ou pas de range défini"
+        out["reject_stage"] = "no_bias"
+        return out
+
+    # Filtres du contexte journalier — OFF par défaut (D2②) : les chiffres de la
+    # Synthèse V3 viennent d'indices, pas de l'or. À valider en backtest sur XAUUSD
+    # avant d'en faire un verrou. Sans historique D1, ces filtres ne peuvent rien rejeter.
+    if require_daily_bias and daily:
+        if not daily.bias:
+            out["reject_reason"] = f"Pas de Daily Bias ({daily.bias_reason})"
+            out["reject_stage"] = "no_bias"
+            return out
+        if daily.bias != bias:
+            out["reject_reason"] = f"Biais HTF contraire au Daily Bias ({daily.bias_reason})"
+            out["reject_stage"] = "no_bias"
+            return out
+    if require_po3 and daily and daily.po3_direction and daily.po3_direction != bias:
+        out["reject_reason"] = f"Power of 3 contraire au biais ({daily.po3_reason})"
         out["reject_stage"] = "no_bias"
         return out
 
