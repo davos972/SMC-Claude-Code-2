@@ -16,6 +16,89 @@
 
 ---
 
+## 2026-08-25 — Alignement du moteur sur le « Manuel de détection SMC » et la « Synthèse stratégie V3 »
+
+David a fourni deux documents (manuel de détection des indicateurs + synthèse de la
+playlist SMC/ICT de Jérémy Delsol). Comparaison ligne à ligne avec `backend/smc.py`,
+puis 15 arbitrages tranchés par David (B1–B6, D1–D9). Détail des divergences relevées
+avant décision : voir l'historique de la session.
+
+**Ce qui était déjà conforme** : FVG (règle des 3 bougies au caractère près), sweep
+(mèche au-delà + réintégration), BOS/CHoCH, OB à l'origine d'une cassure,
+premium/discount, architecture top-down.
+
+**Décisions appliquées** — chaque ancienne méthode reste accessible en réglage, pour
+comparer en backtest plutôt que basculer à l'aveugle :
+
+| # | Décision | Ancienne méthode conservée sous |
+|---|---|---|
+| B1 | Swings par la règle des 2 bougies (+ détection des sommets ÉGAUX, que la fractale stricte manquait) | `swing_method="fractal"` |
+| B2 | Order block tracé mèches comprises (high→low) | `ob_zone="body"` |
+| B3/D7 | Compteur de touchés exposé, rejet désactivable | `max_ob_touches=0` (OFF) |
+| B4 | TP sur la borne opposée du dealing range | `tp_target="nearest_swing"` |
+| B5 | Cassure sur clôture ou sur mèche, au choix | `structure_break_mode` |
+| B6 | Mode d'entrée « au-delà des 50% de l'OB » | `ob_entry_mode="zone_50"` |
+| D1 | 4e étage journalier au-dessus du biais | `intraday_d1=""` (désactivé) |
+| D2 | Daily Bias PDH/PDL + Power of 3 codés, filtres OFF | — |
+| D3 | **TP partiels TP1/TP2/TP3** | `partial_tp_enabled=False` (OFF) |
+| D4 | Second CHOCH exigible | `require_second_choch=False` |
+| D5 | Displacement = « la bougie de cassure laisse une FVG » | `require_displacement=False` |
+| D6 | Range asiatique + PDH/PDL comme niveaux de liquidité | OFF par défaut |
+| D8 | Biais du scalping monté à H1 | l'étage M15 est conservé |
+| D9 | Ordre d'implémentation revu selon le classement §10 de la Synthèse | — |
+
+### Deux règles verrouillées levées
+
+**TP partiels (D3).** Claude.md §4 disait « TP partiels : NON implémentés
+volontairement ». La Synthèse V3 §Étape 9 en fait le cœur de la gestion de position.
+David a tranché pour l'implémentation. Le SL et le TP FINAL restent posés CHEZ LE
+BROKER — la règle « SL/TP toujours chez le broker » n'est pas touchée : seules les
+prises intermédiaires sont pilotées par le bot, et si l'app s'arrête la position reste
+protégée comme avant. **Laissé OFF par défaut** : mesuré sur données synthétiques,
+l'activer fait passer le profit factor de 10,46 à 4,59 — le runner est écrêté par les
+prises. C'est l'arbitrage attendu (plus de gagnants, gain moyen plus faible), mais il
+doit être mesuré sur données réelles avant le réel.
+
+**Biais du scalping (D8).** Nos backtests disaient `scalping_htf=M15` validé et H1
+perdant avec un drawdown catastrophique ; la Synthèse V3 §7 considère à l'inverse
+qu'un biais pris trop bas est « l'erreur n°1 ». Contradiction signalée à David, qui a
+tranché pour monter le biais. Résolue sans sacrifier le backtest : le 4e étage permet
+d'AJOUTER H1 au-dessus plutôt que de REMPLACER M15. Scalping = H1 → M15 → M5 → M1.
+
+### Alternatives écartées
+
+- **Activer les nouveaux filtres par défaut** : écarté. La Synthèse V3 §10 est
+  explicite — « noyau + 1 à 3 confluences + confirmation », et l'empilement de tous les
+  concepts « ne se produit quasiment jamais et paralyse l'exécution ». Tout ce qui est
+  ajouté est donc détecté et affiché, mais désactivé comme filtre.
+- **Ordre d'implémentation initial** (IFVG → BPR → Rejection → OTE) : écarté après
+  lecture du §10, qui classe IFVG, Rejection et OTE en simples « variantes » et met en
+  avant l'inducement, le range asiatique, le second CHOCH et les niveaux protégés.
+  Le seul élément du NOYAU qui manquait au moteur était la liquidité BSL/SSL — traitée
+  en premier.
+- **OB 2.0 et SMT Divergence** : non implémentés. Le premier impose un 5e étage de
+  timeframe, le second impose de suivre en continu un second instrument corrélé, ce qui
+  casserait l'architecture mono-symbole. La Synthèse les classe elle-même en dernier.
+- **Range asiatique activé par défaut** : écarté. Le manuel §6.1 le donne pertinent
+  « surtout sur paires européennes, peu volatiles la nuit » — l'or bouge la nuit.
+
+### Pièges rencontrés et corrigés
+
+- **Agrégation journalière du backtest** : `_aggregate` regroupe par NOMBRE de bougies.
+  Correct en H1, faux en journalier (l'or fait ~1380 bougies M1 par jour, pas 1440) —
+  les « journées » auraient dérivé et le PDH/PDL n'aurait correspondu à aucune séance.
+  Ajout de `_aggregate_daily`, par date calendaire.
+- **Anticipation sur la bougie du jour** : pré-agréger la journée en cours donnerait au
+  bot le high et le low de fin de journée dès le matin. La bougie du jour est
+  reconstruite au fil de l'eau depuis les bougies déjà écoulées. Vérifié par test.
+- **Double prise partielle après un redémarrage** : le suivi mémoire repart vide, TP1
+  aurait été repris et aurait refermé une seconde fois la même part du volume. Les
+  prises déjà encaissées sont relues du journal et marquées faites.
+- **Quatre appels à `analyze()` maintenus à la main** (bot, backtest, dashboard, rejeu) :
+  les deux de `server.py` avaient été oubliés, le graphique aurait affiché des zones
+  tracées avec d'autres réglages que ceux décidant des trades. Conversion réglages →
+  paramètres centralisée dans `smc.params_from_settings`.
+
 ## 2026-08-19 — Journal de trading : les trades réels enfin persistés (collection `trades`)
 **Décision :** création d'une collection MongoDB `trades` qui garde chaque trade RÉEL
 du bot de son ouverture à sa clôture (`store.add_trade/close_trade/update_trade`).

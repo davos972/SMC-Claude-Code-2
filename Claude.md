@@ -21,11 +21,19 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
 
 ## 3. Stratégie SMC (règles du moteur)
 
-- **Biais haute timeframe** : structure de marché (HH/HL, LH/LL), BOS (continuation), CHoCH (retournement)
-- **Zones d'intérêt** : order blocks, Fair Value Gaps, liquidity sweeps, zones premium/discount (achat en discount, vente en premium uniquement)
-- **Entrée basse timeframe** valide si : biais HTF clair + retour dans une POI bien placée + sweep ou CHoCH LTF + RR minimum atteignable
-- **Deux modes** (un seul actif à la fois) : Intraday (H1 → M5) et Scalping (M15 → M1), timeframes paramétrables
-- **Swing high/low** : méthode fractale, N bougies de chaque côté (défaut 3, paramétrable)
+> Depuis le 2026-08-25, le moteur suit le **« Manuel de détection SMC »** et la
+> **« Synthèse stratégie V3 »** fournis par David (voir DECISIONS.md). Toute méthode
+> antérieure reste accessible en réglage pour être comparée en backtest.
+
+- **Analyse top-down 4 étages** : contexte journalier (D1) → biais (HTF) → structure/POI (MTF) → déclencheur (LTF). L'étage journalier est un ENRICHISSEMENT : le désactiver (`intraday_d1=""`) ramène exactement à l'analyse 3 niveaux d'avant
+- **Deux modes** (un seul actif) : Intraday D1→H1→M15→M5 et Scalping H1→M15→M5→M1, tous paramétrables
+- **Swing high/low** : **règle des deux bougies** par défaut (`swing_method`) — un sommet est validé après 2 bougies baissières consécutives. La comparaison est `>=`, donc les **sommets ÉGAUX (doubles sommets) sont détectés**, ce que la fractale stricte manquait. Fractale N bougies toujours disponible
+- **Biais haute timeframe** : structure de marché (HH/HL, LH/LL), BOS (continuation), CHoCH (retournement). Cassure sur clôture (défaut) ou sur mèche (`structure_break_mode`)
+- **Liquidité BSL/SSL** : les sommets ALIGNÉS forment un seul réservoir, d'autant plus gros qu'il a été testé souvent. Niveaux **protégés** (creux en tendance haussière) vs **cibles**. Peuvent inclure PDH/PDL et les bornes du range asiatique
+- **Zones d'intérêt** : order blocks (**tracés mèches comprises**, `ob_zone`), FVG, IFVG, BPR, Breaker, Mitigation et Rejection Blocks, sweeps, premium/discount, OTE 62-79%. Les zones acceptées comme POI se choisissent dans `poi_source`
+- **Inducement** : le piège à stops juste avant la POI, détecté et affiché
+- **Entrée basse timeframe** valide si : biais clair + retour dans une POI bien placée + sweep ou CHoCH LTF + RR minimum atteignable. Confluences supplémentaires toutes **OFF par défaut** (displacement, second CHOCH, inducement pris, OTE, Daily Bias, Power of 3)
+- **Règle de méthode (Synthèse V3 §10)** : noyau + **1 à 3 confluences maximum**. Ne JAMAIS tout activer en même temps — « cet empilement ne se produit quasiment jamais et paralyse l'exécution ». Chaque variable se teste SÉPARÉMENT en backtest
 - **Analyse à la clôture de bougie** de la timeframe d'entrée (pas tick par tick)
 - **Sessions strictes** : trading UNIQUEMENT pendant Londres (8h–11h heure de Londres) et New York (8h–11h heure de NY), heure d'été gérée via pytz (`backend/sessions.py`). Les positions ouvertes restent ouvertes après la session (protégées par SL/TP broker)
 
@@ -39,7 +47,8 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
 - **Mode prop firm** activable (défauts calés BlueGuardian Instant Funding : DD jour/total, Guardian Shield, reset 17h EST, high watermark trailing ; marge de sécurité 20% — s'arrête AVANT les limites réelles ; paramétrable pour d'autres firmes)
 - **Filtre news** : pause 30 min avant/après les annonces USD à fort impact (flux Forex Factory / faireconomy, `backend/news.py`)
 - **Mode « Signal uniquement »** : détecte et journalise sans exécuter — mode par défaut au premier lancement
-- **Trailing stop** : implémenté (logique unique `compute_trailing_sl` partagée live + backtest ; modes breakeven / r_trail / structure), **OFF par défaut**. TP partiels : NON implémentés volontairement
+- **Trailing stop** : implémenté (logique unique `compute_trailing_sl` partagée live + backtest ; modes breakeven / r_trail / structure), **OFF par défaut**
+- **TP partiels TP1/TP2/TP3** : implémentés depuis le 2026-08-25 (décision D3, cf. DECISIONS.md) — la règle « non implémentés volontairement » est LEVÉE. Échelle unique `compute_tp_ladder` partagée live + backtest. **OFF par défaut** (`partial_tp_enabled`) : les activer change le profil de résultat de toute la stratégie et doit passer par un backtest. Le SL et le TP FINAL restent posés chez le broker
 
 ## 5. Fonctionnalités de l'app
 
@@ -67,6 +76,7 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
   - Liquidity sweep : **flèche rouge** pointant la mèche + label « Sweep »
   - BOS/CHoCH : **ligne horizontale bleue pointillée** + label « BOS ↑/↓ » ou « CHoCH ↑/↓ »
   - Les zones s'étendent à droite jusqu'à mitigation, puis disparaissent ou passent en opacité réduite. Légende sous le graphique
+- **Calques (depuis 2026-08-25)** : les zones ajoutées (BSL/SSL, inducement, range asiatique, OTE, IFVG, BPR, Breaker/Mitigation/Rejection) s'affichent par calques activables, **tous OFF par défaut**. Sur une colonne de 480px, tout afficher rend le graphique illisible — et c'est exactement ce que la Synthèse V3 §10 reproche. Le choix est mémorisé par appareil (localStorage). La légende suit les calques actifs
 
 ## 6bis. Déploiement réel et app mobile (état au 2026-07-08)
 
@@ -91,6 +101,29 @@ Le code (revue complète faite) est globalement conforme. ~~Problème en cours~~
 4. Valider en mode « Signal uniquement » sur compte démo plusieurs jours avant d'activer l'exécution automatique
 5. Toujours : tester chaque changement, demander/montrer les logs en cas d'erreur plutôt que corriger à l'aveugle
 
+### Plan de backtest des nouvelles règles (Synthèse V3 §11)
+
+Tout ce qui a été ajouté le 2026-08-25 est **désactivé par défaut**. La méthode pour
+décider quoi garder — tester chaque variable SÉPARÉMENT, jamais en bloc :
+
+| Variable | Options à comparer une par une |
+|---|---|
+| Détection des swings | `swing_method` : two_candle vs fractal |
+| Tracé de l'OB | `ob_zone` : wick vs body |
+| Cible du TP | `tp_target` : range_bound vs liquidity vs nearest_swing |
+| Placement du SL | `sl_mode` : poi vs protected |
+| Mode d'entrée | `ob_entry_mode` : close vs zone_50 vs tap |
+| Type de zone POI | `poi_source` : ob, bpr, breaker, mitigation, rejection (un seul à la fois) |
+| Confluences | displacement, second CHOCH, inducement pris, OTE, Daily Bias, PO3 (une à la fois) |
+| Gestion | `partial_tp_enabled` : TP unique vs TP1/TP2/TP3 |
+| Liquidité | `use_pdh_pdl_liquidity`, `use_asia_liquidity` |
+
+Le backtest accepte ces clés **directement dans la requête**, ce qui permet de comparer
+deux méthodes sans rien changer dans les Réglages de l'app.
+
+⚠️ Les chiffres de la Synthèse V3 (68% Daily Bias, 97,75% Power of 3) viennent de
+GER40 et d'indices, **pas de l'or**. Ils ne se transfèrent pas automatiquement à XAUUSD.
+
 ## 9. Garde-fous pour Claude Code
 
 - Ne jamais committer de token/secret ; `.env` reste hors Git
@@ -99,6 +132,9 @@ Le code (revue complète faite) est globalement conforme. ~~Problème en cours~~
 - Ne pas activer le compte réel ni assouplir sa double confirmation
 - Préserver le mode dégradé explicite : si MetaApi n'est pas configuré/connecté, afficher l'erreur, jamais de données factices
 - Ne pas affaiblir la protection par clé API (`API_KEY`/`X-API-Key`) ni élargir `_PUBLIC_PATHS` dans `server.py`
+- **Une seule conversion réglages → moteur** : `smc.params_from_settings`. Les QUATRE appelants d'`analyze()` (bot live, backtest, analyse du dashboard, rejeu) doivent passer par elle. Sans ça, le graphique finit par afficher des zones tracées avec d'autres réglages que ceux qui décident des trades — c'est exactement ce qui était arrivé aux deux appels de `server.py`
+- **Toute nouvelle règle SMC arrive DÉSACTIVÉE** : détectée et affichée, mais jamais imposée comme filtre tant qu'un backtest ne l'a pas validée (Synthèse V3 §10 et §11)
+- **Jamais d'anticipation dans le backtest** : ne jamais pré-agréger une bougie EN COURS (la bougie du jour est reconstruite au fil de l'eau). Un high de fin de journée connu dès le matin fausse tout
 - Journal de trading : ne JAMAIS combler un P&L manquant par une estimation. Si
   l'historique broker est indisponible, le trade est clôturé avec `result: "unknown"` et
   `pnl: null`, et il est exclu des statistiques (visible dans la liste, jamais compté)
