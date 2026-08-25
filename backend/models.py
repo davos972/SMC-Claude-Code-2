@@ -71,6 +71,19 @@ DEFAULT_SETTINGS = {
     "sl_mode": "poi",
     # Le piège à stops placé juste avant la POI doit avoir été pris avant d'entrer.
     "require_inducement_swept": False,
+    # Second CHOCH (Synthèse V3 §Étape 4, « ne pas prendre le premier CHOCH ») :
+    # un 1er CHOCH sur l'UT structure PUIS un 2nd sur l'UT d'entrée.
+    "require_second_choch": False,
+    "second_choch_window": 20,     # bougies du niveau structure
+    # Range asiatique (Manuel §6.1) : fenêtre 23h→7h heure de Paris. Ses bornes sont
+    # des niveaux de LIQUIDITÉ pour la session de Londres, jamais des points d'entrée.
+    # ⚠️ Le manuel le dit pertinent surtout sur paires européennes ; l'or bouge la
+    # nuit → à valider en backtest avant activation.
+    "asia_start_hour": 23,
+    "asia_end_hour": 7,
+    "asia_tz": "Europe/Paris",
+    "use_asia_liquidity": False,     # ajouter Asia High/Low aux niveaux de liquidité
+    "use_pdh_pdl_liquidity": False,  # ajouter PDH/PDL aux niveaux de liquidité
     # Fraîcheur de l'OB (manuel §4.1 « OB déjà testé = à éviter », nuancé par la Synthèse
     # V3 §5.8 « facteur de qualité, pas condition absolue ») : 0 = filtre DÉSACTIVÉ, le
     # compteur de touchés reste affiché. N > 0 = écarte un OB déjà retouché N fois.

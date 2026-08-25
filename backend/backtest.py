@@ -179,6 +179,13 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     liquidity_cluster_atr = float(_dparam("liquidity_cluster_atr", 0.25))
     sl_mode = str(_dparam("sl_mode", "poi"))
     require_inducement_swept = bool(_dparam("require_inducement_swept", False))
+    require_second_choch = bool(_dparam("require_second_choch", False))
+    second_choch_window = int(_dparam("second_choch_window", 20))
+    use_asia_liquidity = bool(_dparam("use_asia_liquidity", False))
+    use_pdh_pdl_liquidity = bool(_dparam("use_pdh_pdl_liquidity", False))
+    asia_start_hour = int(_dparam("asia_start_hour", 23))
+    asia_end_hour = int(_dparam("asia_end_hour", 7))
+    asia_tz = str(_dparam("asia_tz", "Europe/Paris"))
     # Trailing / break-even (OFF par défaut = aucun changement vs baseline).
     # Logique PARTAGÉE avec le live (bot_loop._apply_trailing utilise le même
     # compute_trailing_sl ; en live il est piloté par les Réglages).
@@ -361,7 +368,13 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
                          require_daily_bias=require_daily_bias, require_po3=require_po3,
                          po3_wick_ratio=po3_wick_ratio,
                          liquidity_cluster_atr=liquidity_cluster_atr, sl_mode=sl_mode,
-                         require_inducement_swept=require_inducement_swept)
+                         require_inducement_swept=require_inducement_swept,
+                         require_second_choch=require_second_choch,
+                         second_choch_window=second_choch_window,
+                         use_asia_liquidity=use_asia_liquidity,
+                         use_pdh_pdl_liquidity=use_pdh_pdl_liquidity,
+                         asia_start_hour=asia_start_hour, asia_end_hour=asia_end_hour,
+                         asia_tz=asia_tz)
         sig = result.get("signal")
         if sig:
             entry_price = sig["entry"] + (spread_price if sig["side"] == "buy" else -spread_price)

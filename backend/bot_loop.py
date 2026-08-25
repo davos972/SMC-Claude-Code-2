@@ -705,7 +705,15 @@ async def _bot_trading_loop() -> None:
                                  liquidity_cluster_atr=float(s.get("liquidity_cluster_atr", 0.25)),
                                  sl_mode=str(s.get("sl_mode", "poi")),
                                  require_inducement_swept=bool(
-                                     s.get("require_inducement_swept", False)))
+                                     s.get("require_inducement_swept", False)),
+                                 require_second_choch=bool(s.get("require_second_choch", False)),
+                                 second_choch_window=int(s.get("second_choch_window", 20)),
+                                 use_asia_liquidity=bool(s.get("use_asia_liquidity", False)),
+                                 use_pdh_pdl_liquidity=bool(
+                                     s.get("use_pdh_pdl_liquidity", False)),
+                                 asia_start_hour=int(s.get("asia_start_hour", 23)),
+                                 asia_end_hour=int(s.get("asia_end_hour", 7)),
+                                 asia_tz=str(s.get("asia_tz", "Europe/Paris")))
             except Exception as e:
                 logger.warning("SMC analysis failed: %s", e)
                 continue

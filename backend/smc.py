@@ -13,7 +13,10 @@ stratégie V3 » (décisions B1–B6 / D1–D9, cf. DECISIONS.md 2026-08-25).
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict, field
+from datetime import datetime, time as dtime, timedelta, timezone
 from typing import List, Optional, Literal, Dict, Any
+
+import pytz
 
 
 Candle = Dict[str, Any]
@@ -114,6 +117,9 @@ class LiquidityLevel:
     swept_time: Any = None
     broken: bool = False        # clôture franchement au-delà = vraie cassure, pas un sweep
     broken_idx: int = -1
+    # D'où vient ce niveau : "swing" (sommet/creux), "asia" (borne du range asiatique),
+    # "pdh_pdl" (haut/bas de la veille). Synthèse V3 §Étape 2 les met sur le même plan.
+    source: str = "swing"
 
 
 @dataclass
@@ -347,6 +353,67 @@ def detect_order_blocks(candles: List[Candle], events: List[StructureEvent],
     return obs
 
 
+def _to_dt(t: Any) -> Optional[datetime]:
+    """Temps de bougie (datetime, ISO ou epoch) → datetime aware UTC."""
+    if isinstance(t, datetime):
+        return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+    if isinstance(t, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(t), tz=timezone.utc)
+        except Exception:
+            return None
+    try:
+        d = datetime.fromisoformat(str(t).replace("Z", "+00:00").replace(" ", "T", 1))
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def asian_range(candles: List[Candle], start_hour: int = 23, end_hour: int = 7,
+                tz_name: str = "Europe/Paris") -> Optional[Dict[str, Any]]:
+    """Range asiatique — Manuel §6.1, Synthèse V3 §Étape 2.
+
+    Range basé sur le TEMPS (23h→7h heure de Paris par défaut) et non sur une figure de
+    prix : phase d'accumulation nocturne dont les deux bornes servent de réservoirs de
+    liquidité pour la session de Londres. Ce n'est PAS une zone d'entrée.
+
+    ⚠️ Le manuel précise « surtout pertinent sur paires européennes (EUR, GBP, CHF),
+    peu volatiles la nuit ». L'or bouge la nuit : à valider en backtest sur XAUUSD.
+
+    Renvoie None si les bougies fournies ne couvrent pas la fenêtre — jamais d'erreur.
+    """
+    if not candles:
+        return None
+    tz = pytz.timezone(tz_name)
+    last_dt = _to_dt(candles[-1].get("time"))
+    if last_dt is None:
+        return None
+    local = last_dt.astimezone(tz)
+    duration = (24 - start_hour + end_hour) if start_hour > end_hour else (end_hour - start_hour)
+    if duration <= 0:
+        return None
+    # Fenêtre de référence : celle qui se termine le jour même à `end_hour`. Avant cette
+    # heure on est encore DANS la nuit en cours, le range n'est pas encore figé.
+    end_local = tz.localize(datetime.combine(local.date(), dtime(end_hour, 0)))
+    start_local = end_local - timedelta(hours=duration)
+    complete = local >= end_local
+    cutoff = end_local if complete else local
+
+    highs, lows = [], []
+    for c in candles:
+        d = _to_dt(c.get("time"))
+        if d is None:
+            continue
+        d = d.astimezone(tz)
+        if start_local <= d < cutoff:
+            highs.append(c["high"])
+            lows.append(c["low"])
+    if not highs:
+        return None
+    return {"high": max(highs), "low": min(lows), "complete": complete,
+            "start": start_local.isoformat(), "end": end_local.isoformat()}
+
+
 def _epoch(t: Any) -> Optional[float]:
     """Best-effort conversion of a candle time (epoch number or ISO string) to epoch seconds."""
     if isinstance(t, (int, float)):
@@ -474,24 +541,78 @@ def detect_liquidity_levels(candles: List[Candle], swings: List[Swing],
         if group:
             levels.append(_level_from_group(group, kind, bias))
 
-    # Sweep / cassure : on scanne les bougies POSTÉRIEURES au niveau.
     for lv in levels:
-        for k in range(lv.idx + 1, len(candles)):
-            c = candles[k]
-            if lv.kind == "BSL":
-                if c["close"] > lv.price:
-                    lv.broken, lv.broken_idx = True, k
-                    break
-                if c["high"] > lv.price and not lv.swept:
-                    lv.swept, lv.swept_idx, lv.swept_time = True, k, c["time"]
-            else:
-                if c["close"] < lv.price:
-                    lv.broken, lv.broken_idx = True, k
-                    break
-                if c["low"] < lv.price and not lv.swept:
-                    lv.swept, lv.swept_idx, lv.swept_time = True, k, c["time"]
+        scan_level(lv, candles)
     levels.sort(key=lambda l: l.idx)
     return levels
+
+
+def scan_level(lv: LiquidityLevel, candles: List[Candle]) -> LiquidityLevel:
+    """Marque `swept` (mèche au-delà) puis `broken` (clôture au-delà) sur les bougies
+    POSTÉRIEURES au niveau. La cassure arrête le scan : le niveau n'est plus un
+    réservoir de liquidité une fois franchi (Manuel §2.3)."""
+    for k in range(lv.idx + 1, len(candles)):
+        c = candles[k]
+        if lv.kind == "BSL":
+            if c["close"] > lv.price:
+                lv.broken, lv.broken_idx = True, k
+                break
+            if c["high"] > lv.price and not lv.swept:
+                lv.swept, lv.swept_idx, lv.swept_time = True, k, c["time"]
+        else:
+            if c["close"] < lv.price:
+                lv.broken, lv.broken_idx = True, k
+                break
+            if c["low"] < lv.price and not lv.swept:
+                lv.swept, lv.swept_idx, lv.swept_time = True, k, c["time"]
+    return lv
+
+
+def _idx_at_or_after(candles: List[Candle], when: Any) -> int:
+    """Indice de la première bougie dont le temps est >= `when` (-1 si aucune)."""
+    ref = _to_dt(when)
+    if ref is None:
+        return -1
+    for i, c in enumerate(candles):
+        d = _to_dt(c.get("time"))
+        if d is not None and d >= ref:
+            return i
+    return -1
+
+
+def named_liquidity_levels(candles: List[Candle], bias: Optional[str],
+                           asia: Optional[Dict[str, Any]] = None,
+                           pdh: Optional[float] = None,
+                           pdl: Optional[float] = None) -> List[LiquidityLevel]:
+    """Niveaux de liquidité NOMMÉS : bornes du range asiatique et PDH/PDL.
+
+    La Synthèse V3 §Étape 2 les met sur le même plan que les sommets/creux :
+    « Marquer les niveaux où des stops se concentrent : PDH, PDL, Asia High, Asia Low,
+    sommets/creux précédents, bornes de range ».
+    """
+    out: List[LiquidityLevel] = []
+
+    def _add(price: Optional[float], kind: str, source: str, ref_time: Any):
+        if price is None:
+            return
+        idx = _idx_at_or_after(candles, ref_time)
+        if idx < 0:
+            idx = 0
+        protected = (bias == "bullish" and kind == "SSL") or (bias == "bearish" and kind == "BSL")
+        out.append(scan_level(LiquidityLevel(price=float(price), kind=kind, idx=idx,
+                                             time=ref_time, protected=protected,
+                                             source=source), candles))
+
+    if asia:
+        _add(asia.get("high"), "BSL", "asia", asia.get("end"))
+        _add(asia.get("low"), "SSL", "asia", asia.get("end"))
+    if pdh is not None or pdl is not None:
+        # Référence temporelle : le début de la journée de la dernière bougie.
+        last = _to_dt(candles[-1].get("time")) if candles else None
+        day_start = last.replace(hour=0, minute=0, second=0, microsecond=0) if last else None
+        _add(pdh, "BSL", "pdh_pdl", day_start)
+        _add(pdl, "SSL", "pdh_pdl", day_start)
+    return out
 
 
 def _level_from_group(group: List[Swing], kind: str, bias: Optional[str]) -> LiquidityLevel:
@@ -653,7 +774,8 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_s
                   min_rr, recent_window, require_fvg, require_sequence, require_pd=True,
                   ob_entry_mode="close", tp_target="range_bound", require_displacement=False,
                   liq_levels=None, candles_struct=None, sl_mode="poi",
-                  require_inducement_swept=False, ctx_out=None):
+                  require_inducement_swept=False, events_struct=None,
+                  require_second_choch=False, second_choch_window=20, ctx_out=None):
     """Evaluate the entry trigger on the entry timeframe for a given HTF bias direction.
     Returns (Signal, None) if all conditions pass, else (None, reject_reason)."""
     bullish = direction == "bullish"
@@ -712,6 +834,20 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_s
     else:
         if not (recent_sweeps or recent_choch):
             return None, "Pas de sweep ni CHoCH récent (entrée)"
+
+    # 3bis-a) Second CHOCH (Synthèse V3 §Étape 4, encadré « Ne pas prendre le premier
+    #   CHOCH ») : un CHOCH isolé sur petite UT peut n'être qu'une structure interne ou
+    #   une prise de liquidité. On exige un 1er CHOCH sur l'UT STRUCTURE (biais confirmé)
+    #   PUIS un 2nd sur l'UT d'entrée.
+    if require_second_choch:
+        if not recent_choch:
+            return None, "Pas de CHoCH sur l'UT d'entrée (2e CHoCH manquant)"
+        last_struct_idx = (len(candles_struct) - 1) if candles_struct else 0
+        first_choch = [e for e in (events_struct or [])
+                       if e.kind == "CHoCH" and e.direction == direction
+                       and last_struct_idx - e.idx <= second_choch_window]
+        if not first_choch:
+            return None, "Pas de CHoCH récent sur l'UT structure (1er CHoCH manquant)"
 
     # 3bis) Displacement (Synthèse V3 §Étape 5) : la cassure doit être un déplacement FORT,
     #       défini comme « la bougie de cassure laisse une FVG » (D5①).
@@ -824,7 +960,11 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
             require_daily_bias: bool = False, require_po3: bool = False,
             po3_wick_ratio: float = 0.20,
             liquidity_cluster_atr: float = 0.25, sl_mode: str = "poi",
-            require_inducement_swept: bool = False) -> Dict[str, Any]:
+            require_inducement_swept: bool = False,
+            require_second_choch: bool = False, second_choch_window: int = 20,
+            use_asia_liquidity: bool = False, use_pdh_pdl_liquidity: bool = False,
+            asia_start_hour: int = 23, asia_end_hour: int = 7,
+            asia_tz: str = "Europe/Paris") -> Dict[str, Any]:
     """Top-down SMC analysis sur 4 étages (Synthèse V3 §2) :
     contexte journalier (D1) → biais (HTF) → structure/POI (MTF) → déclencheur (LTF).
 
@@ -851,6 +991,9 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
         "liquidity_ltf": [],
         # Inducement : le piege a stops juste avant la POI (None si aucun).
         "inducement": None,
+        # Range asiatique (bornes = liquidite pour la session de Londres). None si
+        # l'historique fourni ne couvre pas la fenetre 23h-7h.
+        "asian_range": None,
         "signal": None,
         "reject_reason": None,
         # Stade atteint avant le rejet : insufficient | no_bias | no_poi | entry.
@@ -889,6 +1032,19 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
     out["order_blocks_htf"] = [asdict(o) for o in obs_struct]
     out["premium_discount"] = pd_struct
     liq_struct = detect_liquidity_levels(candles_struct, swings_struct, bias, liquidity_cluster_atr)
+    # Le range asiatique se lit sur le niveau BIAIS : c'est le seul dont la fenêtre
+    # d'historique couvre toute la nuit (100 bougies H1 en intraday, M15 en scalping).
+    asia = asian_range(candles_bias, asia_start_hour, asia_end_hour, asia_tz)
+    out["asian_range"] = asia
+    # Niveaux nommés (Asia, PDH/PDL) — OFF par défaut, ajoutés à la même liste que les
+    # sommets/creux pour que le TP et le SL protégé les prennent naturellement en compte.
+    named = named_liquidity_levels(
+        candles_struct, bias,
+        asia if use_asia_liquidity else None,
+        daily.pdh if (use_pdh_pdl_liquidity and daily) else None,
+        daily.pdl if (use_pdh_pdl_liquidity and daily) else None,
+    )
+    liq_struct = liq_struct + named
     out["liquidity_htf"] = [asdict(l) for l in liq_struct]
 
     # --- Tier 3: ENTRY trigger (LTF) — sweeps, CHoCH, FVG ---
@@ -959,7 +1115,8 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
         swings_struct, sweeps_entry, events_entry, fvgs_entry,
         min_rr, recent_window, require_fvg, require_sequence, require_pd,
         ob_entry_mode, tp_target, require_displacement,
-        liq_struct, candles_struct, sl_mode, require_inducement_swept, out,
+        liq_struct, candles_struct, sl_mode, require_inducement_swept,
+        events_struct, require_second_choch, second_choch_window, out,
     )
     if sig is None:
         out["reject_reason"] = reason
