@@ -87,7 +87,46 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
 
 ## 7. État actuel et problèmes connus
 
-Le code (revue complète faite) est globalement conforme. ~~Problème en cours~~ **Résolu (2026-07-08)** — l'échec de connexion venait du `.env` local pointé sur un Mongo local vide alors que la prod Render/Atlas tournait ; le `.env` local pointe désormais sur Atlas. Diagnostic d'époque conservé :
+### Point d'état au 2026-08-25 (fin de la session « alignement sur les documents SMC »)
+
+**Déployé en prod.** `main` = `d90c6a7`, Render redéployé, APK n°9 compilé sur ce commit
+(signature permanente : s'installe par-dessus l'ancienne app sans désinstaller).
+
+**Ce qui a changé** : moteur aligné sur le Manuel de détection SMC et la Synthèse
+stratégie V3 (15 décisions B1–B6 / D1–D9, détail dans DECISIONS.md). Analyse à 4 étages,
+liquidité BSL/SSL, inducement, IFVG, BPR, Breaker/Mitigation/Rejection, OTE, range
+asiatique, Daily Bias, Power of 3.
+
+**Deux règles verrouillées levées** : TP partiels (implémentés ET **activés par défaut**)
+et mode « Signal uniquement » (**supprimé** — David est sur compte démo Axi).
+
+⚠️ **Conséquence à connaître** : le bot passe désormais de vrais ordres dès qu'un setup
+valide se présente en session. Le seul frein logiciel restant est le bouton START/STOP.
+Le verrou du compte réel (`account_type` + `real_confirmed`) est intact.
+
+**État des filtres** : tout ce qui a été ajouté est OFF par défaut, SAUF les TP partiels.
+Le comportement de détection, lui, a changé (swings 2 bougies, OB en mèches, TP borne de
+range) — ce ne sont pas des options mais les nouveaux défauts.
+
+### Ce qui reste à faire
+
+1. **Backtester sur 6 mois réels** — c'est LA priorité. Rien de ce qui a été ajouté n'a
+   été validé sur données réelles ; les chiffres cités en session viennent de données
+   synthétiques et ne disent rien de l'or. Suivre le plan variable par variable du §8.
+2. **Comparer TP partiels vs TP unique** sur ces données réelles (`partial_tp_enabled`).
+3. **Régler le seuil du Power of 3** (`po3_wick_ratio`, défaut 0,20) : à cette valeur le
+   filtre ne rejette presque rien — le document dit lui-même que 97,75% des bougies
+   journalières ont une mèche opposée. Le monter pour qu'il filtre vraiment. **Question
+   laissée en suspens avec David.**
+4. **Valider Daily Bias et PO3 sur XAUUSD** avant d'activer leurs filtres (D2②) : les
+   68% et 97,75% viennent de GER40 et d'indices, pas de l'or.
+5. Non implémentés volontairement : **OB 2.0** (impose un 5e étage de timeframe) et
+   **SMT Divergence** (impose de suivre un 2e instrument corrélé en continu, casserait
+   l'architecture mono-symbole). La Synthèse V3 les classe elle-même en dernier.
+
+### Diagnostic historique (résolu)
+
+~~Problème en cours~~ **Résolu (2026-07-08)** — l'échec de connexion venait du `.env` local pointé sur un Mongo local vide alors que la prod Render/Atlas tournait ; le `.env` local pointe désormais sur Atlas. Diagnostic d'époque conservé :
 1. `backend/.env` non versionné → base MongoDB neuve → token perdu (à ressaisir dans Réglages)
 2. `metaapi_client.py/_connect` : timeouts `deploy()` et `wait_connected()` de 30 s trop courts — un redéploiement de compte inactif prend 1-2 min → porter à **240 s**
 3. `frontend/src/api/client.js` : timeout axios global 30 s → créer une instance `apiLong` (300 s) pour `testConnection`, `candles`, `startBacktest`
