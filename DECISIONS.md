@@ -40,7 +40,7 @@ comparer en backtest plutôt que basculer à l'aveugle :
 | B6 | Mode d'entrée « au-delà des 50% de l'OB » | `ob_entry_mode="zone_50"` |
 | D1 | 4e étage journalier au-dessus du biais | `intraday_d1=""` (désactivé) |
 | D2 | Daily Bias PDH/PDL + Power of 3 codés, filtres OFF | — |
-| D3 | **TP partiels TP1/TP2/TP3** | `partial_tp_enabled=False` (OFF) |
+| D3 | **TP partiels TP1/TP2/TP3**, activés par défaut | `partial_tp_enabled=False` |
 | D4 | Second CHOCH exigible | `require_second_choch=False` |
 | D5 | Displacement = « la bougie de cassure laisse une FVG » | `require_displacement=False` |
 | D6 | Range asiatique + PDH/PDL comme niveaux de liquidité | OFF par défaut |
@@ -54,10 +54,14 @@ volontairement ». La Synthèse V3 §Étape 9 en fait le cœur de la gestion de 
 David a tranché pour l'implémentation. Le SL et le TP FINAL restent posés CHEZ LE
 BROKER — la règle « SL/TP toujours chez le broker » n'est pas touchée : seules les
 prises intermédiaires sont pilotées par le bot, et si l'app s'arrête la position reste
-protégée comme avant. **Laissé OFF par défaut** : mesuré sur données synthétiques,
-l'activer fait passer le profit factor de 10,46 à 4,59 — le runner est écrêté par les
-prises. C'est l'arbitrage attendu (plus de gagnants, gain moyen plus faible), mais il
-doit être mesuré sur données réelles avant le réel.
+protégée comme avant. **Activés par défaut** à la demande explicite de David
+(2026-08-25) : c'est la gestion de position que décrit la stratégie, pas une option
+parmi d'autres. Conséquence mesurée sur données synthétiques : le profit factor passe
+de 10,46 à 4,59, le runner étant écrêté par les prises. C'est l'arbitrage attendu
+(plus de gagnants, gain moyen plus faible) et il est assumé. Réglage par défaut :
+TP1 à 1R ferme 50% et remonte le SL au break-even, TP2 ferme 30%, les 20% restants
+courent jusqu'à la cible. `partial_tp_enabled=False` rétablit le TP unique pour
+comparer en backtest.
 
 **Biais du scalping (D8).** Nos backtests disaient `scalping_htf=M15` validé et H1
 perdant avec un drawdown catastrophique ; la Synthèse V3 §7 considère à l'inverse

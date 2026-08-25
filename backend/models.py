@@ -143,11 +143,13 @@ DEFAULT_SETTINGS = {
 
     # --- Gestion échelonnée TP1/TP2/TP3 (Synthèse V3 §Étape 9) ---
     # ⚠️ Lève la règle « TP partiels : NON implémentés volontairement » (décision D3②
-    # du 2026-08-25, cf. DECISIONS.md). Implémenté et testé, mais laissé OFF par défaut :
-    # l'activer change le profil de résultat de toute la stratégie (winrate en hausse,
-    # R moyen en baisse) et doit passer par un backtest avant le réel.
+    # du 2026-08-25, cf. DECISIONS.md). ACTIVÉ PAR DÉFAUT à la demande de David
+    # (2026-08-25) : c'est la gestion de position décrite par la stratégie, pas une
+    # option. Conséquence assumée : plus de trades gagnants mais un gain moyen plus
+    # faible, le runner étant écrêté par les prises. `partial_tp_enabled=False` rétablit
+    # le TP unique historique pour comparer en backtest.
     # TP3 = la cible du signal (borne du range ou liquidité selon tp_target).
-    "partial_tp_enabled": False,
+    "partial_tp_enabled": True,
     "tp1_r": 1.0,               # TP1 à N x le risque
     "tp1_close_pct": 50.0,      # % du volume INITIAL fermé à TP1
     "tp1_to_breakeven": True,   # après TP1, le SL remonte à l'entrée (trade « gratuit »)

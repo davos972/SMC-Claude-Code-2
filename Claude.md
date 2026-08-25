@@ -48,7 +48,7 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
 - **Filtre news** : pause 30 min avant/après les annonces USD à fort impact (flux Forex Factory / faireconomy, `backend/news.py`)
 - **Mode « Signal uniquement »** : détecte et journalise sans exécuter — mode par défaut au premier lancement
 - **Trailing stop** : implémenté (logique unique `compute_trailing_sl` partagée live + backtest ; modes breakeven / r_trail / structure), **OFF par défaut**
-- **TP partiels TP1/TP2/TP3** : implémentés depuis le 2026-08-25 (décision D3, cf. DECISIONS.md) — la règle « non implémentés volontairement » est LEVÉE. Échelle unique `compute_tp_ladder` partagée live + backtest. **OFF par défaut** (`partial_tp_enabled`) : les activer change le profil de résultat de toute la stratégie et doit passer par un backtest. Le SL et le TP FINAL restent posés chez le broker
+- **TP partiels TP1/TP2/TP3** : implémentés depuis le 2026-08-25 (décision D3, cf. DECISIONS.md) — la règle « non implémentés volontairement » est LEVÉE. Échelle unique `compute_tp_ladder` partagée live + backtest. **ACTIVÉS PAR DÉFAUT** : TP1 à 1R ferme 50% et remonte le SL à l'entrée, TP2 (mi-chemin TP1↔TP3) ferme 30%, les 20% restants courent jusqu'à la cible. C'est la gestion de position décrite par la stratégie, pas une option. Le SL et le TP FINAL restent posés chez le broker : si l'app s'arrête, la position reste protégée comme avant. `partial_tp_enabled=False` rétablit le TP unique historique pour comparer en backtest
 
 ## 5. Fonctionnalités de l'app
 

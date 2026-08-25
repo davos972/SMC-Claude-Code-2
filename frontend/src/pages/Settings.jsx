@@ -586,7 +586,7 @@ export default function Settings({ settings, refresh }) {
             <Section title="Take profit échelonnés">
                 <Toggle
                     label="Prises partielles TP1 / TP2 / TP3"
-                    description="TP1 encaisse une part et remonte le stop à l'entrée, TP2 une autre part, le reste court jusqu'à la cible finale. Le stop et la cible finale restent posés chez le broker."
+                    description="Actif par défaut. TP1 encaisse une part et remonte le stop à l'entrée, TP2 une autre part, le reste court jusqu'à la cible finale. Le stop et la cible finale restent posés chez le broker : si l'app s'arrête, la position reste protégée."
                     value={local.partial_tp_enabled}
                     onChange={(v) => setAndSave("partial_tp_enabled", v)}
                     testid="settings-partial-tp"
@@ -612,9 +612,10 @@ export default function Settings({ settings, refresh }) {
                         <div className="text-xs text-gold bg-gold/10 border border-gold/30 rounded-xl p-3 flex items-start gap-2">
                             <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
                             <span>
-                                Les prises partielles changent le profil de toute la stratégie :
-                                plus de trades gagnants, mais un gain moyen plus faible car le
-                                runner est écrêté. <b>À mesurer en backtest</b> avant le réel.
+                                Gestion active par défaut, conforme à la stratégie. Elle donne
+                                plus de trades gagnants mais un gain moyen plus faible, car le
+                                runner est écrêté par les prises. Désactive-la pour revenir au
+                                take profit unique et <b>comparer les deux en backtest</b>.
                             </span>
                         </div>
                     </>
