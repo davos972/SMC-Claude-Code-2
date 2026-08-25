@@ -186,6 +186,7 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     asia_start_hour = int(_dparam("asia_start_hour", 23))
     asia_end_hour = int(_dparam("asia_end_hour", 7))
     asia_tz = str(_dparam("asia_tz", "Europe/Paris"))
+    poi_source = str(_dparam("poi_source", "ob"))
     # Trailing / break-even (OFF par défaut = aucun changement vs baseline).
     # Logique PARTAGÉE avec le live (bot_loop._apply_trailing utilise le même
     # compute_trailing_sl ; en live il est piloté par les Réglages).
@@ -374,7 +375,7 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
                          use_asia_liquidity=use_asia_liquidity,
                          use_pdh_pdl_liquidity=use_pdh_pdl_liquidity,
                          asia_start_hour=asia_start_hour, asia_end_hour=asia_end_hour,
-                         asia_tz=asia_tz)
+                         asia_tz=asia_tz, poi_source=poi_source)
         sig = result.get("signal")
         if sig:
             entry_price = sig["entry"] + (spread_price if sig["side"] == "buy" else -spread_price)

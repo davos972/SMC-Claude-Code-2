@@ -713,7 +713,8 @@ async def _bot_trading_loop() -> None:
                                      s.get("use_pdh_pdl_liquidity", False)),
                                  asia_start_hour=int(s.get("asia_start_hour", 23)),
                                  asia_end_hour=int(s.get("asia_end_hour", 7)),
-                                 asia_tz=str(s.get("asia_tz", "Europe/Paris")))
+                                 asia_tz=str(s.get("asia_tz", "Europe/Paris")),
+                                 poi_source=str(s.get("poi_source", "ob")))
             except Exception as e:
                 logger.warning("SMC analysis failed: %s", e)
                 continue

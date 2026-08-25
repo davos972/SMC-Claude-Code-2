@@ -925,6 +925,7 @@ _SETTINGS_LABELS = {
     "second_choch_window": "Second CHoCH — fenetre",
     "use_asia_liquidity": "Liquidite du range asiatique",
     "use_pdh_pdl_liquidity": "Liquidite PDH/PDL",
+    "poi_source": "Zones acceptees comme POI",
     "fractal_n": "Fractale N",
     "recent_window": "Fenetre recente",
     "max_trades_per_day": "Trades max / jour",

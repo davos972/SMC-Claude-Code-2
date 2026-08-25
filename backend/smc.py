@@ -82,6 +82,43 @@ class FVG:
 
 
 @dataclass
+class IFVG:
+    """Inverted Fair Value Gap — Manuel §3.2.
+
+    Une FVG qui n'est plus respectée et se retourne : de signal de continuation elle
+    devient signal de RETOURNEMENT. La confirmation est stricte : il faut une CLÔTURE
+    de bougie de l'autre côté de la FVG — une mèche qui traverse ne suffit pas.
+    """
+    idx: int                 # bougie dont la CLÔTURE a inversé la FVG
+    top: float
+    bottom: float
+    direction: Literal["bullish", "bearish"]   # sens de la NOUVELLE zone
+    time: Any
+    source_idx: int = -1     # idx de la FVG d'origine
+    mitigated: bool = False
+    mitigated_idx: int = -1
+
+
+@dataclass
+class BPR:
+    """Balance Price Range — Manuel §3.3.
+
+    Zone d'équilibre formée par le CHEVAUCHEMENT d'une FVG haussière et d'une FVG
+    baissière opposées, la seconde ayant cassé la première par une clôture
+    (confirmation IFVG). Le BPR est la zone COMMUNE aux deux — pas leur réunion.
+    """
+    idx: int
+    top: float
+    bottom: float
+    direction: Literal["bullish", "bearish"]
+    time: Any
+    fvg_a_idx: int = -1
+    fvg_b_idx: int = -1
+    mitigated: bool = False
+    mitigated_idx: int = -1
+
+
+@dataclass
 class LiquiditySweep:
     idx: int
     price: float
@@ -468,6 +505,104 @@ def detect_fvgs(candles: List[Candle]) -> List[FVG]:
                     break
         fvgs.append(fvg)
     return fvgs
+
+
+def detect_ifvgs(candles: List[Candle], fvgs: List[FVG]) -> List[IFVG]:
+    """FVG inversées — Manuel §3.2. Confirmation par CLÔTURE uniquement.
+
+    Une FVG haussière cassée par une clôture EN DESSOUS devient un IFVG baissier ;
+    une FVG baissière cassée par une clôture AU-DESSUS devient un IFVG haussier.
+    Ne pas valider sur une simple mèche : sans clôture de l'autre côté, la FVG n'est
+    pas inversée (piège explicitement signalé par le manuel).
+    """
+    out: List[IFVG] = []
+    for f in fvgs:
+        # La 3e bougie du motif est à f.idx + 1 : l'inversion ne peut venir qu'après.
+        for k in range(f.idx + 2, len(candles)):
+            c = candles[k]
+            if f.direction == "bullish" and c["close"] < f.bottom:
+                new_dir = "bearish"
+            elif f.direction == "bearish" and c["close"] > f.top:
+                new_dir = "bullish"
+            else:
+                continue
+            iv = IFVG(idx=k, top=f.top, bottom=f.bottom, direction=new_dir,
+                      time=c["time"], source_idx=f.idx)
+            # Mitigation : une clôture qui repasse de l'autre côté annule le retournement.
+            for j in range(k + 1, len(candles)):
+                cj = candles[j]
+                if (new_dir == "bearish" and cj["close"] > iv.top) or \
+                   (new_dir == "bullish" and cj["close"] < iv.bottom):
+                    iv.mitigated, iv.mitigated_idx = True, j
+                    break
+            out.append(iv)
+            break
+    return out
+
+
+def detect_bprs(candles: List[Candle], fvgs: List[FVG], ifvgs: List[IFVG],
+                max_pair_distance: int = 6) -> List[BPR]:
+    """Balance Price Range — Manuel §3.3 : le CHEVAUCHEMENT de deux FVG opposées.
+
+    Conditions retenues, toutes binaires :
+      1. deux FVG de sens OPPOSÉS, la seconde postérieure à la première ;
+      2. la première a été inversée par une clôture (elle figure dans `ifvgs`), et cette
+         inversion s'est produite au plus tard à la formation de la seconde ;
+      3. les deux zones se chevauchent réellement.
+    Le BPR est la seule zone commune, et son sens est celui de la FVG la plus récente.
+    `max_pair_distance` borne la recherche aux FVG voisines : au-delà, deux FVG
+    n'appartiennent plus au même mouvement.
+    """
+    inverted_at = {iv.source_idx: iv.idx for iv in ifvgs}
+    out: List[BPR] = []
+    for i, fa in enumerate(fvgs):
+        inv_idx = inverted_at.get(fa.idx)
+        if inv_idx is None:
+            continue
+        for fb in fvgs[i + 1:i + 1 + max_pair_distance]:
+            if fb.direction == fa.direction or fb.idx <= fa.idx:
+                continue
+            if inv_idx > fb.idx + 1:      # la cassure doit précéder la 2e FVG
+                continue
+            top = min(fa.top, fb.top)
+            bottom = max(fa.bottom, fb.bottom)
+            if top <= bottom:             # pas de chevauchement réel
+                continue
+            b = BPR(idx=fb.idx, top=top, bottom=bottom, direction=fb.direction,
+                    time=candles[fb.idx]["time"] if fb.idx < len(candles) else fb.time,
+                    fvg_a_idx=fa.idx, fvg_b_idx=fb.idx)
+            for j in range(fb.idx + 2, len(candles)):
+                cj = candles[j]
+                if (b.direction == "bullish" and cj["close"] < b.bottom) or \
+                   (b.direction == "bearish" and cj["close"] > b.top):
+                    b.mitigated, b.mitigated_idx = True, j
+                    break
+            out.append(b)
+            break
+    return out
+
+
+def bprs_as_poi(bprs: List[BPR], candles: List[Candle]) -> List[OrderBlock]:
+    """Convertit les BPR en POI exploitables par la logique d'entrée existante.
+
+    Le manuel §3.3 note que le BPR « peut servir de POI et même de biais directionnel ».
+    Plutôt que de dupliquer toute la logique d'entrée (modes close/tap/zone_50, compteur
+    de touchés, inducement), on réutilise la structure OrderBlock avec zone="bpr".
+    """
+    out: List[OrderBlock] = []
+    for b in bprs:
+        ob = OrderBlock(start_idx=b.idx, end_idx=b.idx, top=b.top, bottom=b.bottom,
+                        direction=b.direction, time=b.time, zone="bpr",
+                        mitigated=b.mitigated, mitigated_idx=b.mitigated_idx)
+        inside_prev = False
+        for k in range(b.idx + 1, len(candles)):
+            c = candles[k]
+            inside = c["low"] <= ob.top and c["high"] >= ob.bottom
+            if inside and not inside_prev:
+                ob.touch_idx.append(k)
+            inside_prev = inside
+        out.append(ob)
+    return out
 
 
 def detect_liquidity_sweeps(candles: List[Candle], swings: List[Swing], lookback: int = 20) -> List[LiquiditySweep]:
@@ -964,7 +1099,8 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
             require_second_choch: bool = False, second_choch_window: int = 20,
             use_asia_liquidity: bool = False, use_pdh_pdl_liquidity: bool = False,
             asia_start_hour: int = 23, asia_end_hour: int = 7,
-            asia_tz: str = "Europe/Paris") -> Dict[str, Any]:
+            asia_tz: str = "Europe/Paris",
+            poi_source: str = "ob") -> Dict[str, Any]:
     """Top-down SMC analysis sur 4 étages (Synthèse V3 §2) :
     contexte journalier (D1) → biais (HTF) → structure/POI (MTF) → déclencheur (LTF).
 
@@ -994,6 +1130,10 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
         # Range asiatique (bornes = liquidite pour la session de Londres). None si
         # l'historique fourni ne couvre pas la fenetre 23h-7h.
         "asian_range": None,
+        # FVG inversees et Balance Price Range, sur le niveau structure et le niveau entree.
+        "ifvgs_ltf": [],
+        "bprs_ltf": [],
+        "bprs_htf": [],
         "signal": None,
         "reject_reason": None,
         # Stade atteint avant le rejet : insufficient | no_bias | no_poi | entry.
@@ -1028,6 +1168,9 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
     fvgs_struct = detect_fvgs(candles_struct)
     events_struct = detect_structure(candles_struct, swings_struct, break_mode, fvgs_struct)
     obs_struct = detect_order_blocks(candles_struct, events_struct, ob_zone)
+    ifvgs_struct = detect_ifvgs(candles_struct, fvgs_struct)
+    bprs_struct = detect_bprs(candles_struct, fvgs_struct, ifvgs_struct)
+    out["bprs_htf"] = [asdict(b) for b in bprs_struct]
     pd_struct = dealing_range(swings_struct, events_struct)
     out["order_blocks_htf"] = [asdict(o) for o in obs_struct]
     out["premium_discount"] = pd_struct
@@ -1058,6 +1201,9 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
     out["order_blocks_ltf"] = [asdict(o) for o in obs_entry]
     out["fvgs_ltf"] = [asdict(f) for f in fvgs_entry]
     out["sweeps_ltf"] = [asdict(s) for s in sweeps_entry]
+    ifvgs_entry = detect_ifvgs(candles_entry, fvgs_entry)
+    out["ifvgs_ltf"] = [asdict(i) for i in ifvgs_entry]
+    out["bprs_ltf"] = [asdict(b) for b in detect_bprs(candles_entry, fvgs_entry, ifvgs_entry)]
     out["liquidity_ltf"] = [asdict(l) for l in
                             detect_liquidity_levels(candles_entry, swings_entry, bias,
                                                     liquidity_cluster_atr)]
@@ -1085,7 +1231,13 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
         return out
 
     # POI: order block on the structure tier, in the bias direction, optionally unmitigated only.
-    poi_obs = [o for o in obs_struct if o.direction == bias]
+    # poi_source="ob_bpr" ajoute les BPR aux candidats (Manuel §3.3 : « peut servir de
+    # POI »). Ils sont convertis en OrderBlock pour réutiliser toute la logique d'entrée.
+    poi_pool = list(obs_struct)
+    if poi_source == "ob_bpr":
+        poi_pool += bprs_as_poi(bprs_struct, candles_struct)
+        poi_pool.sort(key=lambda o: o.end_idx)
+    poi_obs = [o for o in poi_pool if o.direction == bias]
     if require_unmitigated:
         poi_obs = [o for o in poi_obs if not o.mitigated]
     # Fraîcheur (D7②) : 0 = filtre désactivé. Sinon on écarte l'OB déjà retouché

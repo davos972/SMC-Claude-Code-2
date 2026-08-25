@@ -84,6 +84,9 @@ DEFAULT_SETTINGS = {
     "asia_tz": "Europe/Paris",
     "use_asia_liquidity": False,     # ajouter Asia High/Low aux niveaux de liquidité
     "use_pdh_pdl_liquidity": False,  # ajouter PDH/PDL aux niveaux de liquidité
+    # Zones acceptées comme POI : "ob" (order blocks seuls, défaut) ou "ob_bpr"
+    # (order blocks + Balance Price Range). Manuel §3.3 : le BPR « peut servir de POI ».
+    "poi_source": "ob",
     # Fraîcheur de l'OB (manuel §4.1 « OB déjà testé = à éviter », nuancé par la Synthèse
     # V3 §5.8 « facteur de qualité, pas condition absolue ») : 0 = filtre DÉSACTIVÉ, le
     # compteur de touchés reste affiché. N > 0 = écarte un OB déjà retouché N fois.
