@@ -822,7 +822,12 @@ async def _bot_trading_loop() -> None:
                                  asia_start_hour=int(s.get("asia_start_hour", 23)),
                                  asia_end_hour=int(s.get("asia_end_hour", 7)),
                                  asia_tz=str(s.get("asia_tz", "Europe/Paris")),
-                                 poi_source=str(s.get("poi_source", "ob")))
+                                 poi_source=str(s.get("poi_source", "ob")),
+                                 require_ote=bool(s.get("require_ote", False)),
+                                 ote_low_pct=float(s.get("ote_low_pct", 0.618)),
+                                 ote_high_pct=float(s.get("ote_high_pct", 0.786)),
+                                 rejection_wick_ratio=float(
+                                     s.get("rejection_wick_ratio", 0.5)))
             except Exception as e:
                 logger.warning("SMC analysis failed: %s", e)
                 continue

@@ -187,6 +187,10 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     asia_end_hour = int(_dparam("asia_end_hour", 7))
     asia_tz = str(_dparam("asia_tz", "Europe/Paris"))
     poi_source = str(_dparam("poi_source", "ob"))
+    require_ote = bool(_dparam("require_ote", False))
+    ote_low_pct = float(_dparam("ote_low_pct", 0.618))
+    ote_high_pct = float(_dparam("ote_high_pct", 0.786))
+    rejection_wick_ratio = float(_dparam("rejection_wick_ratio", 0.5))
     # Trailing / break-even (OFF par défaut = aucun changement vs baseline).
     # Logique PARTAGÉE avec le live (bot_loop._apply_trailing utilise le même
     # compute_trailing_sl ; en live il est piloté par les Réglages).
@@ -384,7 +388,10 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
                          use_asia_liquidity=use_asia_liquidity,
                          use_pdh_pdl_liquidity=use_pdh_pdl_liquidity,
                          asia_start_hour=asia_start_hour, asia_end_hour=asia_end_hour,
-                         asia_tz=asia_tz, poi_source=poi_source)
+                         asia_tz=asia_tz, poi_source=poi_source,
+                         require_ote=require_ote, ote_low_pct=ote_low_pct,
+                         ote_high_pct=ote_high_pct,
+                         rejection_wick_ratio=rejection_wick_ratio)
         sig = result.get("signal")
         if sig:
             entry_price = sig["entry"] + (spread_price if sig["side"] == "buy" else -spread_price)

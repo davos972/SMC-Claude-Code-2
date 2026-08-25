@@ -605,6 +605,175 @@ def bprs_as_poi(bprs: List[BPR], candles: List[Candle]) -> List[OrderBlock]:
     return out
 
 
+def _zone_of(c: Candle, zone: str) -> tuple:
+    if zone == "body":
+        return max(c["open"], c["close"]), min(c["open"], c["close"])
+    return c["high"], c["low"]
+
+
+def _mark_touches(ob: OrderBlock, candles: List[Candle], from_idx: int) -> OrderBlock:
+    inside_prev = False
+    for k in range(from_idx + 1, len(candles)):
+        c = candles[k]
+        inside = c["low"] <= ob.top and c["high"] >= ob.bottom
+        if inside and not inside_prev:
+            ob.touch_idx.append(k)
+        inside_prev = inside
+    return ob
+
+
+def detect_rejection_blocks(candles: List[Candle], wick_ratio: float = 0.5,
+                            confirm: int = 2) -> List[OrderBlock]:
+    """Rejection Block — Manuel §4.5 : la zone de la MÈCHE d'une bougie de rejet.
+
+    C'est la mèche elle-même qui constitue le bloc : l'espace entre le corps et
+    l'extrémité de la mèche. Deux conditions binaires :
+      1. la mèche fait au moins `wick_ratio` de l'amplitude totale de la bougie ;
+      2. elle est confirmée par `confirm` bougies dans le sens opposé, qui établissent
+         le creux (ou le sommet).
+    Renvoyé sous forme d'OrderBlock (zone="rejection") pour réutiliser la logique
+    d'entrée existante.
+    """
+    out: List[OrderBlock] = []
+    for i in range(len(candles) - confirm):
+        c = candles[i]
+        rng = c["high"] - c["low"]
+        if rng <= 0:
+            continue
+        body_top, body_bottom = max(c["open"], c["close"]), min(c["open"], c["close"])
+        nxt = candles[i + 1:i + 1 + confirm]
+        lower_wick = body_bottom - c["low"]
+        upper_wick = c["high"] - body_top
+        if lower_wick / rng >= wick_ratio and all(x["close"] > x["open"] for x in nxt):
+            out.append(_mark_touches(OrderBlock(
+                start_idx=i, end_idx=i + confirm, top=body_bottom, bottom=c["low"],
+                direction="bullish", time=c["time"], zone="rejection"), candles, i + confirm))
+        elif upper_wick / rng >= wick_ratio and all(x["close"] < x["open"] for x in nxt):
+            out.append(_mark_touches(OrderBlock(
+                start_idx=i, end_idx=i + confirm, top=c["high"], bottom=body_top,
+                direction="bearish", time=c["time"], zone="rejection"), candles, i + confirm))
+    return out
+
+
+def detect_breaker_blocks(candles: List[Candle], events: List[StructureEvent],
+                          obs: List[OrderBlock]) -> List[OrderBlock]:
+    """Breaker Block — Manuel §4.3 : un OB cassé alors que la structure CONTINUE.
+
+    Séquence exigée : un BOS (la structure se poursuit), l'OB à l'origine de ce BOS,
+    puis un CHOCH de sens opposé qui casse cet OB. L'OB change alors de rôle et devient
+    une zone de retest DANS LE SENS DU CHOCH.
+    La continuation (nouveau plus haut / plus bas entre le BOS et le CHOCH) est ce qui
+    le distingue du Mitigation Block, qui apparaît justement SANS continuation.
+    """
+    out: List[OrderBlock] = []
+    for ev in events:
+        if ev.kind != "BOS":
+            continue
+        ob = next((o for o in obs if o.end_idx == ev.idx and o.direction == ev.direction), None)
+        if ob is None or not ob.mitigated:
+            continue
+        choch = next((e for e in events
+                      if e.idx > ev.idx and e.kind == "CHoCH" and e.direction != ev.direction),
+                     None)
+        if choch is None or ob.mitigated_idx > choch.idx:
+            continue
+        seg = candles[ev.idx:choch.idx + 1]
+        if not seg:
+            continue
+        cont = (max(c["high"] for c in seg) > ev.price) if ev.direction == "bullish" \
+            else (min(c["low"] for c in seg) < ev.price)
+        if not cont:
+            continue
+        out.append(_mark_touches(OrderBlock(
+            start_idx=ob.start_idx, end_idx=choch.idx, top=ob.top, bottom=ob.bottom,
+            direction=choch.direction, time=ob.time, zone="breaker"), candles, choch.idx))
+    return out
+
+
+def detect_mitigation_blocks(candles: List[Candle], swings: List[Swing],
+                             zone: str = "wick") -> List[OrderBlock]:
+    """Mitigation Block — Manuel §4.4 : la structure NE continue PAS.
+
+    En tendance baissière : au lieu d'un nouveau creux plus bas, le marché forme un creux
+    PLUS HAUT que le précédent, puis casse le sommet intermédiaire — les positions de
+    vente de cette zone deviennent perdantes et sont ramenées à l'équilibre, ce qui
+    génère le mouvement inverse. La zone du Mitigation Block est celle de la bougie à
+    l'origine de ces positions. Logique symétrique en tendance haussière.
+    """
+    out: List[OrderBlock] = []
+    lows = [s for s in swings if s.kind == "low"]
+    highs = [s for s in swings if s.kind == "high"]
+
+    def _origin(before_idx: int, bullish_candle: bool) -> Optional[int]:
+        for j in range(before_idx - 1, max(-1, before_idx - 12), -1):
+            c = candles[j]
+            if (c["close"] > c["open"]) == bullish_candle:
+                return j
+        return None
+
+    # Baissier qui échoue : creux plus HAUT, puis cassure du sommet intermédiaire.
+    for a, b in zip(lows, lows[1:]):
+        if b.price <= a.price:
+            continue
+        mid = next((h for h in highs if a.idx < h.idx < b.idx), None)
+        if mid is None:
+            continue
+        brk = next((i for i in range(b.idx + 1, len(candles))
+                    if candles[i]["close"] > mid.price), None)
+        if brk is None:
+            continue
+        j = _origin(mid.idx, bullish_candle=True)   # dernière bougie haussière = les vendeurs
+        if j is None:
+            continue
+        top, bottom = _zone_of(candles[j], zone)
+        out.append(_mark_touches(OrderBlock(
+            start_idx=j, end_idx=brk, top=top, bottom=bottom, direction="bullish",
+            time=candles[j]["time"], zone="mitigation"), candles, brk))
+
+    # Haussier qui échoue : sommet plus BAS, puis cassure du creux intermédiaire.
+    for a, b in zip(highs, highs[1:]):
+        if b.price >= a.price:
+            continue
+        mid = next((l for l in lows if a.idx < l.idx < b.idx), None)
+        if mid is None:
+            continue
+        brk = next((i for i in range(b.idx + 1, len(candles))
+                    if candles[i]["close"] < mid.price), None)
+        if brk is None:
+            continue
+        j = _origin(mid.idx, bullish_candle=False)
+        if j is None:
+            continue
+        top, bottom = _zone_of(candles[j], zone)
+        out.append(_mark_touches(OrderBlock(
+            start_idx=j, end_idx=brk, top=top, bottom=bottom, direction="bearish",
+            time=candles[j]["time"], zone="mitigation"), candles, brk))
+    out.sort(key=lambda o: o.end_idx)
+    return out
+
+
+def ote_zone(pd_range: Optional[Dict[str, float]], direction: str,
+             low_pct: float = 0.618, high_pct: float = 0.786) -> Optional[Dict[str, float]]:
+    """OTE — Optimal Trade Entry, Manuel §5.2 : retracement 62–79% (centre ~70,5%).
+
+    Version plus stricte et sélective que le simple filtre Premium/Discount : au lieu
+    d'accepter toute la moitié basse d'un range pour un achat, on n'accepte que la bande
+    profonde du retracement. Le manuel prévient : filtre très strict, peu d'opportunités.
+    """
+    if not pd_range:
+        return None
+    top, bottom = pd_range.get("top"), pd_range.get("bottom")
+    if top is None or bottom is None or top <= bottom:
+        return None
+    span = top - bottom
+    if direction == "bullish":
+        zt, zb = top - low_pct * span, top - high_pct * span
+    else:
+        zb, zt = bottom + low_pct * span, bottom + high_pct * span
+    lo, hi = min(zt, zb), max(zt, zb)
+    return {"bottom": lo, "top": hi, "mid": (lo + hi) / 2}
+
+
 def detect_liquidity_sweeps(candles: List[Candle], swings: List[Swing], lookback: int = 20) -> List[LiquiditySweep]:
     """A sweep is a wick that pierces a recent swing high/low but closes back."""
     sweeps: List[LiquiditySweep] = []
@@ -893,6 +1062,21 @@ def daily_context(candles_daily: Optional[List[Candle]], po3_wick_ratio: float =
 
 # ---------------- analysis pipeline ----------------
 
+# Sources de POI acceptées. Une liste séparée par des virgules permet de tester chaque
+# type de zone SÉPARÉMENT, comme le demande la Synthèse V3 §11 (« tester chaque
+# variable séparément pour isoler ce qui a réellement une meilleure espérance »).
+_POI_ALIASES = {
+    "ob_bpr": "ob,bpr",
+    "all": "ob,bpr,breaker,mitigation,rejection",
+}
+
+
+def _poi_sources(poi_source: str) -> set:
+    src = _POI_ALIASES.get(poi_source, poi_source or "ob")
+    return {x.strip() for x in src.split(",") if x.strip()}
+
+
+
 # Rejets « prix mal placé » (pas dans la POI / mauvaise zone premium-discount) = bruit,
 # pas un vrai quasi-setup. Doit correspondre EXACTEMENT aux textes de _build_signal.
 _OUT_OF_ZONE_REASONS = {
@@ -1100,7 +1284,10 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
             use_asia_liquidity: bool = False, use_pdh_pdl_liquidity: bool = False,
             asia_start_hour: int = 23, asia_end_hour: int = 7,
             asia_tz: str = "Europe/Paris",
-            poi_source: str = "ob") -> Dict[str, Any]:
+            poi_source: str = "ob",
+            require_ote: bool = False, ote_low_pct: float = 0.618,
+            ote_high_pct: float = 0.786,
+            rejection_wick_ratio: float = 0.5) -> Dict[str, Any]:
     """Top-down SMC analysis sur 4 étages (Synthèse V3 §2) :
     contexte journalier (D1) → biais (HTF) → structure/POI (MTF) → déclencheur (LTF).
 
@@ -1134,6 +1321,12 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
         "ifvgs_ltf": [],
         "bprs_ltf": [],
         "bprs_htf": [],
+        # Blocs derives (Manuel §4.3-4.5) : breaker, mitigation, rejection.
+        "breaker_blocks_htf": [],
+        "mitigation_blocks_htf": [],
+        "rejection_blocks_htf": [],
+        # Zone OTE (retracement 62-79%) dans le sens du biais.
+        "ote": None,
         "signal": None,
         "reject_reason": None,
         # Stade atteint avant le rejet : insufficient | no_bias | no_poi | entry.
@@ -1168,6 +1361,12 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
     fvgs_struct = detect_fvgs(candles_struct)
     events_struct = detect_structure(candles_struct, swings_struct, break_mode, fvgs_struct)
     obs_struct = detect_order_blocks(candles_struct, events_struct, ob_zone)
+    breakers_struct = detect_breaker_blocks(candles_struct, events_struct, obs_struct)
+    mitigations_struct = detect_mitigation_blocks(candles_struct, swings_struct, ob_zone)
+    rejections_struct = detect_rejection_blocks(candles_struct, rejection_wick_ratio)
+    out["breaker_blocks_htf"] = [asdict(o) for o in breakers_struct]
+    out["mitigation_blocks_htf"] = [asdict(o) for o in mitigations_struct]
+    out["rejection_blocks_htf"] = [asdict(o) for o in rejections_struct]
     ifvgs_struct = detect_ifvgs(candles_struct, fvgs_struct)
     bprs_struct = detect_bprs(candles_struct, fvgs_struct, ifvgs_struct)
     out["bprs_htf"] = [asdict(b) for b in bprs_struct]
@@ -1233,10 +1432,19 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
     # POI: order block on the structure tier, in the bias direction, optionally unmitigated only.
     # poi_source="ob_bpr" ajoute les BPR aux candidats (Manuel §3.3 : « peut servir de
     # POI »). Ils sont convertis en OrderBlock pour réutiliser toute la logique d'entrée.
-    poi_pool = list(obs_struct)
-    if poi_source == "ob_bpr":
+    sources = _poi_sources(poi_source)
+    poi_pool: List[OrderBlock] = []
+    if "ob" in sources:
+        poi_pool += obs_struct
+    if "bpr" in sources:
         poi_pool += bprs_as_poi(bprs_struct, candles_struct)
-        poi_pool.sort(key=lambda o: o.end_idx)
+    if "breaker" in sources:
+        poi_pool += breakers_struct
+    if "mitigation" in sources:
+        poi_pool += mitigations_struct
+    if "rejection" in sources:
+        poi_pool += rejections_struct
+    poi_pool.sort(key=lambda o: o.end_idx)
     poi_obs = [o for o in poi_pool if o.direction == bias]
     if require_unmitigated:
         poi_obs = [o for o in poi_obs if not o.mitigated]
@@ -1261,6 +1469,20 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
     last = candles_entry[-1]
     last_idx = len(candles_entry) - 1
     last_close = last["close"]
+
+    # OTE (Manuel §5.2) : version stricte du filtre premium/discount. Toujours calculée
+    # pour l'affichage ; ne rejette que si require_ote est actif.
+    ote = ote_zone(pd_struct, bias, ote_low_pct, ote_high_pct)
+    out["ote"] = ote
+    if require_ote:
+        if not ote:
+            out["reject_reason"] = "Zone OTE indéterminée"
+            out["reject_stage"] = "out_of_zone"
+            return out
+        if not (ote["bottom"] <= last_close <= ote["top"]):
+            out["reject_reason"] = "Prix hors de la zone OTE (62-79%)"
+            out["reject_stage"] = "out_of_zone"
+            return out
 
     sig, reason = _build_signal(
         bias, candles_entry, last_close, last_idx, poi_obs, pd_struct,
