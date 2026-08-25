@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from smc import analyze
+from smc import analyze, params_from_settings
 import sessions as sess
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,33 @@ def _aggregate(candles_m1: List[Dict], minutes: int) -> List[Dict]:
     return out
 
 
-TF_MIN = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240}
+TF_MIN = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
+
+
+def _aggregate_daily(candles_m1: List[Dict]) -> List[Dict]:
+    """Agrège en bougies JOURNALIÈRES par date calendaire (UTC).
+
+    `_aggregate` regroupe par NOMBRE de bougies : correct à l'échelle H1, faux pour le
+    journalier (l'or a ~1380 bougies M1 par jour, pas 1440, plus les week-ends) — les
+    « jours » dériveraient et le PDH/PDL ne correspondrait à aucune vraie journée.
+    """
+    out: List[Dict] = []
+    cur_date = None
+    for c in candles_m1:
+        dt = _parse_dt(c["time"])
+        if dt is None:
+            continue
+        d = dt.date().isoformat()
+        if d != cur_date:
+            cur_date = d
+            out.append({"date": d, "time": c["time"], "open": c["open"],
+                        "high": c["high"], "low": c["low"], "close": c["close"]})
+        else:
+            b = out[-1]
+            b["high"] = max(b["high"], c["high"])
+            b["low"] = min(b["low"], c["low"])
+            b["close"] = c["close"]
+    return out
 
 # Fenêtres d'analyse — SOURCE DE VÉRITÉ partagée backtest + live (cf. DECISIONS.md
 # 2026-07-30) : le live doit analyser le MÊME historique que le backtest, sinon la
@@ -41,6 +67,7 @@ TF_MIN = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240}
 WINDOW_HTF = 100   # bougies du niveau biais
 WINDOW_MTF = 150   # bougies du niveau structure/POI
 WINDOW_LTF = 201   # bougies du niveau entrée (200 + la bougie courante)
+WINDOW_D1 = 60     # bougies du niveau contexte journalier (PDH/PDL + structure D1)
 
 
 def _to_iso(t: Any) -> str:
@@ -121,17 +148,16 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     """
     settings = settings or {}
     mode = req.get("mode", "intraday")
+    d1_tf = str(settings.get("intraday_d1", "D1") if mode == "intraday"
+                else settings.get("scalping_d1", "H1") or "")
     htf = settings.get("intraday_htf", "H1") if mode == "intraday" else settings.get("scalping_htf", "H1")
     mtf = settings.get("intraday_mtf", "M15") if mode == "intraday" else settings.get("scalping_mtf", "M15")
     ltf = settings.get("intraday_ltf", "M5") if mode == "intraday" else settings.get("scalping_ltf", "M1")
-    min_rr = float(settings.get("min_rr", 2.0))
-    fractal_n = int(settings.get("fractal_n", 3))
-    recent_window = int(settings.get("recent_window", 6))
-    require_fvg = bool(settings.get("require_fvg_entry", True))
-    require_sequence = bool(settings.get("require_sweep_then_choch", True))
-    require_unmitigated = bool(settings.get("require_unmitigated_ob", True))
-    require_pd = bool(settings.get("require_premium_discount", True))
-    ob_entry_mode = str(settings.get("ob_entry_mode", "close"))
+    # Conversion réglages → paramètres du moteur : SOURCE UNIQUE partagée avec le bot
+    # live et l'analyse du dashboard (smc.params_from_settings). La requête a priorité
+    # sur les Réglages pour pouvoir comparer deux méthodes sans rien changer dans l'app.
+    smc_params = params_from_settings(
+        {**settings, **{k: v for k, v in req.items() if v is not None}})
     # Trailing / break-even (OFF par défaut = aucun changement vs baseline).
     # Logique PARTAGÉE avec le live (bot_loop._apply_trailing utilise le même
     # compute_trailing_sl ; en live il est piloté par les Réglages).
@@ -146,6 +172,15 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         "distance_r": float(_tparam("trailing_distance_r", 1.0)),
         "lookback": int(_tparam("trailing_lookback", 5)),
         "buffer": float(_tparam("trailing_buffer", 0.0)),
+    }
+    # Gestion échelonnée TP1/TP2/TP3 (D3②). Priorité à la requête comme le trailing,
+    # pour comparer deux gestions sans toucher aux Réglages.
+    partial_tp = {
+        "enabled": bool(_tparam("partial_tp_enabled", False)),
+        "tp1_r": float(_tparam("tp1_r", 1.0)),
+        "tp1_close_pct": float(_tparam("tp1_close_pct", 50.0)),
+        "tp1_to_breakeven": bool(_tparam("tp1_to_breakeven", True)),
+        "tp2_close_pct": float(_tparam("tp2_close_pct", 30.0)),
     }
     spread_points = float(req.get("spread_points", 25))
     spread_price = spread_points * point_size  # 1 point = tickSize du symbole
@@ -181,6 +216,26 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     htf_times = [h["time"] for h in htf_candles]
     mtf_times = [h["time"] for h in mtf_candles]
 
+    # --- Étage journalier (4e niveau, Synthèse V3 §2) ---
+    # "D1" = vraies journées calendaires. La bougie du jour EN COURS ne peut pas être
+    # pré-agrégée : elle contiendrait le high/low de la fin de journée, que le bot ne
+    # peut pas connaître à 9h du matin (biais de anticipation). Elle est donc
+    # reconstruite au fil de l'eau depuis les bougies LTF déjà écoulées.
+    # Toute autre timeframe (ex. H1 pour le scalping) suit la voie standard : seules
+    # les bougies CLÔTURÉES sont visibles, comme pour le HTF et le MTF.
+    daily_is_calendar = d1_tf == "D1"
+    daily_completed: List[Dict] = []
+    daily_dates: List[str] = []
+    d1_candles: List[Dict] = []
+    d1_times: List[Any] = []
+    if d1_tf and daily_is_calendar:
+        daily_completed = _aggregate_daily(candles_m1)
+        daily_dates = [d["date"] for d in daily_completed]
+    elif d1_tf:
+        d1_candles = _aggregate(candles_m1, TF_MIN.get(d1_tf, 60))
+        d1_times = [h["time"] for h in d1_candles]
+    day_partial: Optional[Dict[str, Any]] = None
+
     # Etat des limites de risque (simule l'arret jour / pertes consecutives / drawdown du live).
     rm: Dict[str, Any] = {
         "day": None, "session": None, "trades_today": 0, "consec": 0,
@@ -208,11 +263,29 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         cur_time = c["time"]
         cdt = _parse_dt(cur_time)
         sinfo = sess.is_in_session(cdt, settings) if cdt is not None else {"in_session": False, "session": None}
+        # Bougie journalière EN COURS, reconstruite sans anticipation.
+        if d1_tf and daily_is_calendar and cdt is not None:
+            dkey = cdt.date().isoformat()
+            if day_partial is None or day_partial["date"] != dkey:
+                day_partial = {"date": dkey, "time": cur_time, "open": c["open"],
+                               "high": c["high"], "low": c["low"], "close": c["close"]}
+            else:
+                day_partial["high"] = max(day_partial["high"], c["high"])
+                day_partial["low"] = min(day_partial["low"], c["low"])
+                day_partial["close"] = c["close"]
         hk = bisect.bisect_right(htf_times, cur_time)
         mk = bisect.bisect_right(mtf_times, cur_time)
         htf_window = htf_candles[max(0, hk - WINDOW_HTF):hk]
         mtf_window = mtf_candles[max(0, mk - WINDOW_MTF):mk]
         ltf_window = ltf_candles[max(0, i - (WINDOW_LTF - 1)): i + 1]
+        if d1_tf and daily_is_calendar and day_partial is not None:
+            di = bisect.bisect_left(daily_dates, day_partial["date"])
+            d1_window = daily_completed[max(0, di - WINDOW_D1 + 1):di] + [day_partial]
+        elif d1_tf and not daily_is_calendar:
+            dk = bisect.bisect_right(d1_times, cur_time)
+            d1_window = d1_candles[max(0, dk - WINDOW_D1):dk]
+        else:
+            d1_window = []
         if len(htf_window) < 30 or len(mtf_window) < 30:
             continue
 
@@ -264,10 +337,8 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         if rm["trades_today"] >= max_trades_per_day:
             continue
 
-        result = analyze(htf_window, mtf_window, ltf_window, fractal_n=fractal_n, min_rr=min_rr,
-                         recent_window=recent_window, require_fvg=require_fvg,
-                         require_sequence=require_sequence, require_unmitigated=require_unmitigated,
-                         require_pd=require_pd, ob_entry_mode=ob_entry_mode)
+        result = analyze(htf_window, mtf_window, ltf_window, d1_window or None,
+                         **smc_params)
         sig = result.get("signal")
         if sig:
             entry_price = sig["entry"] + (spread_price if sig["side"] == "buy" else -spread_price)
@@ -291,24 +362,23 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
                 "_R": abs(entry_price - float(sig["sl"])),  # distance de risque = 1R
                 "_max_fav": entry_price,                     # meilleure excursion favorable
                 "_equity_at_open": equity,
+                # Échelle de sorties : un seul barreau si les TP partiels sont OFF.
+                "_legs": compute_tp_ladder(sig["side"], entry_price, float(sig["sl"]),
+                                           float(sig["tp"]), partial_tp),
+                "_remaining_pct": 100.0,
+                "_realized": 0.0,
+                "_exit_weighted": 0.0,
             }
             rm["trades_today"] += 1
 
     # Close any trade still open at the end of the period at the last candle's
     # close — otherwise it is silently omitted from the metrics (biasing winrate).
     if open_trade and not open_trade.get("_closed") and ltf_candles:
-        last_c = ltf_candles[-1]
-        side = open_trade["side"]
-        exit_price = last_c["close"]
-        # Spread already paid once via the worse entry fill — do not subtract again.
-        pnl_price = (exit_price - open_trade["entry"]) if side == "buy" else (open_trade["entry"] - exit_price)
-        result = "win" if pnl_price > 0 else ("loss" if pnl_price < 0 else "be")
-        pnl_money = pnl_price * contract_size * open_trade.get("lot", 1.0)
-        open_trade.update(exit_time=_to_iso(last_c["time"]), exit_price=exit_price,
-                          pnl=pnl_money, result=result, _closed=True)
-        trades.append({k: v for k, v in open_trade.items() if not k.startswith("_")})
-        equity_curve.append({"time": _to_iso(last_c["time"]),
-                             "equity": equity_curve[-1]["equity"] + pnl_money})
+        # Le RESTE du volume est soldé au dernier cours — sinon le trade (et les
+        # prises partielles déjà encaissées) disparaîtrait des métriques.
+        _realize(open_trade, ltf_candles[-1]["close"], open_trade["_remaining_pct"],
+                 ltf_candles[-1], trades, equity_curve, contract_size,
+                 reason="end_of_period", final=True)
 
     if on_progress:
         try:
@@ -320,31 +390,105 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     return {"trades": trades, "metrics": metrics, "equity_curve": equity_curve}
 
 
+def compute_tp_ladder(side: str, entry: float, sl: float, tp: float,
+                      params: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Échelle TP1 / TP2 / TP3 — logique UNIQUE partagée live (bot_loop) + backtest.
+
+    Synthèse V3 §Étape 9 : TP1 à 1R avec prise partielle puis passage à break-even,
+    TP2 à un niveau intermédiaire, TP3 sur la liquidité majeure (= la cible du signal).
+
+    Désactivée, elle renvoie une échelle à un seul barreau = comportement historique
+    (TP unique, tout le volume). TP2 est placé à mi-chemin entre TP1 et TP3.
+    Repli sur l'échelle simple si le risque est nul ou si TP1 dépasse déjà TP3.
+    """
+    single = [{"price": tp, "close_pct": 100.0, "to_breakeven": False, "label": "tp"}]
+    R = abs(entry - sl)
+    if not params.get("enabled") or R <= 0:
+        return single
+    sign = 1.0 if side == "buy" else -1.0
+    tp1 = entry + sign * float(params.get("tp1_r", 1.0)) * R
+    if (side == "buy" and tp1 >= tp) or (side == "sell" and tp1 <= tp):
+        return single
+    p1 = max(0.0, min(100.0, float(params.get("tp1_close_pct", 50.0))))
+    p2 = max(0.0, min(100.0 - p1, float(params.get("tp2_close_pct", 30.0))))
+    legs: List[Dict[str, Any]] = []
+    if p1 > 0:
+        legs.append({"price": tp1, "close_pct": p1, "label": "tp1",
+                     "to_breakeven": bool(params.get("tp1_to_breakeven", True))})
+    if p2 > 0:
+        legs.append({"price": (tp1 + tp) / 2.0, "close_pct": p2,
+                     "to_breakeven": False, "label": "tp2"})
+    legs.append({"price": tp, "close_pct": max(0.0, 100.0 - p1 - p2),
+                 "to_breakeven": False, "label": "tp3"})
+    return legs
+
+
+def _realize(trade: Dict[str, Any], price: float, pct: float, c: Dict[str, Any],
+             trades: List[Dict[str, Any]], equity_curve: List[Dict[str, Any]],
+             contract_size: float, reason: str, final: bool) -> None:
+    """Encaisse `pct` % du volume INITIAL au prix donné. Clôture le trade si `final`."""
+    side, entry = trade["side"], trade["entry"]
+    frac = max(0.0, min(trade["_remaining_pct"], pct)) / 100.0
+    # Spread is already paid once via the worse entry fill (entry_price adjusted at open),
+    # which models the full round-trip cost — do NOT subtract it again here (double-counting).
+    pnl_price = (price - entry) if side == "buy" else (entry - price)
+    pnl_money = pnl_price * contract_size * trade.get("lot", 1.0) * frac
+    trade["_realized"] = trade.get("_realized", 0.0) + pnl_money
+    trade["_exit_weighted"] = trade.get("_exit_weighted", 0.0) + price * frac
+    trade["_remaining_pct"] -= frac * 100.0
+    trade.setdefault("partials", []).append(
+        {"reason": reason, "price": price, "pct": round(frac * 100.0, 4),
+         "pnl": pnl_money, "time": _to_iso(c["time"])})
+    equity_curve.append({"time": _to_iso(c["time"]),
+                         "equity": equity_curve[-1]["equity"] + pnl_money})
+    if not final and trade["_remaining_pct"] > 1e-9:
+        return
+    total = trade["_realized"]
+    # Classer par le SIGNE du P&L (pas par le niveau touché) : avec un trailing,
+    # un SL remonté au-dessus de l'entrée donne un SL touché... GAGNANT.
+    eps = trade.get("_R", 0.0) * contract_size * trade.get("lot", 1.0) * 1e-6
+    result = "win" if total > eps else ("loss" if total < -eps else "be")
+    closed_frac = max(1e-9, 1.0 - trade["_remaining_pct"] / 100.0)
+    trade.update(exit_time=_to_iso(c["time"]),
+                 exit_price=trade["_exit_weighted"] / closed_frac,
+                 pnl=total, result=result, exit_reason=reason, _closed=True)
+    trades.append({k: v for k, v in trade.items() if not k.startswith("_")})
+
+
 def _check_exit(trade: Dict[str, Any], c: Dict[str, Any], spread_price: float,
                 trades: List[Dict[str, Any]], equity_curve: List[Dict[str, Any]],
                 contract_size: float = 100.0) -> None:
-    """Mutate trade in place when SL/TP hit, append to trades + equity_curve."""
+    """Mutate trade in place when SL / TP hit, append to trades + equity_curve.
+
+    Gère l'échelle TP1/TP2/TP3 : chaque barreau atteint encaisse sa part et le trade
+    reste ouvert pour le reste. Si le SL et un TP sont touchés dans la MÊME bougie, le
+    SL l'emporte : on ne peut pas connaître l'ordre intra-bougie, on prend l'hypothèse
+    défavorable.
+    """
     side = trade["side"]
-    entry = trade["entry"]
-    sl, tp = trade["sl"], trade["tp"]
-    hit_sl = (c["low"] <= sl) if side == "buy" else (c["high"] >= sl)
-    hit_tp = (c["high"] >= tp) if side == "buy" else (c["low"] <= tp)
-    if not (hit_sl or hit_tp):
+    sl = trade["sl"]
+    if (c["low"] <= sl) if side == "buy" else (c["high"] >= sl):
+        _realize(trade, sl, trade["_remaining_pct"], c, trades, equity_curve,
+                 contract_size, reason="sl", final=True)
         return
-    exit_price = sl if hit_sl else tp
-    # Spread is already paid once via the worse entry fill (entry_price adjusted at open),
-    # which models the full round-trip cost — do NOT subtract it again here (double-counting).
-    pnl_price = (exit_price - entry) if side == "buy" else (entry - exit_price)
-    # Classer par le SIGNE du P&L (pas par le niveau touché) : avec un trailing,
-    # un SL remonté au-dessus de l'entrée donne un SL touché... GAGNANT.
-    eps = trade.get("_R", 0.0) * 1e-6
-    result = "win" if pnl_price > eps else ("loss" if pnl_price < -eps else "be")
-    # P&L en $ pondéré par la taille de lot (risque %), comme le live.
-    pnl_money = pnl_price * contract_size * trade.get("lot", 1.0)
-    trade.update(exit_time=_to_iso(c["time"]), exit_price=exit_price, pnl=pnl_money, result=result, _closed=True)
-    trades.append({k: v for k, v in trade.items() if not k.startswith("_")})
-    last_eq = equity_curve[-1]["equity"] + pnl_money
-    equity_curve.append({"time": _to_iso(c["time"]), "equity": last_eq})
+    while trade.get("_legs"):
+        leg = trade["_legs"][0]
+        hit = (c["high"] >= leg["price"]) if side == "buy" else (c["low"] <= leg["price"])
+        if not hit:
+            break
+        trade["_legs"].pop(0)
+        final = not trade["_legs"]
+        pct = trade["_remaining_pct"] if final else leg["close_pct"]
+        _realize(trade, leg["price"], pct, c, trades, equity_curve,
+                 contract_size, reason=leg["label"], final=final)
+        if trade.get("_closed"):
+            return
+        if leg.get("to_breakeven"):
+            be = trade["entry"]
+            if (side == "buy" and be > trade["sl"]) or (side == "sell" and be < trade["sl"]):
+                trade["sl"] = be
+        if trade["_legs"]:
+            trade["tp_next"] = trade["_legs"][0]["price"]
 
 
 def compute_trailing_sl(side: str, entry: float, current_sl: float, R: float, max_fav: float,

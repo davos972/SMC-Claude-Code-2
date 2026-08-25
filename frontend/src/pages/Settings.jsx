@@ -288,7 +288,7 @@ export default function Settings({ settings, refresh }) {
             {/* Stratégie SMC */}
             <Section title="Stratégie SMC">
                 <div className="text-xs text-text-secondary -mt-1">
-                    Analyse top-down 3 niveaux : biais → structure/POI → entrée.
+                    Analyse top-down 4 niveaux : contexte journalier → biais → structure/POI → entrée.
                 </div>
                 <Toggle
                     label="FVG obligatoire à l'entrée"
@@ -326,6 +326,7 @@ export default function Settings({ settings, refresh }) {
                         data-testid="settings-ob-entry-mode"
                     >
                         <option value="close">Clôture dans l&apos;OB (strict — recommandé)</option>
+                        <option value="zone_50">Clôture au-delà des 50% de l&apos;OB (meilleur ratio)</option>
                         <option value="tap">Touche récente de l&apos;OB (tap — expérimental)</option>
                     </select>
                 </Field>
@@ -349,21 +350,276 @@ export default function Settings({ settings, refresh }) {
                     testid="settings-verbose-journal"
                 />
                 <div className="text-[10px] uppercase font-bold tracking-widest text-text-secondary pt-1">
-                    Intraday — biais / structure / entrée
+                    Intraday — journalier / biais / structure / entrée
                 </div>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-4 gap-2">
+                    <SelectField label="Journalier" value={local.intraday_d1} onChange={(v) => setAndSave("intraday_d1", v)} options={TF_OPT} testid="settings-intraday-d1" />
                     <SelectField label="Biais" value={local.intraday_htf} onChange={(v) => setAndSave("intraday_htf", v)} options={TF_LIST} testid="settings-intraday-htf" />
                     <SelectField label="Structure" value={local.intraday_mtf} onChange={(v) => setAndSave("intraday_mtf", v)} options={TF_LIST} testid="settings-intraday-mtf" />
                     <SelectField label="Entrée" value={local.intraday_ltf} onChange={(v) => setAndSave("intraday_ltf", v)} options={TF_LIST} testid="settings-intraday-ltf" />
                 </div>
                 <div className="text-[10px] uppercase font-bold tracking-widest text-text-secondary pt-1">
-                    Scalping — biais / structure / entrée
+                    Scalping — journalier / biais / structure / entrée
                 </div>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-4 gap-2">
+                    <SelectField label="Journalier" value={local.scalping_d1} onChange={(v) => setAndSave("scalping_d1", v)} options={TF_OPT} testid="settings-scalping-d1" />
                     <SelectField label="Biais" value={local.scalping_htf} onChange={(v) => setAndSave("scalping_htf", v)} options={TF_LIST} testid="settings-scalping-htf" />
                     <SelectField label="Structure" value={local.scalping_mtf} onChange={(v) => setAndSave("scalping_mtf", v)} options={TF_LIST} testid="settings-scalping-mtf" />
                     <SelectField label="Entrée" value={local.scalping_ltf} onChange={(v) => setAndSave("scalping_ltf", v)} options={TF_LIST} testid="settings-scalping-ltf" />
                 </div>
+                <div className="text-xs text-text-secondary">
+                    L&apos;étage journalier est un enrichissement : « Désactivé » ramène l&apos;analyse
+                    aux 3 niveaux d&apos;avant, à l&apos;identique.
+                </div>
+            </Section>
+
+            {/* Méthodes de détection — Manuel SMC */}
+            <Section title="Méthodes de détection">
+                <div className="text-xs text-text-secondary -mt-1">
+                    Comment le moteur TRACE les éléments SMC. Chaque option garde l&apos;ancienne
+                    méthode pour pouvoir comparer en backtest avant d&apos;adopter la nouvelle.
+                </div>
+                <Field label="Détection des sommets et creux">
+                    <select
+                        value={local.swing_method || "two_candle"}
+                        onChange={(e) => setAndSave("swing_method", e.target.value)}
+                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
+                        data-testid="settings-swing-method"
+                    >
+                        <option value="two_candle">Règle des 2 bougies (manuel SMC)</option>
+                        <option value="fractal">Fractale N bougies (méthode historique)</option>
+                    </select>
+                </Field>
+                {local.swing_method === "two_candle" ? (
+                    <NumberField label="Bougies opposées de confirmation" value={local.swing_confirm}
+                        onChange={(v) => setAndSaveDebounced("swing_confirm", v)} step={1}
+                        testid="settings-swing-confirm" />
+                ) : (
+                    <NumberField label="Fractale N" value={local.fractal_n}
+                        onChange={(v) => setAndSaveDebounced("fractal_n", v)} step={1}
+                        testid="settings-fractal-n" />
+                )}
+                <Field label="Tracé de l&apos;order block">
+                    <select
+                        value={local.ob_zone || "wick"}
+                        onChange={(e) => setAndSave("ob_zone", e.target.value)}
+                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
+                        data-testid="settings-ob-zone"
+                    >
+                        <option value="wick">Mèches comprises — high à low (manuel SMC)</option>
+                        <option value="body">Corps seul — open/close (historique)</option>
+                    </select>
+                </Field>
+                <Field label="Cassure de structure (BOS / CHoCH)">
+                    <select
+                        value={local.structure_break_mode || "close"}
+                        onChange={(e) => setAndSave("structure_break_mode", e.target.value)}
+                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
+                        data-testid="settings-break-mode"
+                    >
+                        <option value="close">Clôture au-delà (conservateur)</option>
+                        <option value="wick">Mèche suffit (agressif)</option>
+                    </select>
+                </Field>
+                <Field label="Cible du take profit">
+                    <select
+                        value={local.tp_target || "range_bound"}
+                        onChange={(e) => setAndSave("tp_target", e.target.value)}
+                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
+                        data-testid="settings-tp-target"
+                    >
+                        <option value="range_bound">Borne opposée du range (manuel SMC)</option>
+                        <option value="liquidity">BSL / SSL la plus proche</option>
+                        <option value="nearest_swing">Sommet/creux le plus proche (historique)</option>
+                    </select>
+                </Field>
+                <Field label="Placement du stop loss">
+                    <select
+                        value={local.sl_mode || "poi"}
+                        onChange={(e) => setAndSave("sl_mode", e.target.value)}
+                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
+                        data-testid="settings-sl-mode"
+                    >
+                        <option value="poi">Bord de l&apos;order block / du sweep (historique)</option>
+                        <option value="protected">Au-delà du niveau protégé (manuel SMC)</option>
+                    </select>
+                </Field>
+                <NumberField
+                    label="Fraîcheur OB — écarter après N touchés (0 = jamais)"
+                    value={local.max_ob_touches}
+                    onChange={(v) => setAndSaveDebounced("max_ob_touches", v)} step={1}
+                    testid="settings-max-ob-touches"
+                />
+                <Toggle
+                    label="Displacement obligatoire"
+                    description="La bougie de cassure doit laisser une FVG derrière elle : un vrai déplacement, pas un mouvement mou."
+                    value={local.require_displacement}
+                    onChange={(v) => setAndSave("require_displacement", v)}
+                    testid="settings-require-displacement"
+                />
+            </Section>
+
+            {/* Contexte journalier */}
+            <Section title="Contexte journalier">
+                <div className="text-xs text-text-secondary -mt-1">
+                    Les deux seuls concepts de la playlist appuyés par un backtest à grande
+                    échelle — mais sur indices, <b>pas sur l&apos;or</b>. À valider en backtest sur
+                    XAUUSD avant d&apos;en faire des verrous.
+                </div>
+                <Toggle
+                    label="Daily Bias (PDH / PDL) obligatoire"
+                    description="Le biais doit correspondre au sens du jour : clôture au-delà du haut/bas de la veille (continuation), ou sweep puis réintégration (retournement). Un inside day bloque tout trade."
+                    value={local.require_daily_bias}
+                    onChange={(v) => setAndSave("require_daily_bias", v)}
+                    testid="settings-require-daily-bias"
+                />
+                <Toggle
+                    label="Power of 3 obligatoire"
+                    description="La mèche de manipulation du jour doit aller dans le sens du biais."
+                    value={local.require_po3}
+                    onChange={(v) => setAndSave("require_po3", v)}
+                    testid="settings-require-po3"
+                />
+                <NumberField label="Power of 3 — taille minimale de la mèche (0-1)"
+                    value={local.po3_wick_ratio}
+                    onChange={(v) => setAndSaveDebounced("po3_wick_ratio", v)} step={0.05}
+                    testid="settings-po3-ratio" />
+            </Section>
+
+            {/* Liquidité et zones */}
+            <Section title="Liquidité et zones">
+                <Toggle
+                    label="Second CHoCH obligatoire"
+                    description="Un 1er changement de structure sur l'unité de temps structure PUIS un 2nd sur celle d'entrée. Répond au piège « ne prends jamais le premier CHoCH »."
+                    value={local.require_second_choch}
+                    onChange={(v) => setAndSave("require_second_choch", v)}
+                    testid="settings-require-second-choch"
+                />
+                {local.require_second_choch && (
+                    <NumberField label="Second CHoCH — fenêtre (bougies structure)"
+                        value={local.second_choch_window}
+                        onChange={(v) => setAndSaveDebounced("second_choch_window", v)} step={1}
+                        testid="settings-second-choch-window" />
+                )}
+                <Toggle
+                    label="Inducement pris obligatoire"
+                    description="Le piège à stops placé juste avant la zone doit avoir été déclenché avant d'entrer."
+                    value={local.require_inducement_swept}
+                    onChange={(v) => setAndSave("require_inducement_swept", v)}
+                    testid="settings-require-inducement"
+                />
+                <Toggle
+                    label="Zone OTE (62-79%) obligatoire"
+                    description="Filtre bien plus strict que premium/discount : n'entre que dans la bande profonde du retracement. Peu d'opportunités."
+                    value={local.require_ote}
+                    onChange={(v) => setAndSave("require_ote", v)}
+                    testid="settings-require-ote"
+                />
+                {local.require_ote && (
+                    <div className="grid grid-cols-2 gap-2">
+                        <NumberField label="OTE — borne basse" value={local.ote_low_pct}
+                            onChange={(v) => setAndSaveDebounced("ote_low_pct", v)} step={0.01}
+                            testid="settings-ote-low" />
+                        <NumberField label="OTE — borne haute" value={local.ote_high_pct}
+                            onChange={(v) => setAndSaveDebounced("ote_high_pct", v)} step={0.01}
+                            testid="settings-ote-high" />
+                    </div>
+                )}
+                <Toggle
+                    label="Liquidité PDH / PDL"
+                    description="Ajoute le haut et le bas de la veille aux niveaux de liquidité (cibles TP et stops protégés)."
+                    value={local.use_pdh_pdl_liquidity}
+                    onChange={(v) => setAndSave("use_pdh_pdl_liquidity", v)}
+                    testid="settings-use-pdh-pdl"
+                />
+                <Toggle
+                    label="Liquidité du range asiatique"
+                    description="Ajoute les bornes de la nuit (23h-7h Paris) aux niveaux de liquidité. Le manuel le donne surtout pertinent sur paires européennes — l'or bouge la nuit, à tester."
+                    value={local.use_asia_liquidity}
+                    onChange={(v) => setAndSave("use_asia_liquidity", v)}
+                    testid="settings-use-asia"
+                />
+                {local.use_asia_liquidity && (
+                    <div className="grid grid-cols-2 gap-2">
+                        <NumberField label="Nuit — heure de début" value={local.asia_start_hour}
+                            onChange={(v) => setAndSaveDebounced("asia_start_hour", v)} step={1}
+                            testid="settings-asia-start" />
+                        <NumberField label="Nuit — heure de fin" value={local.asia_end_hour}
+                            onChange={(v) => setAndSaveDebounced("asia_end_hour", v)} step={1}
+                            testid="settings-asia-end" />
+                    </div>
+                )}
+                <Field label="Zones acceptées comme point d&apos;intérêt">
+                    <select
+                        value={local.poi_source || "ob"}
+                        onChange={(e) => setAndSave("poi_source", e.target.value)}
+                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
+                        data-testid="settings-poi-source"
+                    >
+                        <option value="ob">Order blocks seuls (défaut)</option>
+                        <option value="ob,bpr">Order blocks + BPR</option>
+                        <option value="ob,breaker">Order blocks + Breaker</option>
+                        <option value="ob,mitigation">Order blocks + Mitigation</option>
+                        <option value="ob,rejection">Order blocks + Rejection</option>
+                        <option value="all">Toutes les zones</option>
+                    </select>
+                </Field>
+                {(local.poi_source || "").includes("rejection") || local.poi_source === "all" ? (
+                    <NumberField label="Rejection Block — taille min. de la mèche (0-1)"
+                        value={local.rejection_wick_ratio}
+                        onChange={(v) => setAndSaveDebounced("rejection_wick_ratio", v)} step={0.05}
+                        testid="settings-rejection-ratio" />
+                ) : null}
+                <NumberField label="Liquidité — tolérance de regroupement des sommets"
+                    value={local.liquidity_cluster_atr}
+                    onChange={(v) => setAndSaveDebounced("liquidity_cluster_atr", v)} step={0.05}
+                    testid="settings-liquidity-cluster" />
+                <div className="text-xs text-text-secondary">
+                    Teste un seul type de zone à la fois : c&apos;est la seule façon de savoir
+                    lequel apporte vraiment quelque chose. La tolérance de regroupement s&apos;exprime
+                    en amplitude moyenne d&apos;une bougie : plus elle est haute, plus des sommets
+                    éloignés comptent comme un seul réservoir de liquidité.
+                </div>
+            </Section>
+
+            {/* TP échelonnés */}
+            <Section title="Take profit échelonnés">
+                <Toggle
+                    label="Prises partielles TP1 / TP2 / TP3"
+                    description="Actif par défaut. TP1 encaisse une part et remonte le stop à l'entrée, TP2 une autre part, le reste court jusqu'à la cible finale. Le stop et la cible finale restent posés chez le broker : si l'app s'arrête, la position reste protégée."
+                    value={local.partial_tp_enabled}
+                    onChange={(v) => setAndSave("partial_tp_enabled", v)}
+                    testid="settings-partial-tp"
+                />
+                {local.partial_tp_enabled && (
+                    <>
+                        <NumberField label="TP1 — distance (en R)" value={local.tp1_r}
+                            onChange={(v) => setAndSaveDebounced("tp1_r", v)} step={0.1}
+                            testid="settings-tp1-r" />
+                        <NumberField label="TP1 — part fermée (%)" value={local.tp1_close_pct}
+                            onChange={(v) => setAndSaveDebounced("tp1_close_pct", v)} step={5}
+                            testid="settings-tp1-pct" />
+                        <Toggle
+                            label="Stop au break-even après TP1"
+                            description="Le trade devient gratuit dès la première prise."
+                            value={local.tp1_to_breakeven}
+                            onChange={(v) => setAndSave("tp1_to_breakeven", v)}
+                            testid="settings-tp1-be"
+                        />
+                        <NumberField label="TP2 — part fermée (%)" value={local.tp2_close_pct}
+                            onChange={(v) => setAndSaveDebounced("tp2_close_pct", v)} step={5}
+                            testid="settings-tp2-pct" />
+                        <div className="text-xs text-gold bg-gold/10 border border-gold/30 rounded-xl p-3 flex items-start gap-2">
+                            <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                            <span>
+                                Gestion active par défaut, conforme à la stratégie. Elle donne
+                                plus de trades gagnants mais un gain moyen plus faible, car le
+                                runner est écrêté par les prises. Désactive-la pour revenir au
+                                take profit unique et <b>comparer les deux en backtest</b>.
+                            </span>
+                        </div>
+                    </>
+                )}
             </Section>
 
             {/* Trailing stop */}
@@ -572,6 +828,8 @@ function NumberField({ label, value, onChange, step, testid, hint }) {
 }
 
 const TF_LIST = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
+// Étage journalier : "" = désactivé (retour à l'analyse 3 niveaux).
+const TF_OPT = ["", ...TF_LIST];
 
 function SelectField({ label, value, onChange, options, testid }) {
     return (
@@ -582,7 +840,7 @@ function SelectField({ label, value, onChange, options, testid }) {
                 className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
                 data-testid={testid}
             >
-                {options.map((o) => <option key={o} value={o}>{o}</option>)}
+                {options.map((o) => <option key={o} value={o}>{o === "" ? "Désactivé" : o}</option>)}
             </select>
         </Field>
     );

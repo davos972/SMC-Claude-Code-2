@@ -11,7 +11,58 @@ const COLORS = {
     borderOB: "rgba(227, 179, 65, 0.95)",
     bos: "#3B82F6",
     sweep: "#E0635E",
+    // Zones ajoutées d'après le Manuel de détection SMC (2026-08-25)
+    bgIFVG: "rgba(169, 116, 255, 0.14)",
+    borderIFVG: "rgba(169, 116, 255, 0.95)",
+    bgBPR: "rgba(94, 200, 217, 0.14)",
+    borderBPR: "rgba(94, 200, 217, 0.95)",
+    bgBreaker: "rgba(255, 140, 66, 0.12)",
+    borderBreaker: "rgba(255, 140, 66, 0.95)",
+    bgMitigation: "rgba(120, 160, 255, 0.12)",
+    borderMitigation: "rgba(120, 160, 255, 0.95)",
+    bgRejection: "rgba(200, 200, 210, 0.10)",
+    borderRejection: "rgba(200, 200, 210, 0.85)",
+    bgOTE: "rgba(227, 179, 65, 0.10)",
+    borderOTE: "rgba(227, 179, 65, 0.55)",
+    bsl: "#3FB68B",
+    ssl: "#E0635E",
+    asia: "#8A94A6",
+    inducement: "#E3B341",
 };
+
+// Calques affichables. Les 5 historiques sont ON, les zones ajoutées sont OFF :
+// la Synthèse V3 §10 met en garde contre l'empilement de tous les concepts à la fois
+// (« cet empilement ne se produit quasiment jamais et paralyse l'exécution »).
+// Chacun s'active à la demande et le choix est mémorisé sur l'appareil.
+const LAYERS = [
+    { key: "ob", label: "OB" },
+    { key: "fvg", label: "FVG" },
+    { key: "struct", label: "BOS" },
+    { key: "swings", label: "HH/LL" },
+    { key: "sweeps", label: "Sweep" },
+    { key: "liquidity", label: "BSL/SSL" },
+    { key: "inducement", label: "Induc." },
+    { key: "asia", label: "Asia" },
+    { key: "ote", label: "OTE" },
+    { key: "ifvg", label: "IFVG" },
+    { key: "bpr", label: "BPR" },
+    { key: "blocks", label: "BRK/MB/RB" },
+];
+const DEFAULT_LAYERS = {
+    ob: true, fvg: true, struct: true, swings: true, sweeps: true,
+    liquidity: false, inducement: false, asia: false, ote: false,
+    ifvg: false, bpr: false, blocks: false,
+};
+const LAYERS_KEY = "goldflow.chartLayers";
+
+function loadLayers() {
+    try {
+        const raw = window.localStorage.getItem(LAYERS_KEY);
+        return raw ? { ...DEFAULT_LAYERS, ...JSON.parse(raw) } : { ...DEFAULT_LAYERS };
+    } catch (e) {
+        return { ...DEFAULT_LAYERS };
+    }
+}
 
 const toUnixTime = (t) => (typeof t === "number" ? t : Math.floor(new Date(t).getTime() / 1000));
 
@@ -32,6 +83,15 @@ export default function SMCChart({ candles, analysis, price, height = 320, error
     const lastStepRef = useRef(null); // candle spacing — to fit the view only when timeframe changes
     const [overlayBoxes, setOverlayBoxes] = useState([]);
     const [overlayLabels, setOverlayLabels] = useState([]);
+    const [layers, setLayers] = useState(loadLayers);
+
+    const toggleLayer = useCallback((key) => {
+        setLayers((prev) => {
+            const next = { ...prev, [key]: !prev[key] };
+            try { window.localStorage.setItem(LAYERS_KEY, JSON.stringify(next)); } catch (e) { /* ignore */ }
+            return next;
+        });
+    }, []);
 
     const recomputeOverlay = useCallback(() => {
         const chart = chartRef.current;
@@ -64,7 +124,7 @@ export default function SMCChart({ candles, analysis, price, height = 320, error
         };
 
         // --- Order Blocks (dashed gold box) — last few, active bold / mitigated faded ---
-        (analysis.order_blocks_htf || []).slice(-3).forEach((ob, k) => {
+        (layers.ob ? analysis.order_blocks_htf || [] : []).slice(-3).forEach((ob, k) => {
             const x1 = timeToX(ob.time);
             // Always extend the box to the right edge of the candle area (like FVGs) so OBs stay
             // visible; mitigated ones are just faded (opacity below) rather than truncated.
@@ -96,7 +156,7 @@ export default function SMCChart({ candles, analysis, price, height = 320, error
         });
 
         // --- FVG (solid colored border, green/red) — only ACTIVE (unfilled) ones ---
-        (analysis.fvgs_ltf || []).filter((f) => !f.filled).slice(-5).forEach((fvg, k) => {
+        (layers.fvg ? analysis.fvgs_ltf || [] : []).filter((f) => !f.filled).slice(-5).forEach((fvg, k) => {
             const x1 = timeToX(fvg.time);
             const x2raw = fvg.filled && fvg.filled_time ? timeToX(fvg.filled_time) : (x1 != null ? containerWidth - 8 : null);
             const x2 = fvg.filled ? x2raw : (x2raw != null ? Math.max(x2raw, containerWidth - 8) : null);
@@ -129,7 +189,7 @@ export default function SMCChart({ candles, analysis, price, height = 320, error
 
         // --- BOS / CHoCH (blue dashed horizontal line + label), most recent only ---
         // Drawn as an HTML overlay line (not a chart LineSeries, which crashed the time scale).
-        (analysis.structure_htf || []).slice(-2).forEach((e, k) => {
+        (layers.struct ? analysis.structure_htf || [] : []).slice(-2).forEach((e, k) => {
             const xEnd = timeToX(e.time);
             const y = priceToY(e.price);
             if (xEnd == null || y == null) return;
@@ -161,7 +221,7 @@ export default function SMCChart({ candles, analysis, price, height = 320, error
         // Green = bullish structure (HH/HL), red = bearish structure (LH/LL).
         let prevHigh = null;
         let prevLow = null;
-        (analysis.swings_ltf || []).slice(-10).forEach((sw, k) => {
+        (layers.swings ? analysis.swings_ltf || [] : []).slice(-10).forEach((sw, k) => {
             const isHigh = sw.kind === "high";
             let label;
             if (isHigh) {
@@ -190,7 +250,7 @@ export default function SMCChart({ candles, analysis, price, height = 320, error
         // high_sweep = a high was taken (arrow points DOWN onto the wick top),
         // low_sweep  = a low was taken  (arrow points UP   onto the wick bottom).
         // Drawn as HTML overlay (lightweight-charts v5 has no series.setMarkers).
-        (analysis.sweeps_ltf || []).filter((s) => !s.mitigated).slice(-6).forEach((s, k) => {
+        (layers.sweeps ? analysis.sweeps_ltf || [] : []).filter((s) => !s.mitigated).slice(-6).forEach((s, k) => {
             const x = timeToX(s.time);
             const y = priceToY(s.price);
             if (x == null || y == null) return;
@@ -206,9 +266,90 @@ export default function SMCChart({ candles, analysis, price, height = 320, error
             });
         });
 
+        // --- Zones rectangulaires ajoutées (IFVG, BPR, Breaker, Mitigation, Rejection) ---
+        // Même rendu que les OB/FVG : bordure + fond translucide, estompé si la zone est
+        // déjà invalidée. Chaque famille a sa propre couleur pour rester distinguable.
+        const zoneFamilies = [
+            { on: layers.ifvg, items: analysis.ifvgs_ltf, take: 3, tag: "IFVG",
+              border: COLORS.borderIFVG, bg: COLORS.bgIFVG, dashed: false },
+            { on: layers.bpr, items: analysis.bprs_htf, take: 3, tag: "BPR",
+              border: COLORS.borderBPR, bg: COLORS.bgBPR, dashed: false },
+            { on: layers.blocks, items: analysis.breaker_blocks_htf, take: 2, tag: "BRK",
+              border: COLORS.borderBreaker, bg: COLORS.bgBreaker, dashed: true },
+            { on: layers.blocks, items: analysis.mitigation_blocks_htf, take: 2, tag: "MB",
+              border: COLORS.borderMitigation, bg: COLORS.bgMitigation, dashed: true },
+            { on: layers.blocks, items: analysis.rejection_blocks_htf, take: 2, tag: "RB",
+              border: COLORS.borderRejection, bg: COLORS.bgRejection, dashed: true },
+        ];
+        zoneFamilies.forEach((fam) => {
+            if (!fam.on) return;
+            (fam.items || []).slice(-fam.take).forEach((z, k) => {
+                const x1 = timeToX(z.time);
+                const yTop = priceToY(z.top);
+                const yBot = priceToY(z.bottom);
+                if (x1 == null || yTop == null || yBot == null) return;
+                const x2 = containerWidth - 8;
+                const opacity = z.mitigated ? 0.25 : 1;
+                boxes.push({
+                    key: `${fam.tag}-${k}-${z.idx ?? z.start_idx}`,
+                    left: Math.min(x1, x2), top: Math.min(yTop, yBot),
+                    width: Math.max(2, Math.abs(x2 - x1)),
+                    height: Math.max(6, Math.abs(yBot - yTop)),
+                    style: {
+                        border: `1px ${fam.dashed ? "dashed" : "solid"} ${fam.border}`,
+                        background: fam.bg, opacity, borderRadius: 3,
+                    },
+                    testid: `smc-zone-${fam.tag.toLowerCase()}`,
+                });
+                labels.push({
+                    key: `${fam.tag}-l-${k}-${z.idx ?? z.start_idx}`,
+                    left: Math.min(x1, x2) + 4, top: Math.min(yTop, yBot) - 14,
+                    text: `${fam.tag} ${z.direction === "bullish" ? "↑" : "↓"}`,
+                    color: fam.border, opacity,
+                });
+            });
+        });
+
+        // --- Zone OTE (retracement 62-79%) : bande sur toute la largeur ---
+        if (layers.ote && analysis.ote) {
+            const yTop = priceToY(analysis.ote.top);
+            const yBot = priceToY(analysis.ote.bottom);
+            if (yTop != null && yBot != null) {
+                boxes.push({
+                    key: "ote-band",
+                    left: 0, top: Math.min(yTop, yBot),
+                    width: containerWidth - 8, height: Math.max(6, Math.abs(yBot - yTop)),
+                    style: {
+                        border: `1px dashed ${COLORS.borderOTE}`,
+                        background: COLORS.bgOTE, borderRadius: 2,
+                    },
+                    testid: "smc-zone-ote",
+                });
+                labels.push({
+                    key: "ote-l", left: 4, top: Math.min(yTop, yBot) - 14,
+                    text: "OTE 62-79%", color: COLORS.borderOTE, opacity: 1,
+                });
+            }
+        }
+
+        // --- Inducement : le piège à stops juste avant la POI ---
+        if (layers.inducement && analysis.inducement) {
+            const ind = analysis.inducement;
+            const x = timeToX(ind.time);
+            const y = priceToY(ind.price);
+            if (x != null && y != null) {
+                labels.push({
+                    key: "inducement-l", left: x - 10, top: y + 6,
+                    text: ind.swept ? "IND pris" : "IND",
+                    color: COLORS.inducement, bold: true,
+                    opacity: ind.swept ? 0.5 : 1,
+                });
+            }
+        }
+
         setOverlayBoxes(boxes);
         setOverlayLabels(labels);
-    }, [candles, analysis]);
+    }, [candles, analysis, layers]);
 
     // Always call the latest recomputeOverlay from chart subscriptions WITHOUT making the
     // init effect depend on it (otherwise the chart is destroyed/recreated on every data or
@@ -307,6 +448,45 @@ export default function SMCChart({ candles, analysis, price, height = 320, error
                     priceLinesRef.current.push(line);
                 } catch (err) { /* ignore */ }
             }
+
+            // Niveaux de liquidité : ce sont des NIVEAUX horizontaux, pas des zones —
+            // une price line traverse tout le graphique, ce qui est exactement la
+            // lecture du manuel (« ligne horizontale prolongée vers la droite »).
+            const addLine = (price, color, title, style = 2) => {
+                if (price == null) return;
+                try {
+                    priceLinesRef.current.push(series.createPriceLine({
+                        price, color, lineWidth: 1, lineStyle: style,
+                        axisLabelVisible: false, title,
+                    }));
+                } catch (err) { /* ignore */ }
+            };
+
+            if (layers.liquidity) {
+                // Seulement les réservoirs encore INTACTS (ni balayés ni cassés), les plus
+                // testés d'abord : c'est là que la liquidité s'accumule (Manuel §2.1).
+                const liq = (analysis.liquidity_htf || [])
+                    .filter((l) => !l.broken && !l.swept && l.source === "swing")
+                    .sort((a, b) => b.tests - a.tests);
+                liq.filter((l) => l.kind === "BSL").slice(0, 3).forEach((l) => addLine(
+                    l.price, COLORS.bsl,
+                    `BSL${l.tests > 1 ? ` x${l.tests}` : ""}${l.protected ? " •" : ""}`,
+                    l.protected ? 0 : 2));
+                liq.filter((l) => l.kind === "SSL").slice(0, 3).forEach((l) => addLine(
+                    l.price, COLORS.ssl,
+                    `SSL${l.tests > 1 ? ` x${l.tests}` : ""}${l.protected ? " •" : ""}`,
+                    l.protected ? 0 : 2));
+                // PDH / PDL du contexte journalier
+                if (analysis.daily) {
+                    addLine(analysis.daily.pdh, COLORS.bsl, "PDH", 3);
+                    addLine(analysis.daily.pdl, COLORS.ssl, "PDL", 3);
+                }
+            }
+
+            if (layers.asia && analysis.asian_range) {
+                addLine(analysis.asian_range.high, COLORS.asia, "Asia H", 3);
+                addLine(analysis.asian_range.low, COLORS.asia, "Asia L", 3);
+            }
         }
 
         // Defer overlay compute until after the chart settles its layout
@@ -393,21 +573,54 @@ export default function SMCChart({ candles, analysis, price, height = 320, error
                     </div>
                 )}
             </div>
-            <Legend />
+            <LayerChips layers={layers} onToggle={toggleLayer} />
+            <Legend layers={layers} />
         </div>
     );
 }
 
-function Legend() {
+function LayerChips({ layers, onToggle }) {
+    return (
+        <div className="flex flex-wrap gap-1.5 px-3 py-2 border-t border-bd" data-testid="smc-layers">
+            {LAYERS.map((l) => (
+                <button
+                    key={l.key}
+                    type="button"
+                    onClick={() => onToggle(l.key)}
+                    aria-pressed={!!layers[l.key]}
+                    data-testid={`smc-layer-${l.key}`}
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-medium border transition-colors ${
+                        layers[l.key]
+                            ? "border-gold text-gold bg-gold/10"
+                            : "border-bd text-text-secondary"
+                    }`}
+                >
+                    {l.label}
+                </button>
+            ))}
+        </div>
+    );
+}
+
+function Legend({ layers = DEFAULT_LAYERS }) {
     return (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-1.5 px-3 py-2 border-t border-bd text-[11px] text-text-secondary">
-            <LegendItem label="FVG haussier" border={COLORS.borderBull} bg={COLORS.bgBull} />
-            <LegendItem label="FVG baissier" border={COLORS.borderBear} bg={COLORS.bgBear} />
-            <LegendItem label="Order Block" border={COLORS.borderOB} bg={COLORS.bgOB} dashed />
-            <LegendItem label="BOS/CHoCH" line color={COLORS.bos} />
-            <LegendItem label="Sweep" arrow color={COLORS.sweep} />
-            <LegendItem label="Structure HH/HL/LH/LL" structure />
+            {layers.fvg && <LegendItem label="FVG haussier" border={COLORS.borderBull} bg={COLORS.bgBull} />}
+            {layers.fvg && <LegendItem label="FVG baissier" border={COLORS.borderBear} bg={COLORS.bgBear} />}
+            {layers.ob && <LegendItem label="Order Block" border={COLORS.borderOB} bg={COLORS.bgOB} dashed />}
+            {layers.struct && <LegendItem label="BOS/CHoCH" line color={COLORS.bos} />}
+            {layers.sweeps && <LegendItem label="Sweep" arrow color={COLORS.sweep} />}
+            {layers.swings && <LegendItem label="Structure HH/HL/LH/LL" structure />}
             <LegendItem label="50% Premium/Discount" line color="#A974FF" />
+            {layers.liquidity && <LegendItem label="BSL / SSL (• = protégé)" line color={COLORS.bsl} />}
+            {layers.asia && <LegendItem label="Range asiatique" line color={COLORS.asia} />}
+            {layers.ote && <LegendItem label="OTE 62-79%" border={COLORS.borderOTE} bg={COLORS.bgOTE} dashed />}
+            {layers.ifvg && <LegendItem label="IFVG" border={COLORS.borderIFVG} bg={COLORS.bgIFVG} />}
+            {layers.bpr && <LegendItem label="BPR" border={COLORS.borderBPR} bg={COLORS.bgBPR} />}
+            {layers.blocks && <LegendItem label="Breaker" border={COLORS.borderBreaker} bg={COLORS.bgBreaker} dashed />}
+            {layers.blocks && <LegendItem label="Mitigation" border={COLORS.borderMitigation} bg={COLORS.bgMitigation} dashed />}
+            {layers.blocks && <LegendItem label="Rejection" border={COLORS.borderRejection} bg={COLORS.bgRejection} dashed />}
+            {layers.inducement && <LegendItem label="Inducement" arrow color={COLORS.inducement} />}
         </div>
     );
 }

@@ -39,12 +39,70 @@ DEFAULT_SETTINGS = {
 
     # Mode — top-down 3 niveaux : biais (HTF) → structure/POI (MTF) → entrée (LTF)
     "trading_mode": "intraday",  # intraday | scalping
+    # 4e etage journalier (D1) — Synthese V3 §2 : DAILY (contexte) > H1 (zones de fond)
+    # > M15 (structure/POI) > M5 (entree). Le scalping garde son etage M15 valide en
+    # backtest et se voit AJOUTER H1 au-dessus (D8) : le biais monte sans qu'on perde
+    # le niveau qui etait le seul valide. "" = etage journalier desactive.
+    "intraday_d1": "D1",
+    "scalping_d1": "H1",
     "intraday_htf": "H1",        # biais
     "intraday_mtf": "M15",       # structure / order blocks (POI)
     "intraday_ltf": "M5",        # déclencheur / entrée
     "scalping_htf": "M15",       # biais (M15 validé en backtest 6 mois ; H1 = perdant, DD catastrophique)
     "scalping_mtf": "M5",        # structure / order blocks (POI)
     "scalping_ltf": "M1",        # déclencheur / entrée
+
+    # --- Détection SMC : méthodes de tracé (Manuel de détection + Synthèse V3) ---
+    # Voir DECISIONS.md 2026-08-25. Chaque option conserve l'ancienne méthode pour
+    # pouvoir comparer en backtest plutôt que de basculer à l'aveugle.
+    "swing_method": "two_candle",   # two_candle (manuel §1.1) | fractal (historique)
+    "swing_confirm": 2,             # nb de bougies opposées consécutives qui valident un swing
+    "ob_zone": "wick",              # wick (manuel §4.1 : high→low) | body (historique : open/close)
+    "structure_break_mode": "close",  # close (conservateur) | wick (agressif) — manuel §1.3
+    # range_bound (borne opposée du range, défaut) | liquidity (BSL/SSL la plus proche)
+    # | nearest_swing (historique)
+    "tp_target": "range_bound",
+    # Liquidité BSL/SSL : deux sommets sont « alignés » (= un seul réservoir de
+    # liquidité) si leur écart est sous ce facteur x l'amplitude moyenne d'une bougie.
+    "liquidity_cluster_atr": 0.25,
+    # Placement du SL : "poi" = bord de l'order block / du sweep (historique) ;
+    # "protected" = AU-DELÀ du creux/sommet protégé le plus proche (Synthèse V3
+    # §Étape 8). "protected" ne fait qu'éloigner le SL, jamais le resserrer.
+    "sl_mode": "poi",
+    # Le piège à stops placé juste avant la POI doit avoir été pris avant d'entrer.
+    "require_inducement_swept": False,
+    # Second CHOCH (Synthèse V3 §Étape 4, « ne pas prendre le premier CHOCH ») :
+    # un 1er CHOCH sur l'UT structure PUIS un 2nd sur l'UT d'entrée.
+    "require_second_choch": False,
+    "second_choch_window": 20,     # bougies du niveau structure
+    # Range asiatique (Manuel §6.1) : fenêtre 23h→7h heure de Paris. Ses bornes sont
+    # des niveaux de LIQUIDITÉ pour la session de Londres, jamais des points d'entrée.
+    # ⚠️ Le manuel le dit pertinent surtout sur paires européennes ; l'or bouge la
+    # nuit → à valider en backtest avant activation.
+    "asia_start_hour": 23,
+    "asia_end_hour": 7,
+    "asia_tz": "Europe/Paris",
+    "use_asia_liquidity": False,     # ajouter Asia High/Low aux niveaux de liquidité
+    "use_pdh_pdl_liquidity": False,  # ajouter PDH/PDL aux niveaux de liquidité
+    # Zones acceptées comme POI : "ob" (order blocks seuls, défaut) ou "ob_bpr"
+    # (order blocks + Balance Price Range). Manuel §3.3 : le BPR « peut servir de POI ».
+    # Liste séparée par des virgules pour tester chaque type SÉPARÉMENT (Synthèse V3
+    # §11) : "ob" (défaut), "ob,bpr", "breaker", "mitigation", "rejection", ou les
+    # raccourcis "ob_bpr" et "all".
+    "poi_source": "ob",
+    # OTE (Manuel §5.2) : retracement 62-79%, filtre plus strict que premium/discount.
+    "require_ote": False,
+    "ote_low_pct": 0.618,
+    "ote_high_pct": 0.786,
+    # Rejection Block : part minimale de la bougie que doit occuper la mèche de rejet.
+    "rejection_wick_ratio": 0.5,
+    # Fraîcheur de l'OB (manuel §4.1 « OB déjà testé = à éviter », nuancé par la Synthèse
+    # V3 §5.8 « facteur de qualité, pas condition absolue ») : 0 = filtre DÉSACTIVÉ, le
+    # compteur de touchés reste affiché. N > 0 = écarte un OB déjà retouché N fois.
+    "max_ob_touches": 0,
+    # Displacement (Synthèse V3 §Étape 5) — défini comme « la bougie de cassure laisse
+    # une FVG ». OFF par défaut : à valider en backtest avant d'en faire un verrou.
+    "require_displacement": False,
 
     # Règles SMC strictes (désactivables pour comparer en backtest)
     "require_fvg_entry": False,        # confluence FVG (OFF par défaut — backtests: dégrade les résultats en verrou dur)
@@ -54,11 +112,23 @@ DEFAULT_SETTINGS = {
     # Mode d'entrée sur l'order block POI (comparaison backtest 2026-07-28, cf. DECISIONS.md) :
     #   "close" (défaut) = la clôture doit être DANS le corps de l'OB — strict, seul mode rentable en backtest
     #   "tap" = une bougie récente a touché l'OB (mèches comprises) — beaucoup plus de trades, PERDANT en backtest
+    #   "zone_50" = la cloture doit avoir depasse la LIGNE MEDIANE de l'OB (moitie profonde
+    #     de la zone) — meilleur ratio, declenche moins souvent. Entree au MARCHE a la
+    #     cloture, ce n'est PAS un ordre limite pose a 50%.
     "ob_entry_mode": "close",
 
     # Journal — mode diagnostic : journalise AUSSI les rejets précoces (pas de biais / pas de POI /
     # hors zone), regroupés. OFF par défaut (sinon spam). Sert à comprendre les setups écartés.
     "verbose_journal": False,
+
+    # Contexte journalier (Synthese V3 §Etape 1) — les 2 seuls concepts backtestes de
+    # la playlist, mais sur GER40/indices et PAS sur l'or : filtres OFF par defaut,
+    # a valider en backtest sur XAUUSD avant d'en faire des verrous (D2).
+    "require_daily_bias": False,   # le biais HTF doit correspondre au Daily Bias PDH/PDL
+    "require_po3": False,          # le Power of 3 du jour doit aller dans le sens du biais
+    "po3_wick_ratio": 0.20,        # part de la bougie journaliere que doit faire la meche
+                                   # de manipulation pour compter comme Power of 3
+
 
     # Risk
     "risk_per_trade_pct": 1.0,
@@ -70,6 +140,20 @@ DEFAULT_SETTINGS = {
     "fractal_n": 3,
     "recent_window": 6,          # LTF candles within which a sweep/CHoCH must occur
     "max_lot_per_trade": 10.0,   # hard cap on computed lot size (anti over-leverage)
+
+    # --- Gestion échelonnée TP1/TP2/TP3 (Synthèse V3 §Étape 9) ---
+    # ⚠️ Lève la règle « TP partiels : NON implémentés volontairement » (décision D3②
+    # du 2026-08-25, cf. DECISIONS.md). ACTIVÉ PAR DÉFAUT à la demande de David
+    # (2026-08-25) : c'est la gestion de position décrite par la stratégie, pas une
+    # option. Conséquence assumée : plus de trades gagnants mais un gain moyen plus
+    # faible, le runner étant écrêté par les prises. `partial_tp_enabled=False` rétablit
+    # le TP unique historique pour comparer en backtest.
+    # TP3 = la cible du signal (borne du range ou liquidité selon tp_target).
+    "partial_tp_enabled": True,
+    "tp1_r": 1.0,               # TP1 à N x le risque
+    "tp1_close_pct": 50.0,      # % du volume INITIAL fermé à TP1
+    "tp1_to_breakeven": True,   # après TP1, le SL remonte à l'entrée (trade « gratuit »)
+    "tp2_close_pct": 30.0,      # % du volume INITIAL fermé à TP2 (à mi-chemin TP1→TP3)
 
     # Trailing stop — MÊME logique live (bot_loop) + backtest. OFF par défaut.
     "trailing_mode": "off",        # off | breakeven | r_trail | structure
@@ -188,6 +272,9 @@ class Trade(BaseModel):
     mode: Optional[str] = None           # intraday | scalping
     timeframe: Optional[str] = None
     reason: Optional[str] = None
+    # Prises partielles TP1/TP2 deja encaissees : [{reason, price, volume}].
+    # `volume` ci-dessus reste le volume INITIAL du trade.
+    partials: List[dict] = []
     source: Literal["bot", "import"] = "bot"
     settings_snapshot: dict = {}         # réglages actifs au moment du trade
 
@@ -217,6 +304,8 @@ class BacktestRequest(BaseModel):
 class BacktestTrade(BaseModel):
     id: str
     side: str
+    # Prises partielles TP1/TP2/TP3 : [{reason, price, pct, pnl, time}].
+    # Vide quand la gestion echelonnee est desactivee.
     entry_time: str
     exit_time: str
     entry: float
@@ -227,6 +316,8 @@ class BacktestTrade(BaseModel):
     rr: float
     reason: str
     result: Literal["win", "loss", "be"]
+    partials: List[dict] = []
+    exit_reason: Optional[str] = None
 
 
 class BacktestResult(BaseModel):

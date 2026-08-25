@@ -17,10 +17,11 @@ import news as news_engine
 import sessions as sess
 import store
 from metaapi_client import MetaApiConnectionError, metaapi_client
-from smc import analyze
+from smc import analyze, params_from_settings as smc_params
 # Logique de trailing + fenêtres d'analyse partagées live + backtest (mêmes quantités
 # de bougies analysées → même structure détectée, cf. DECISIONS.md 2026-07-30).
-from backtest import compute_trailing_sl, WINDOW_HTF, WINDOW_MTF, WINDOW_LTF
+from backtest import (compute_trailing_sl, compute_tp_ladder,
+                      WINDOW_HTF, WINDOW_MTF, WINDOW_LTF, WINDOW_D1)
 
 logger = logging.getLogger("goldflow.bot")  # boucle de trading
 
@@ -313,6 +314,11 @@ async def _restore_open_trades(magic_number: int) -> bool:
             "tp": t.get("tp"),
             "R": abs(float(t.get("entry") or 0) - float(t.get("sl_initial") or t.get("sl") or 0)),
             "max_fav": float(t.get("entry") or 0),
+            # Volume INITIAL + prises deja encaissees : indispensables pour ne pas
+            # rejouer un TP partiel deja pris apres un redemarrage.
+            "volume": float(t.get("volume") or 0),
+            "partials": list(t.get("partials") or []),
+            "legs": None,
         }
         if tid in live:
             _open_positions[tid] = tracked
@@ -379,6 +385,107 @@ async def _check_closed_positions(current_equity: float, magic_number: int) -> N
                               f"Perte −${abs(delta):.2f} · {consec} perte(s) consécutive(s)")
     except Exception as e:
         logger.warning("_check_closed_positions failed: %s", e)
+
+
+def _partial_tp_params(s: Dict) -> Dict[str, Any]:
+    return {
+        "enabled": bool(s.get("partial_tp_enabled", False)),
+        "tp1_r": float(s.get("tp1_r", 1.0)),
+        "tp1_close_pct": float(s.get("tp1_close_pct", 50.0)),
+        "tp1_to_breakeven": bool(s.get("tp1_to_breakeven", True)),
+        "tp2_close_pct": float(s.get("tp2_close_pct", 30.0)),
+    }
+
+
+async def _apply_partial_tp(s: Dict, magic_number: int) -> None:
+    """Prises partielles TP1/TP2 LIVE — même échelle que le backtest (compute_tp_ladder).
+
+    Le SL et le TP FINAL (TP3) restent posés CHEZ LE BROKER : si l'app s'arrête, la
+    position reste protégée exactement comme avant. Seules les prises intermédiaires
+    sont pilotées ici, plus le passage à break-even après TP1.
+    OFF par défaut (partial_tp_enabled).
+    """
+    params = _partial_tp_params(s)
+    if not params["enabled"] or not _open_positions:
+        return
+    try:
+        positions = await metaapi_client.get_positions()
+    except MetaApiConnectionError as e:
+        logger.warning("TP partiels: lecture positions échouée: %s", e)
+        return
+    for p in positions:
+        if int(p.get("magic", 0)) != magic_number:
+            continue
+        pid = str(p.get("id", ""))
+        tr = _open_positions.get(pid)
+        if not tr or float(tr.get("R", 0) or 0) <= 0:
+            continue
+        if tr.get("legs") is None:
+            # TP3 est géré par le broker : on ne pilote que TP1 et TP2.
+            ladder = compute_tp_ladder(tr["side"], tr["entry"],
+                                       tr.get("sl_initial", tr["sl"]), tr["tp"], params)
+            # Les prises DÉJÀ encaissées (relues du journal après un redémarrage) sont
+            # marquées faites : sans ça, TP1 serait repris et fermerait une seconde
+            # fois la même part du volume.
+            already = {x.get("reason") for x in (tr.get("partials") or [])}
+            tr["legs"] = [dict(l, done=l["label"] in already)
+                          for l in ladder if l["label"] in ("tp1", "tp2")]
+        pending = [l for l in tr["legs"] if not l.get("done")]
+        if not pending:
+            continue
+        try:
+            price = float(p.get("currentPrice") or 0) or None
+            if price is None:
+                quote = await metaapi_client.get_symbol_price(tr["symbol"])
+                price = float(quote.get("bid" if tr["side"] == "buy" else "ask"))
+        except (MetaApiConnectionError, TypeError, ValueError) as e:
+            logger.warning("TP partiels: prix %s indisponible: %s", tr.get("symbol"), e)
+            continue
+
+        initial_volume = float(tr.get("volume", 0) or 0)
+        current_volume = float(p.get("volume", 0) or 0)
+        for leg in pending:
+            reached = (price >= leg["price"]) if tr["side"] == "buy" else (price <= leg["price"])
+            if not reached:
+                break  # les barreaux sont ordonnés : inutile de regarder plus loin
+            vol = round(initial_volume * leg["close_pct"] / 100.0, 2)
+            if vol < 0.01 or vol >= current_volume:
+                # Volume trop petit pour le pas du broker, ou il ne resterait rien :
+                # on laisse courir jusqu'au TP final plutôt que d'insister à chaque tour.
+                logger.info("TP partiels: %s ignoré (volume %.2f sur %.2f restant)",
+                            leg["label"], vol, current_volume)
+                leg["done"] = True
+                continue
+            try:
+                await metaapi_client.close_position_partially(pid, vol)
+            except MetaApiConnectionError as e:
+                logger.warning("TP partiels: %s échec sur %s: %s", leg["label"], pid, e)
+                break
+            leg["done"] = True
+            current_volume = round(current_volume - vol, 2)
+            logger.info("TP partiel %s atteint sur %s : %.2f lot fermé à %.5f",
+                        leg["label"], pid, vol, leg["price"])
+            tr.setdefault("partials", []).append(
+                {"reason": leg["label"], "price": leg["price"], "volume": vol})
+            try:
+                # `volume` en base reste le volume INITIAL : c'est la base de calcul
+                # des parts TP1/TP2, y compris après un redémarrage du serveur.
+                await store.update_trade(pid, {"partials": tr["partials"]})
+            except Exception as e:
+                logger.warning("Journal: prise partielle non enregistrée (%s): %s", pid, e)
+            await _notify("success", "close_trade", f"TP partiel {leg['label'].upper()}",
+                          f"{vol} lot fermé à {leg['price']:.2f} sur {tr['symbol']}")
+            if leg.get("to_breakeven"):
+                be = float(tr["entry"])
+                better = (be > tr["sl"]) if tr["side"] == "buy" else (be < tr["sl"])
+                if better:
+                    try:
+                        await metaapi_client.modify_position(pid, be, tr["tp"])
+                        tr["sl"] = be
+                        await store.update_trade(pid, {"sl": be})
+                        logger.info("TP1 atteint : SL remonté au break-even (%s)", pid)
+                    except MetaApiConnectionError as e:
+                        logger.warning("TP partiels: break-even échoué sur %s: %s", pid, e)
 
 
 async def _apply_trailing(s: Dict, magic_number: int) -> None:
@@ -453,6 +560,8 @@ async def _bot_trading_loop() -> None:
             now = datetime.now(timezone.utc)
             symbol = s.get("active_symbol", "XAUUSD")
             mode = s.get("trading_mode", "intraday")
+            # 4e etage : contexte journalier (Synthese V3 §2). "" = desactive.
+            d1_tf = str(s.get("intraday_d1" if mode == "intraday" else "scalping_d1", "") or "")
             htf = s.get("intraday_htf" if mode == "intraday" else "scalping_htf", "H1")
             mtf = s.get("intraday_mtf" if mode == "intraday" else "scalping_mtf", "M15")
             ltf = s.get("intraday_ltf" if mode == "intraday" else "scalping_ltf", "M5")
@@ -507,6 +616,7 @@ async def _bot_trading_loop() -> None:
             state = await store.get_bot_state()  # reload after update
 
             # ── Trailing stop live : gère les positions ouvertes du bot (même hors session) ──
+            await _apply_partial_tp(s, magic)
             await _apply_trailing(s, magic)
 
             # ── Session check ──
@@ -660,6 +770,14 @@ async def _bot_trading_loop() -> None:
             try:
                 htf_raw = await metaapi_client.get_candles(symbol, htf, None, WINDOW_HTF)
                 mtf_raw = await metaapi_client.get_candles(symbol, mtf, None, WINDOW_MTF)
+                # L'etage journalier est un ENRICHISSEMENT : s'il n'est pas
+                # recuperable, l'analyse continue sur 3 etages plutot que d'echouer.
+                d1_raw = []
+                if d1_tf:
+                    try:
+                        d1_raw = await metaapi_client.get_candles(symbol, d1_tf, None, WINDOW_D1)
+                    except MetaApiConnectionError as e:
+                        logger.warning("Contexte journalier (%s) indisponible: %s", d1_tf, e)
 
                 def _norm(arr):
                     out = []
@@ -673,14 +791,8 @@ async def _bot_trading_loop() -> None:
                     return out
 
                 result = analyze(_norm(htf_raw), _norm(mtf_raw), _norm(ltf_raw),
-                                 fractal_n=int(s.get("fractal_n", 3)),
-                                 min_rr=float(s.get("min_rr", 2.0)),
-                                 recent_window=int(s.get("recent_window", 6)),
-                                 require_fvg=bool(s.get("require_fvg_entry", True)),
-                                 require_sequence=bool(s.get("require_sweep_then_choch", True)),
-                                 require_unmitigated=bool(s.get("require_unmitigated_ob", True)),
-                                 require_pd=bool(s.get("require_premium_discount", True)),
-                                 ob_entry_mode=str(s.get("ob_entry_mode", "close")))
+                                 _norm(d1_raw) if d1_raw else None,
+                                 **smc_params(s))
             except Exception as e:
                 logger.warning("SMC analysis failed: %s", e)
                 continue
@@ -796,6 +908,9 @@ async def _bot_trading_loop() -> None:
                         "tp": float(sig["tp"]),
                         "R": abs(float(sig["entry"]) - float(sig["sl"])),
                         "max_fav": float(sig["entry"]),
+                        # Volume initial : base de calcul des parts TP1/TP2.
+                        "volume": float(lot),
+                        "legs": None,
                     }
                     # Journal de trading : la ligne est ouverte ici, cloturee par
                     # _check_closed_positions avec le P&L reel du broker.
