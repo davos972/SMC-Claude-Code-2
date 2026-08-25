@@ -46,6 +46,22 @@ DEFAULT_SETTINGS = {
     "scalping_mtf": "M5",        # structure / order blocks (POI)
     "scalping_ltf": "M1",        # déclencheur / entrée
 
+    # --- Détection SMC : méthodes de tracé (Manuel de détection + Synthèse V3) ---
+    # Voir DECISIONS.md 2026-08-25. Chaque option conserve l'ancienne méthode pour
+    # pouvoir comparer en backtest plutôt que de basculer à l'aveugle.
+    "swing_method": "two_candle",   # two_candle (manuel §1.1) | fractal (historique)
+    "swing_confirm": 2,             # nb de bougies opposées consécutives qui valident un swing
+    "ob_zone": "wick",              # wick (manuel §4.1 : high→low) | body (historique : open/close)
+    "structure_break_mode": "close",  # close (conservateur) | wick (agressif) — manuel §1.3
+    "tp_target": "range_bound",     # range_bound (borne opposée du range) | nearest_swing (historique)
+    # Fraîcheur de l'OB (manuel §4.1 « OB déjà testé = à éviter », nuancé par la Synthèse
+    # V3 §5.8 « facteur de qualité, pas condition absolue ») : 0 = filtre DÉSACTIVÉ, le
+    # compteur de touchés reste affiché. N > 0 = écarte un OB déjà retouché N fois.
+    "max_ob_touches": 0,
+    # Displacement (Synthèse V3 §Étape 5) — défini comme « la bougie de cassure laisse
+    # une FVG ». OFF par défaut : à valider en backtest avant d'en faire un verrou.
+    "require_displacement": False,
+
     # Règles SMC strictes (désactivables pour comparer en backtest)
     "require_fvg_entry": False,        # confluence FVG (OFF par défaut — backtests: dégrade les résultats en verrou dur)
     "require_sweep_then_choch": False, # confluence séquence sweep→CHoCH (OFF par défaut)
@@ -54,6 +70,9 @@ DEFAULT_SETTINGS = {
     # Mode d'entrée sur l'order block POI (comparaison backtest 2026-07-28, cf. DECISIONS.md) :
     #   "close" (défaut) = la clôture doit être DANS le corps de l'OB — strict, seul mode rentable en backtest
     #   "tap" = une bougie récente a touché l'OB (mèches comprises) — beaucoup plus de trades, PERDANT en backtest
+    #   "zone_50" = la cloture doit avoir depasse la LIGNE MEDIANE de l'OB (moitie profonde
+    #     de la zone) — meilleur ratio, declenche moins souvent. Entree au MARCHE a la
+    #     cloture, ce n'est PAS un ordre limite pose a 50%.
     "ob_entry_mode": "close",
 
     # Journal — mode diagnostic : journalise AUSSI les rejets précoces (pas de biais / pas de POI /

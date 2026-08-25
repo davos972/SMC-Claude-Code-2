@@ -680,7 +680,14 @@ async def _bot_trading_loop() -> None:
                                  require_sequence=bool(s.get("require_sweep_then_choch", True)),
                                  require_unmitigated=bool(s.get("require_unmitigated_ob", True)),
                                  require_pd=bool(s.get("require_premium_discount", True)),
-                                 ob_entry_mode=str(s.get("ob_entry_mode", "close")))
+                                 ob_entry_mode=str(s.get("ob_entry_mode", "close")),
+                                 swing_method=str(s.get("swing_method", "two_candle")),
+                                 swing_confirm=int(s.get("swing_confirm", 2)),
+                                 ob_zone=str(s.get("ob_zone", "wick")),
+                                 break_mode=str(s.get("structure_break_mode", "close")),
+                                 tp_target=str(s.get("tp_target", "range_bound")),
+                                 max_ob_touches=int(s.get("max_ob_touches", 0)),
+                                 require_displacement=bool(s.get("require_displacement", False)))
             except Exception as e:
                 logger.warning("SMC analysis failed: %s", e)
                 continue

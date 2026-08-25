@@ -132,6 +132,18 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     require_unmitigated = bool(settings.get("require_unmitigated_ob", True))
     require_pd = bool(settings.get("require_premium_discount", True))
     ob_entry_mode = str(settings.get("ob_entry_mode", "close"))
+    # Méthodes de tracé (Manuel de détection + Synthèse V3, cf. DECISIONS.md 2026-08-25).
+    # Priorité à la requête pour pouvoir comparer deux méthodes sans toucher aux Réglages.
+    def _dparam(key, default):
+        v = req.get(key)
+        return v if v is not None else settings.get(key, default)
+    swing_method = str(_dparam("swing_method", "two_candle"))
+    swing_confirm = int(_dparam("swing_confirm", 2))
+    ob_zone = str(_dparam("ob_zone", "wick"))
+    break_mode = str(_dparam("structure_break_mode", "close"))
+    tp_target = str(_dparam("tp_target", "range_bound"))
+    max_ob_touches = int(_dparam("max_ob_touches", 0))
+    require_displacement = bool(_dparam("require_displacement", False))
     # Trailing / break-even (OFF par défaut = aucun changement vs baseline).
     # Logique PARTAGÉE avec le live (bot_loop._apply_trailing utilise le même
     # compute_trailing_sl ; en live il est piloté par les Réglages).
@@ -267,7 +279,11 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         result = analyze(htf_window, mtf_window, ltf_window, fractal_n=fractal_n, min_rr=min_rr,
                          recent_window=recent_window, require_fvg=require_fvg,
                          require_sequence=require_sequence, require_unmitigated=require_unmitigated,
-                         require_pd=require_pd, ob_entry_mode=ob_entry_mode)
+                         require_pd=require_pd, ob_entry_mode=ob_entry_mode,
+                         swing_method=swing_method, swing_confirm=swing_confirm,
+                         ob_zone=ob_zone, break_mode=break_mode, tp_target=tp_target,
+                         max_ob_touches=max_ob_touches,
+                         require_displacement=require_displacement)
         sig = result.get("signal")
         if sig:
             entry_price = sig["entry"] + (spread_price if sig["side"] == "buy" else -spread_price)

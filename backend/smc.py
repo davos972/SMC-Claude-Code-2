@@ -6,6 +6,9 @@ Each candle: {"time": iso_str_or_epoch, "open": f, "high": f, "low": f, "close":
 Outputs of analyze(): dict with detected swings, structure events (BOS/CHoCH),
 order blocks, fair value gaps, liquidity sweeps, current bias, premium/discount,
 and any actionable signal at the latest candle.
+
+Les règles de détection suivent le « Manuel de détection SMC » et la « Synthèse
+stratégie V3 » (décisions B1–B6 / D1–D9, cf. DECISIONS.md 2026-08-25).
 """
 from __future__ import annotations
 
@@ -22,6 +25,11 @@ class Swing:
     time: Any
     price: float
     kind: Literal["high", "low"]
+    # Indice de la bougie à partir de laquelle le swing est VALIDÉ (règle des 2 bougies
+    # du manuel, ou i+n en fractale). Avant cet indice le swing n'existe pas encore :
+    # detect_structure ne doit pas s'en servir (sinon on casse une structure sur un
+    # sommet qui n'est pas encore confirmé).
+    confirm_idx: int = -1
 
 
 @dataclass
@@ -33,6 +41,9 @@ class StructureEvent:
     price: float
     swing_idx: int = -1
     swing_time: Any = None
+    # Displacement (Synthèse V3 §Étape 5) : la cassure est-elle un déplacement FORT ?
+    # Définition binaire retenue (D5①) : la bougie de cassure laisse une FVG.
+    displacement: bool = False
 
 
 @dataclass
@@ -46,6 +57,13 @@ class OrderBlock:
     mitigated: bool = False
     mitigated_idx: int = -1
     mitigated_time: Any = None
+    # Indices des bougies qui ont RETOUCHÉ la zone après la cassure (une entrée dans
+    # la zone = un touché, peu importe le nombre de bougies qui y séjournent).
+    # Sert au filtre de fraîcheur (D7②) : le manuel écarte un OB déjà testé, mais la
+    # Synthèse V3 §5.8 en fait « un facteur de qualité, pas une condition absolue » →
+    # on EXPOSE le compteur, et le rejet est un réglage désactivable.
+    touch_idx: List[int] = field(default_factory=list)
+    zone: str = "wick"  # wick | body — méthode de tracé utilisée
 
 
 @dataclass
@@ -85,9 +103,9 @@ class Signal:
 
 # ---------------- core detection ----------------
 
-def find_swings(candles: List[Candle], n: int = 3) -> List[Swing]:
-    """Fractal swings: candle is a swing high if its high is strictly greater
-    than highs of n candles on each side. Same for low."""
+def _swings_fractal(candles: List[Candle], n: int = 3) -> List[Swing]:
+    """Fractale historique : le high doit dépasser STRICTEMENT les n bougies de chaque côté.
+    Conséquence connue : un double sommet parfait (deux highs égaux) n'est pas détecté."""
     swings: List[Swing] = []
     L = len(candles)
     for i in range(n, L - n):
@@ -96,18 +114,68 @@ def find_swings(candles: List[Candle], n: int = 3) -> List[Swing]:
         is_high = all(candles[i - j]["high"] < h and candles[i + j]["high"] < h for j in range(1, n + 1))
         is_low = all(candles[i - j]["low"] > lo and candles[i + j]["low"] > lo for j in range(1, n + 1))
         if is_high:
-            swings.append(Swing(idx=i, time=candles[i]["time"], price=h, kind="high"))
+            swings.append(Swing(idx=i, time=candles[i]["time"], price=h, kind="high", confirm_idx=i + n))
         if is_low:
-            swings.append(Swing(idx=i, time=candles[i]["time"], price=lo, kind="low"))
+            swings.append(Swing(idx=i, time=candles[i]["time"], price=lo, kind="low", confirm_idx=i + n))
     return swings
 
 
-def detect_structure(candles: List[Candle], swings: List[Swing]) -> List[StructureEvent]:
+def _swings_two_candle(candles: List[Candle], confirm: int = 2) -> List[Swing]:
+    """Règle des deux bougies (Manuel §1.1, Synthèse V3 §5.1) — méthode par défaut.
+
+    Un sommet est validé si :
+      1. la montée culmine sur la bougie i        → high[i] >= high[i-1]
+      2. les `confirm` bougies suivantes sont BAISSIÈRES consécutives (close < open)
+      3. aucune de ces bougies ne dépasse le high de i
+    Symétrique pour un creux. Le `>=` de la règle 1 est délibéré : il capte les
+    doubles sommets / sommets alignés, que la fractale stricte manquait — or le manuel
+    en fait la source de liquidité la plus importante (§2.1).
+    """
+    swings: List[Swing] = []
+    L = len(candles)
+    confirm = max(1, confirm)
+    for i in range(1, L - confirm):
+        nxt = candles[i + 1: i + 1 + confirm]
+        h = candles[i]["high"]
+        lo = candles[i]["low"]
+        if h >= candles[i - 1]["high"] \
+                and all(c["close"] < c["open"] for c in nxt) \
+                and all(c["high"] <= h for c in nxt):
+            swings.append(Swing(idx=i, time=candles[i]["time"], price=h, kind="high",
+                                confirm_idx=i + confirm))
+        if lo <= candles[i - 1]["low"] \
+                and all(c["close"] > c["open"] for c in nxt) \
+                and all(c["low"] >= lo for c in nxt):
+            swings.append(Swing(idx=i, time=candles[i]["time"], price=lo, kind="low",
+                                confirm_idx=i + confirm))
+    return swings
+
+
+def find_swings(candles: List[Candle], n: int = 3, method: str = "two_candle",
+                confirm: int = 2) -> List[Swing]:
+    """Points pivots. `method` = "two_candle" (défaut, manuel SMC) ou "fractal" (historique)."""
+    if method == "fractal":
+        return _swings_fractal(candles, n)
+    return _swings_two_candle(candles, confirm)
+
+
+def _has_displacement(fvgs: Optional[List[FVG]], idx: int, direction: str) -> bool:
+    """Displacement (D5①) : la bougie de cassure participe à une FVG du même sens.
+    `fvg.idx` désigne la bougie DU MILIEU du motif à 3 bougies, d'où la tolérance de ±1."""
+    if not fvgs:
+        return False
+    return any(f.direction == direction and abs(f.idx - idx) <= 1 for f in fvgs)
+
+
+def detect_structure(candles: List[Candle], swings: List[Swing], break_mode: str = "close",
+                     fvgs: Optional[List[FVG]] = None) -> List[StructureEvent]:
     """Detect BOS / CHoCH events.
 
-    Logic:
-    - Track current bias (None at start)
-    - For each candle after a swing, if close > last bearish swing high, bullish BOS (if bias already bullish) or CHoCH (if bias bearish)
+    - `break_mode` = "close" (conservateur, défaut) ou "wick" (agressif) — le manuel §1.3
+      laisse explicitement le choix. En "close" la clôture doit dépasser le niveau ;
+      en "wick" la mèche suffit.
+    - Un swing n'est pris en compte qu'à partir de son `confirm_idx` (règle des 2 bougies) :
+      on ne casse jamais une structure sur un sommet pas encore validé.
     """
     events: List[StructureEvent] = []
     bias: Optional[str] = None
@@ -116,46 +184,57 @@ def detect_structure(candles: List[Candle], swings: List[Swing]) -> List[Structu
     swing_iter = iter(swings)
     next_swing = next(swing_iter, None)
 
+    def _ready(s: Swing) -> int:
+        return s.confirm_idx if s.confirm_idx >= 0 else s.idx
+
     for i, c in enumerate(candles):
-        # update swings reaching index i
-        while next_swing is not None and next_swing.idx <= i:
+        # update swings reaching index i (une fois CONFIRMÉS)
+        while next_swing is not None and _ready(next_swing) <= i:
             if next_swing.kind == "high":
                 last_high = next_swing
             else:
                 last_low = next_swing
             next_swing = next(swing_iter, None)
 
-        close = c["close"]
-        # Bullish break: close above last confirmed swing high
-        if last_high and close > last_high.price:
+        up = c["close"] if break_mode == "close" else c["high"]
+        dn = c["close"] if break_mode == "close" else c["low"]
+        # Bullish break: price above last confirmed swing high
+        if last_high and up > last_high.price:
             kind = "BOS" if bias == "bullish" else "CHoCH"
             events.append(StructureEvent(
                 idx=i, time=c["time"], kind=kind, direction="bullish",
                 price=last_high.price, swing_idx=last_high.idx, swing_time=last_high.time,
+                displacement=_has_displacement(fvgs, i, "bullish"),
             ))
             bias = "bullish"
             last_high = None  # consume
-        elif last_low and close < last_low.price:
+        elif last_low and dn < last_low.price:
             kind = "BOS" if bias == "bearish" else "CHoCH"
             events.append(StructureEvent(
                 idx=i, time=c["time"], kind=kind, direction="bearish",
                 price=last_low.price, swing_idx=last_low.idx, swing_time=last_low.time,
+                displacement=_has_displacement(fvgs, i, "bearish"),
             ))
             bias = "bearish"
             last_low = None
     return events
 
 
-def detect_order_blocks(candles: List[Candle], events: List[StructureEvent]) -> List[OrderBlock]:
+def detect_order_blocks(candles: List[Candle], events: List[StructureEvent],
+                        zone: str = "wick") -> List[OrderBlock]:
     """The Order Block is the last opposite-color candle before the impulsive
     move that caused the BOS/CHoCH event.
 
-    OB body (top/bottom) is the candle BODY (open/close), not the wicks.
+    `zone` = "wick" (défaut, Manuel §4.1 : rectangle entre le HIGH et le LOW de la bougie)
+    ou "body" (ancien comportement : corps open/close uniquement). La zone en mèches est
+    plus large → SL plus éloigné mais plus réaliste (« stop trop serré = stop trop souvent
+    touché », Synthèse V3 §Étape 8).
+
     Invalidation ("mitigated"): a later candle CLOSES through the OB (price genuinely
     broke the level), NOT merely a wick tap. This matters because the entry logic needs
     price to RETURN into the OB to trade it — counting that first tap as "mitigated"
     would make the `require_unmitigated_ob` filter reject every valid setup.
-    Same philosophy as the liquidity-sweep mitigation (close-through = consumed).
+    Les simples retouches sont comptées à part dans `touch_idx` (filtre de fraîcheur).
     """
     obs: List[OrderBlock] = []
     for ev in events:
@@ -170,12 +249,15 @@ def detect_order_blocks(candles: List[Candle], events: List[StructureEvent]) -> 
         if j is None:
             continue
         c = candles[j]
-        # body of the candle
-        top = max(c["open"], c["close"])
-        bottom = min(c["open"], c["close"])
+        if zone == "body":
+            top = max(c["open"], c["close"])
+            bottom = min(c["open"], c["close"])
+        else:
+            top = c["high"]
+            bottom = c["low"]
         ob = OrderBlock(
             start_idx=j, end_idx=ev.idx, top=top, bottom=bottom,
-            direction=ev.direction, time=c["time"],
+            direction=ev.direction, time=c["time"], zone=zone,
         )
         # Invalidation: scan forward for a candle CLOSING through the OB.
         for k in range(j + 1, len(candles)):
@@ -192,6 +274,15 @@ def detect_order_blocks(candles: List[Candle], events: List[StructureEvent]) -> 
                     ob.mitigated_idx = k
                     ob.mitigated_time = cand["time"]
                     break
+        # Retouches APRÈS la cassure (le mouvement impulsif a quitté la zone) : une
+        # entrée dans la zone = un touché, quel que soit le nombre de bougies qui y restent.
+        inside_prev = False
+        for k in range(ev.idx + 1, len(candles)):
+            cand = candles[k]
+            inside = cand["low"] <= ob.top and cand["high"] >= ob.bottom
+            if inside and not inside_prev:
+                ob.touch_idx.append(k)
+            inside_prev = inside
         obs.append(ob)
     return obs
 
@@ -310,6 +401,7 @@ def dealing_range(swings: List[Swing], events: List[StructureEvent]) -> Optional
       discount = moitié basse de cette jambe (zone d'achat).
     - cassure baissière : du sommet d'origine jusqu'au plus bas atteint → premium = moitié haute.
     Le 50% (mid) sépare premium et discount. Repli sur premium_discount() si données insuffisantes.
+    Les bornes sont AUSSI la liquidité cible (Manuel §5.1 : « le sommet = BSL, le creux = SSL »).
     """
     if not events:
         return premium_discount(swings)
@@ -344,13 +436,14 @@ _OUT_OF_ZONE_REASONS = {
     "Prix hors zone premium",
     "Prix hors de l'order block POI",
     "Aucun order block touché récemment (tap)",
+    "Prix pas au-delà des 50% de l'order block POI",
 }
 
 
 def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_struct,
                   swings_target, sweeps_entry, events_entry, fvgs_entry,
                   min_rr, recent_window, require_fvg, require_sequence, require_pd=True,
-                  ob_entry_mode="close"):
+                  ob_entry_mode="close", tp_target="range_bound", require_displacement=False):
     """Evaluate the entry trigger on the entry timeframe for a given HTF bias direction.
     Returns (Signal, None) if all conditions pass, else (None, reject_reason)."""
     bullish = direction == "bullish"
@@ -362,9 +455,13 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_s
         if not bullish and last_close < pd_struct["mid"]:
             return None, "Prix hors zone premium"
 
-    # 2) POI (structure-tier order block) — deux modes d'entrée (Réglages → ob_entry_mode) :
-    #    "close" (défaut, validé backtest) : la DERNIÈRE CLÔTURE doit être DANS le corps
-    #      de l'OB le plus récent. Strict — c'est la sélectivité qui rend le bot rentable.
+    # 2) POI (structure-tier order block) — trois modes d'entrée (Réglages → ob_entry_mode) :
+    #    "close" (validé backtest) : la DERNIÈRE CLÔTURE doit être DANS la zone de l'OB le
+    #      plus récent. Strict — c'est la sélectivité qui rend le bot rentable.
+    #    "zone_50" (Manuel §4.1 / Synthèse V3 §Étape 7) : la clôture doit avoir dépassé la
+    #      LIGNE MÉDIANE de l'OB (moitié profonde de la zone) — meilleur ratio, déclenche
+    #      moins souvent. NB : c'est une entrée au marché à la clôture, PAS un ordre limite
+    #      posé à 50% (le bot n'envoie que des ordres au marché).
     #    "tap" (expérimental, perdant en backtest 6 mois 2025-12→2026-06 : PF 0.85-0.92,
     #      DD jusqu'à 68% — voir DECISIONS.md 2026-07-28) : une des `recent_window`
     #      dernières bougies a TOUCHÉ un OB (mèches comprises). Beaucoup plus de trades.
@@ -383,6 +480,10 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_s
         else:
             if not (poi.bottom * 0.999 <= last_close <= poi.top):
                 return None, "Prix hors de l'order block POI"
+        if ob_entry_mode == "zone_50":
+            poi_mid = (poi.top + poi.bottom) / 2
+            if (bullish and last_close > poi_mid) or (not bullish and last_close < poi_mid):
+                return None, "Prix pas au-delà des 50% de l'order block POI"
 
     # 3) Entry-tier confirmation
     want_sweep = "low_sweep" if bullish else "high_sweep"
@@ -402,6 +503,14 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_s
         if not (recent_sweeps or recent_choch):
             return None, "Pas de sweep ni CHoCH récent (entrée)"
 
+    # 3bis) Displacement (Synthèse V3 §Étape 5) : la cassure doit être un déplacement FORT,
+    #       défini comme « la bougie de cassure laisse une FVG » (D5①).
+    if require_displacement:
+        recent_events = [e for e in events_entry
+                         if e.direction == direction and last_idx - e.idx <= recent_window]
+        if not any(e.displacement for e in recent_events):
+            return None, "Pas de displacement sur la cassure (entrée)"
+
     # 4) Strict FVG: price must sit inside an unfilled FVG of the bias direction
     if require_fvg:
         fvg_ok = any(
@@ -416,18 +525,29 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_s
     if bullish:
         sweep_low = candles_entry[chosen_sweep.idx]["low"] if chosen_sweep else poi.bottom
         sl = min(poi.bottom, sweep_low) * 0.999
-        targets = [s.price for s in swings_target if s.kind == "high" and s.price > entry]
-        if not targets:
-            return None, "Pas de liquidité haussière cible"
-        tp = min(targets)
+        # TP — "range_bound" (défaut, B4②) : la borne OPPOSÉE du dealing range, qui EST la
+        # liquidité visée (Manuel §5.1, Synthèse V3 §Étape 9 « TP3 : borne opposée du range »).
+        # "nearest_swing" : ancien comportement, le swing opposé le plus proche du niveau structure.
+        tp = None
+        if tp_target == "range_bound" and pd_struct.get("top", 0) > entry:
+            tp = pd_struct["top"]
+        if tp is None:
+            targets = [s.price for s in swings_target if s.kind == "high" and s.price > entry]
+            if not targets:
+                return None, "Pas de liquidité haussière cible"
+            tp = min(targets)
         risk, reward = entry - sl, tp - entry
     else:
         sweep_high = candles_entry[chosen_sweep.idx]["high"] if chosen_sweep else poi.top
         sl = max(poi.top, sweep_high) * 1.001
-        targets = [s.price for s in swings_target if s.kind == "low" and s.price < entry]
-        if not targets:
-            return None, "Pas de liquidité baissière cible"
-        tp = max(targets)
+        tp = None
+        if tp_target == "range_bound" and 0 < pd_struct.get("bottom", 0) < entry:
+            tp = pd_struct["bottom"]
+        if tp is None:
+            targets = [s.price for s in swings_target if s.kind == "low" and s.price < entry]
+            if not targets:
+                return None, "Pas de liquidité baissière cible"
+            tp = max(targets)
         risk, reward = sl - entry, entry - tp
 
     if risk <= 0:
@@ -450,7 +570,11 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
             fractal_n: int = 3, min_rr: float = 2.0, recent_window: int = 6,
             require_fvg: bool = True, require_sequence: bool = True,
             require_unmitigated: bool = True, require_pd: bool = True,
-            ob_entry_mode: str = "close") -> Dict[str, Any]:
+            ob_entry_mode: str = "close",
+            swing_method: str = "two_candle", swing_confirm: int = 2,
+            ob_zone: str = "wick", break_mode: str = "close",
+            tp_target: str = "range_bound", max_ob_touches: int = 0,
+            require_displacement: bool = False) -> Dict[str, Any]:
     """Top-down 3-tier SMC analysis: bias (HTF) → structure/POI (MTF) → entry trigger (LTF).
     Returns dict with detections + optional signal at the latest entry candle."""
     out: Dict[str, Any] = {
@@ -470,33 +594,38 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
         # Seul "entry" = vrai quasi-setup (POI trouvée, entrée tentée puis échouée).
         "reject_stage": None,
     }
-    min_len = fractal_n * 2 + 5
+    min_len = max(fractal_n * 2, swing_confirm * 2) + 5
     if len(candles_bias) < min_len or len(candles_struct) < min_len or len(candles_entry) < min_len:
         out["reject_reason"] = "Insufficient candles"
         out["reject_stage"] = "insufficient"
         return out
 
+    def _swings(candles):
+        return find_swings(candles, n=fractal_n, method=swing_method, confirm=swing_confirm)
+
     # --- Tier 1: BIAS (HTF) — direction only ---
-    swings_bias = find_swings(candles_bias, n=fractal_n)
-    events_bias = detect_structure(candles_bias, swings_bias)
+    swings_bias = _swings(candles_bias)
+    fvgs_bias = detect_fvgs(candles_bias)
+    events_bias = detect_structure(candles_bias, swings_bias, break_mode, fvgs_bias)
     out["swings_htf"] = [asdict(s) for s in swings_bias]
     out["structure_htf"] = [asdict(e) for e in events_bias]
     bias = events_bias[-1].direction if events_bias else None
     out["bias"] = bias
 
     # --- Tier 2: STRUCTURE / POI (MTF) — order blocks + dealing range ---
-    swings_struct = find_swings(candles_struct, n=fractal_n)
-    events_struct = detect_structure(candles_struct, swings_struct)
-    obs_struct = detect_order_blocks(candles_struct, events_struct)
+    swings_struct = _swings(candles_struct)
+    fvgs_struct = detect_fvgs(candles_struct)
+    events_struct = detect_structure(candles_struct, swings_struct, break_mode, fvgs_struct)
+    obs_struct = detect_order_blocks(candles_struct, events_struct, ob_zone)
     pd_struct = dealing_range(swings_struct, events_struct)
     out["order_blocks_htf"] = [asdict(o) for o in obs_struct]
     out["premium_discount"] = pd_struct
 
     # --- Tier 3: ENTRY trigger (LTF) — sweeps, CHoCH, FVG ---
-    swings_entry = find_swings(candles_entry, n=fractal_n)
-    events_entry = detect_structure(candles_entry, swings_entry)
-    obs_entry = detect_order_blocks(candles_entry, events_entry)
+    swings_entry = _swings(candles_entry)
     fvgs_entry = detect_fvgs(candles_entry)
+    events_entry = detect_structure(candles_entry, swings_entry, break_mode, fvgs_entry)
+    obs_entry = detect_order_blocks(candles_entry, events_entry, ob_zone)
     sweeps_entry = detect_liquidity_sweeps(candles_entry, swings_entry)
     out["swings_ltf"] = [asdict(s) for s in swings_entry]
     out["structure_ltf"] = [asdict(e) for e in events_entry]
@@ -513,10 +642,19 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
     poi_obs = [o for o in obs_struct if o.direction == bias]
     if require_unmitigated:
         poi_obs = [o for o in poi_obs if not o.mitigated]
+    # Fraîcheur (D7②) : 0 = filtre désactivé. Sinon on écarte l'OB déjà retouché
+    # `max_ob_touches` fois AVANT la bougie courante du niveau structure.
+    if max_ob_touches > 0:
+        last_struct_idx = len(candles_struct) - 1
+        poi_obs = [o for o in poi_obs
+                   if sum(1 for t in o.touch_idx if t < last_struct_idx) < max_ob_touches]
     if not poi_obs:
-        out["reject_reason"] = ("Aucun order block non mitigé dans le sens du biais"
-                                if require_unmitigated
-                                else "Aucun order block dans le sens du biais")
+        if max_ob_touches > 0:
+            out["reject_reason"] = "Aucun order block assez frais dans le sens du biais"
+        elif require_unmitigated:
+            out["reject_reason"] = "Aucun order block non mitigé dans le sens du biais"
+        else:
+            out["reject_reason"] = "Aucun order block dans le sens du biais"
         out["reject_stage"] = "no_poi"
         return out
 
@@ -526,13 +664,11 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
     last_idx = len(candles_entry) - 1
     last_close = last["close"]
 
-    # TP cible la liquidité du niveau STRUCTURE (MTF, ex. M15) — même étage que la POI —
-    # et non plus un swing HTF lointain : cibles plus proches → meilleur taux de réussite.
     sig, reason = _build_signal(
         bias, candles_entry, last_close, last_idx, poi_obs, pd_struct,
         swings_struct, sweeps_entry, events_entry, fvgs_entry,
         min_rr, recent_window, require_fvg, require_sequence, require_pd,
-        ob_entry_mode,
+        ob_entry_mode, tp_target, require_displacement,
     )
     if sig is None:
         out["reject_reason"] = reason
