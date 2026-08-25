@@ -837,16 +837,10 @@ async def _bot_trading_loop() -> None:
                     await store.add_or_merge_signal(rec)
                 continue
 
-            # ── Signal-only mode ──
-            if s.get("signal_only_mode", True):
-                rec["status"] = "accepted"
-                await store.add_signal(rec)
-                await _notify("info", "open_trade",
-                              f"Signal {sig['side'].upper()} {symbol}",
-                              sig["reason"])
-                continue
-
             # ── Execute trade ──
+            # Le mode « signal uniquement » a été retiré le 2026-08-25 : un setup validé
+            # part toujours à l'exécution. Le garde-fou du compte réel (account_type +
+            # real_confirmed) est indépendant et reste en place.
             try:
                 risk_pct = float(s.get("risk_per_trade_pct", 1.0))
                 # Sur compte prop avec Guardian Shield : on plafonne le risque par trade SOUS

@@ -197,7 +197,6 @@ DEFAULT_SETTINGS = {
     "notif_news": True,
 
     # Execution
-    "signal_only_mode": True,  # default ON for first launch
     "bot_running": False,
     "stop_reason": None,  # manual | drawdown | consec_losses | None
 

@@ -49,7 +49,9 @@ class TestHealth:
         d = r.json()
         assert d["ok"] is True
         assert d["configured"] is False
-        assert d["signal_only_mode"] is True
+        # Le mode « signal uniquement » a ete retire (2026-08-25) : il ne doit plus
+        # etre expose, sinon un client pourrait croire qu'il existe encore.
+        assert "signal_only_mode" not in d
         assert "metaapi" in d and d["metaapi"]["configured"] is False
         assert "bot" in d and "running" in d["bot"]
 
@@ -66,7 +68,10 @@ class TestSettings:
         assert float(s.get("min_rr")) == 2.0
         assert int(s.get("max_consec_losses")) == 3
         assert float(s.get("risk_per_trade_pct")) == 1.0
-        assert s.get("signal_only_mode") is True
+        assert "signal_only_mode" not in s
+        # Le compte reel reste verrouille derriere sa double confirmation.
+        assert s.get("account_type") == "demo"
+        assert s.get("real_confirmed") is False
         # Token must not be exposed in plain form
         assert "metaapi_token" not in s
 
@@ -192,7 +197,8 @@ class TestBot:
         assert "rail" in d
         rail = d["rail"]
         assert "now_frac" in rail and "london_start_frac" in rail
-        assert "signal_only_mode" in d
+        assert "signal_only_mode" not in d
+        assert "trading_mode" in d
 
 
 # ---------- analysis / signals ----------

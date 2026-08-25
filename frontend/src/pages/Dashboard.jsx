@@ -185,7 +185,7 @@ export default function Dashboard({ botState, settings, refresh }) {
                     <div className="flex-1 min-w-0 space-y-1">
                         <div className="text-xl font-semibold leading-tight" data-testid="bot-status-label">{statusLabel}</div>
                         <div className="text-sm text-text-secondary">
-                            Mode {settings?.trading_mode || "intraday"} · {settings?.signal_only_mode ? "Signal" : "Signal + exécution"}
+                            Mode {settings?.trading_mode || "intraday"} · exécution automatique
                         </div>
                         <div className="text-sm text-text-secondary">
                             Pertes consécutives :{" "}

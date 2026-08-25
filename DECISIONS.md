@@ -16,6 +16,27 @@
 
 ---
 
+## 2026-08-25 — Retrait du mode « Signal uniquement »
+
+**Décision :** le mode « Signal uniquement » est SUPPRIMÉ — réglage, branche dans
+`bot_loop`, interrupteur dans les Réglages, champ `signal_only_mode` de `/api/health`
+et de l'état du bot. Un setup validé part désormais toujours à l'exécution.
+
+**Pourquoi :** David trade sur un compte DÉMO Axi. Sur un compte démo le mode
+n'apportait rien — il empêchait simplement de voir le comportement réel du bot, alors
+que c'est précisément ce qu'on veut observer avant d'envisager le réel. Décision prise
+par David le 2026-08-25.
+
+**Ce qui NE change pas :** le verrou du compte réel est indépendant et reste entier —
+`account_type` reste à `demo` par défaut et le passage en réel exige toujours la double
+confirmation `real_confirmed`. Le mode signal n'a jamais été ce qui protégeait du réel.
+
+**Écarté :** garder le réglage en le passant simplement à False par défaut. Écarté à la
+demande de David : un interrupteur qu'on ne remettra jamais sur ON est du code mort et
+une case de plus à lire dans les Réglages. Si le besoin revient (tester une nouvelle
+confluence sans polluer le journal), le journal diagnostic `verbose_journal` couvre déjà
+la lecture des setups écartés, et le backtest couvre la validation d'une stratégie.
+
 ## 2026-08-25 — Alignement du moteur sur le « Manuel de détection SMC » et la « Synthèse stratégie V3 »
 
 David a fourni deux documents (manuel de détection des indicateurs + synthèse de la

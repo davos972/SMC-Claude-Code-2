@@ -46,7 +46,7 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
 - Max 5 trades/jour, une seule position par symbole
 - **Mode prop firm** activable (défauts calés BlueGuardian Instant Funding : DD jour/total, Guardian Shield, reset 17h EST, high watermark trailing ; marge de sécurité 20% — s'arrête AVANT les limites réelles ; paramétrable pour d'autres firmes)
 - **Filtre news** : pause 30 min avant/après les annonces USD à fort impact (flux Forex Factory / faireconomy, `backend/news.py`)
-- **Mode « Signal uniquement »** : détecte et journalise sans exécuter — mode par défaut au premier lancement
+- ~~Mode « Signal uniquement »~~ : **retiré le 2026-08-25** (David trade sur compte démo Axi, où il n'apportait rien). Un setup validé part toujours à l'exécution. Le verrou du compte réel (`account_type` + double confirmation `real_confirmed`) est indépendant et reste en place
 - **Trailing stop** : implémenté (logique unique `compute_trailing_sl` partagée live + backtest ; modes breakeven / r_trail / structure), **OFF par défaut**
 - **TP partiels TP1/TP2/TP3** : implémentés depuis le 2026-08-25 (décision D3, cf. DECISIONS.md) — la règle « non implémentés volontairement » est LEVÉE. Échelle unique `compute_tp_ladder` partagée live + backtest. **ACTIVÉS PAR DÉFAUT** : TP1 à 1R ferme 50% et remonte le SL à l'entrée, TP2 (mi-chemin TP1↔TP3) ferme 30%, les 20% restants courent jusqu'à la cible. C'est la gestion de position décrite par la stratégie, pas une option. Le SL et le TP FINAL restent posés chez le broker : si l'app s'arrête, la position reste protégée comme avant. `partial_tp_enabled=False` rétablit le TP unique historique pour comparer en backtest
 
@@ -98,7 +98,7 @@ Le code (revue complète faite) est globalement conforme. ~~Problème en cours~~
 1. Corriger la connexion MetaApi (point 7) en priorité
 2. Vérifier la conformité du graphique aux specs visuelles SMC du point 6 (styles récents, possiblement pas encore implémentés)
 3. Fiabiliser le backtest : téléchargement M1 par lots avec pauses (limites de débit MetaApi), progression en % visible, try/catch global passant le statut à « error » avec message consultable, timeout global 15 min, bouton annuler/supprimer
-4. Valider en mode « Signal uniquement » sur compte démo plusieurs jours avant d'activer l'exécution automatique
+4. Valider sur compte démo plusieurs jours avant tout passage en réel (le mode « Signal uniquement » a été retiré ; la validation se fait en backtest puis en démo)
 5. Toujours : tester chaque changement, demander/montrer les logs en cas d'erreur plutôt que corriger à l'aveugle
 
 ### Plan de backtest des nouvelles règles (Synthèse V3 §11)
