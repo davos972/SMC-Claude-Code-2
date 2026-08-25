@@ -132,6 +132,18 @@ DEFAULT_SETTINGS = {
     "recent_window": 6,          # LTF candles within which a sweep/CHoCH must occur
     "max_lot_per_trade": 10.0,   # hard cap on computed lot size (anti over-leverage)
 
+    # --- Gestion échelonnée TP1/TP2/TP3 (Synthèse V3 §Étape 9) ---
+    # ⚠️ Lève la règle « TP partiels : NON implémentés volontairement » (décision D3②
+    # du 2026-08-25, cf. DECISIONS.md). Implémenté et testé, mais laissé OFF par défaut :
+    # l'activer change le profil de résultat de toute la stratégie (winrate en hausse,
+    # R moyen en baisse) et doit passer par un backtest avant le réel.
+    # TP3 = la cible du signal (borne du range ou liquidité selon tp_target).
+    "partial_tp_enabled": False,
+    "tp1_r": 1.0,               # TP1 à N x le risque
+    "tp1_close_pct": 50.0,      # % du volume INITIAL fermé à TP1
+    "tp1_to_breakeven": True,   # après TP1, le SL remonte à l'entrée (trade « gratuit »)
+    "tp2_close_pct": 30.0,      # % du volume INITIAL fermé à TP2 (à mi-chemin TP1→TP3)
+
     # Trailing stop — MÊME logique live (bot_loop) + backtest. OFF par défaut.
     "trailing_mode": "off",        # off | breakeven | r_trail | structure
     "trailing_trigger_r": 1.0,     # profit (en R) à partir duquel le trailing s'active
@@ -249,6 +261,9 @@ class Trade(BaseModel):
     mode: Optional[str] = None           # intraday | scalping
     timeframe: Optional[str] = None
     reason: Optional[str] = None
+    # Prises partielles TP1/TP2 deja encaissees : [{reason, price, volume}].
+    # `volume` ci-dessus reste le volume INITIAL du trade.
+    partials: List[dict] = []
     source: Literal["bot", "import"] = "bot"
     settings_snapshot: dict = {}         # réglages actifs au moment du trade
 
@@ -278,6 +293,8 @@ class BacktestRequest(BaseModel):
 class BacktestTrade(BaseModel):
     id: str
     side: str
+    # Prises partielles TP1/TP2/TP3 : [{reason, price, pct, pnl, time}].
+    # Vide quand la gestion echelonnee est desactivee.
     entry_time: str
     exit_time: str
     entry: float
@@ -288,6 +305,8 @@ class BacktestTrade(BaseModel):
     rr: float
     reason: str
     result: Literal["win", "loss", "be"]
+    partials: List[dict] = []
+    exit_reason: Optional[str] = None
 
 
 class BacktestResult(BaseModel):

@@ -252,6 +252,26 @@ class MetaApiWrapper:
             self._last_error = "close_position: timeout"
             raise MetaApiConnectionError(self._last_error) from e
 
+    async def close_position_partially(self, position_id: str, volume: float) -> Dict[str, Any]:
+        """Ferme une PARTIE du volume d'une position (prises partielles TP1/TP2).
+
+        Comme place_order : timeout SANS nouvelle tentative. Une fermeture partielle est
+        une écriture — la retenter automatiquement risquerait de fermer deux fois.
+        """
+        await self._connect()
+        try:
+            return await asyncio.wait_for(
+                self._connection.close_position_partially(position_id, volume),
+                timeout=30.0,
+            )
+        except asyncio.TimeoutError as e:
+            self._mark_disconnected()
+            self._last_error = "close_position_partially: timeout"
+            raise MetaApiConnectionError(self._last_error) from e
+        except Exception as e:
+            self._last_error = f"close_position_partially: {e}"
+            raise MetaApiConnectionError(self._last_error) from e
+
     async def modify_position(self, position_id: str, sl: float, tp: float) -> Dict[str, Any]:
         """Modifie le SL/TP d'une position ouverte chez le broker (trailing stop live).
         Timeout 30s, SANS retry (une modification est une écriture : un retry pourrait

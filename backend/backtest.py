@@ -202,6 +202,15 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         "lookback": int(_tparam("trailing_lookback", 5)),
         "buffer": float(_tparam("trailing_buffer", 0.0)),
     }
+    # Gestion échelonnée TP1/TP2/TP3 (D3②). Priorité à la requête comme le trailing,
+    # pour comparer deux gestions sans toucher aux Réglages.
+    partial_tp = {
+        "enabled": bool(_tparam("partial_tp_enabled", False)),
+        "tp1_r": float(_tparam("tp1_r", 1.0)),
+        "tp1_close_pct": float(_tparam("tp1_close_pct", 50.0)),
+        "tp1_to_breakeven": bool(_tparam("tp1_to_breakeven", True)),
+        "tp2_close_pct": float(_tparam("tp2_close_pct", 30.0)),
+    }
     spread_points = float(req.get("spread_points", 25))
     spread_price = spread_points * point_size  # 1 point = tickSize du symbole
 
@@ -399,24 +408,23 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
                 "_R": abs(entry_price - float(sig["sl"])),  # distance de risque = 1R
                 "_max_fav": entry_price,                     # meilleure excursion favorable
                 "_equity_at_open": equity,
+                # Échelle de sorties : un seul barreau si les TP partiels sont OFF.
+                "_legs": compute_tp_ladder(sig["side"], entry_price, float(sig["sl"]),
+                                           float(sig["tp"]), partial_tp),
+                "_remaining_pct": 100.0,
+                "_realized": 0.0,
+                "_exit_weighted": 0.0,
             }
             rm["trades_today"] += 1
 
     # Close any trade still open at the end of the period at the last candle's
     # close — otherwise it is silently omitted from the metrics (biasing winrate).
     if open_trade and not open_trade.get("_closed") and ltf_candles:
-        last_c = ltf_candles[-1]
-        side = open_trade["side"]
-        exit_price = last_c["close"]
-        # Spread already paid once via the worse entry fill — do not subtract again.
-        pnl_price = (exit_price - open_trade["entry"]) if side == "buy" else (open_trade["entry"] - exit_price)
-        result = "win" if pnl_price > 0 else ("loss" if pnl_price < 0 else "be")
-        pnl_money = pnl_price * contract_size * open_trade.get("lot", 1.0)
-        open_trade.update(exit_time=_to_iso(last_c["time"]), exit_price=exit_price,
-                          pnl=pnl_money, result=result, _closed=True)
-        trades.append({k: v for k, v in open_trade.items() if not k.startswith("_")})
-        equity_curve.append({"time": _to_iso(last_c["time"]),
-                             "equity": equity_curve[-1]["equity"] + pnl_money})
+        # Le RESTE du volume est soldé au dernier cours — sinon le trade (et les
+        # prises partielles déjà encaissées) disparaîtrait des métriques.
+        _realize(open_trade, ltf_candles[-1]["close"], open_trade["_remaining_pct"],
+                 ltf_candles[-1], trades, equity_curve, contract_size,
+                 reason="end_of_period", final=True)
 
     if on_progress:
         try:
@@ -428,31 +436,105 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     return {"trades": trades, "metrics": metrics, "equity_curve": equity_curve}
 
 
+def compute_tp_ladder(side: str, entry: float, sl: float, tp: float,
+                      params: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Échelle TP1 / TP2 / TP3 — logique UNIQUE partagée live (bot_loop) + backtest.
+
+    Synthèse V3 §Étape 9 : TP1 à 1R avec prise partielle puis passage à break-even,
+    TP2 à un niveau intermédiaire, TP3 sur la liquidité majeure (= la cible du signal).
+
+    Désactivée, elle renvoie une échelle à un seul barreau = comportement historique
+    (TP unique, tout le volume). TP2 est placé à mi-chemin entre TP1 et TP3.
+    Repli sur l'échelle simple si le risque est nul ou si TP1 dépasse déjà TP3.
+    """
+    single = [{"price": tp, "close_pct": 100.0, "to_breakeven": False, "label": "tp"}]
+    R = abs(entry - sl)
+    if not params.get("enabled") or R <= 0:
+        return single
+    sign = 1.0 if side == "buy" else -1.0
+    tp1 = entry + sign * float(params.get("tp1_r", 1.0)) * R
+    if (side == "buy" and tp1 >= tp) or (side == "sell" and tp1 <= tp):
+        return single
+    p1 = max(0.0, min(100.0, float(params.get("tp1_close_pct", 50.0))))
+    p2 = max(0.0, min(100.0 - p1, float(params.get("tp2_close_pct", 30.0))))
+    legs: List[Dict[str, Any]] = []
+    if p1 > 0:
+        legs.append({"price": tp1, "close_pct": p1, "label": "tp1",
+                     "to_breakeven": bool(params.get("tp1_to_breakeven", True))})
+    if p2 > 0:
+        legs.append({"price": (tp1 + tp) / 2.0, "close_pct": p2,
+                     "to_breakeven": False, "label": "tp2"})
+    legs.append({"price": tp, "close_pct": max(0.0, 100.0 - p1 - p2),
+                 "to_breakeven": False, "label": "tp3"})
+    return legs
+
+
+def _realize(trade: Dict[str, Any], price: float, pct: float, c: Dict[str, Any],
+             trades: List[Dict[str, Any]], equity_curve: List[Dict[str, Any]],
+             contract_size: float, reason: str, final: bool) -> None:
+    """Encaisse `pct` % du volume INITIAL au prix donné. Clôture le trade si `final`."""
+    side, entry = trade["side"], trade["entry"]
+    frac = max(0.0, min(trade["_remaining_pct"], pct)) / 100.0
+    # Spread is already paid once via the worse entry fill (entry_price adjusted at open),
+    # which models the full round-trip cost — do NOT subtract it again here (double-counting).
+    pnl_price = (price - entry) if side == "buy" else (entry - price)
+    pnl_money = pnl_price * contract_size * trade.get("lot", 1.0) * frac
+    trade["_realized"] = trade.get("_realized", 0.0) + pnl_money
+    trade["_exit_weighted"] = trade.get("_exit_weighted", 0.0) + price * frac
+    trade["_remaining_pct"] -= frac * 100.0
+    trade.setdefault("partials", []).append(
+        {"reason": reason, "price": price, "pct": round(frac * 100.0, 4),
+         "pnl": pnl_money, "time": _to_iso(c["time"])})
+    equity_curve.append({"time": _to_iso(c["time"]),
+                         "equity": equity_curve[-1]["equity"] + pnl_money})
+    if not final and trade["_remaining_pct"] > 1e-9:
+        return
+    total = trade["_realized"]
+    # Classer par le SIGNE du P&L (pas par le niveau touché) : avec un trailing,
+    # un SL remonté au-dessus de l'entrée donne un SL touché... GAGNANT.
+    eps = trade.get("_R", 0.0) * contract_size * trade.get("lot", 1.0) * 1e-6
+    result = "win" if total > eps else ("loss" if total < -eps else "be")
+    closed_frac = max(1e-9, 1.0 - trade["_remaining_pct"] / 100.0)
+    trade.update(exit_time=_to_iso(c["time"]),
+                 exit_price=trade["_exit_weighted"] / closed_frac,
+                 pnl=total, result=result, exit_reason=reason, _closed=True)
+    trades.append({k: v for k, v in trade.items() if not k.startswith("_")})
+
+
 def _check_exit(trade: Dict[str, Any], c: Dict[str, Any], spread_price: float,
                 trades: List[Dict[str, Any]], equity_curve: List[Dict[str, Any]],
                 contract_size: float = 100.0) -> None:
-    """Mutate trade in place when SL/TP hit, append to trades + equity_curve."""
+    """Mutate trade in place when SL / TP hit, append to trades + equity_curve.
+
+    Gère l'échelle TP1/TP2/TP3 : chaque barreau atteint encaisse sa part et le trade
+    reste ouvert pour le reste. Si le SL et un TP sont touchés dans la MÊME bougie, le
+    SL l'emporte : on ne peut pas connaître l'ordre intra-bougie, on prend l'hypothèse
+    défavorable.
+    """
     side = trade["side"]
-    entry = trade["entry"]
-    sl, tp = trade["sl"], trade["tp"]
-    hit_sl = (c["low"] <= sl) if side == "buy" else (c["high"] >= sl)
-    hit_tp = (c["high"] >= tp) if side == "buy" else (c["low"] <= tp)
-    if not (hit_sl or hit_tp):
+    sl = trade["sl"]
+    if (c["low"] <= sl) if side == "buy" else (c["high"] >= sl):
+        _realize(trade, sl, trade["_remaining_pct"], c, trades, equity_curve,
+                 contract_size, reason="sl", final=True)
         return
-    exit_price = sl if hit_sl else tp
-    # Spread is already paid once via the worse entry fill (entry_price adjusted at open),
-    # which models the full round-trip cost — do NOT subtract it again here (double-counting).
-    pnl_price = (exit_price - entry) if side == "buy" else (entry - exit_price)
-    # Classer par le SIGNE du P&L (pas par le niveau touché) : avec un trailing,
-    # un SL remonté au-dessus de l'entrée donne un SL touché... GAGNANT.
-    eps = trade.get("_R", 0.0) * 1e-6
-    result = "win" if pnl_price > eps else ("loss" if pnl_price < -eps else "be")
-    # P&L en $ pondéré par la taille de lot (risque %), comme le live.
-    pnl_money = pnl_price * contract_size * trade.get("lot", 1.0)
-    trade.update(exit_time=_to_iso(c["time"]), exit_price=exit_price, pnl=pnl_money, result=result, _closed=True)
-    trades.append({k: v for k, v in trade.items() if not k.startswith("_")})
-    last_eq = equity_curve[-1]["equity"] + pnl_money
-    equity_curve.append({"time": _to_iso(c["time"]), "equity": last_eq})
+    while trade.get("_legs"):
+        leg = trade["_legs"][0]
+        hit = (c["high"] >= leg["price"]) if side == "buy" else (c["low"] <= leg["price"])
+        if not hit:
+            break
+        trade["_legs"].pop(0)
+        final = not trade["_legs"]
+        pct = trade["_remaining_pct"] if final else leg["close_pct"]
+        _realize(trade, leg["price"], pct, c, trades, equity_curve,
+                 contract_size, reason=leg["label"], final=final)
+        if trade.get("_closed"):
+            return
+        if leg.get("to_breakeven"):
+            be = trade["entry"]
+            if (side == "buy" and be > trade["sl"]) or (side == "sell" and be < trade["sl"]):
+                trade["sl"] = be
+        if trade["_legs"]:
+            trade["tp_next"] = trade["_legs"][0]["price"]
 
 
 def compute_trailing_sl(side: str, entry: float, current_sl: float, R: float, max_fav: float,
