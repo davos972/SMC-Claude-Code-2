@@ -139,7 +139,6 @@ async def health() -> Dict[str, Any]:
         "configured": metaapi_client.is_configured(),
         "metaapi": metaapi_client.get_status(),
         "bot": {"running": state.get("running", False), "stop_reason": state.get("stop_reason")},
-        "signal_only_mode": s.get("signal_only_mode", True),
     }
 
 
@@ -360,7 +359,7 @@ async def bot_start() -> Dict[str, Any]:
     })
     bot_loop.start(day_start_equity=equity)
     await _notify("success", "bot_stop", "Bot démarré",
-                  "Mode " + ("Signal uniquement" if s.get("signal_only_mode") else "Exécution automatique") + ".")
+                  f"Mode {s.get('trading_mode', 'intraday')} — exécution automatique.")
     return {"running": True, "stop_reason": None}
 
 
@@ -414,7 +413,6 @@ async def bot_state() -> Dict[str, Any]:
     state["effective_status"] = effective
     state["session"] = info
     state["rail"] = rail
-    state["signal_only_mode"] = s.get("signal_only_mode", True)
     state["trading_mode"] = s.get("trading_mode", "intraday")
     state["max_consec_losses"] = s.get("max_consec_losses", 3)
     state["max_drawdown_pct"] = s.get("max_drawdown_pct", 3.0)

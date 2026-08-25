@@ -269,13 +269,6 @@ export default function Settings({ settings, refresh }) {
                         testid="settings-trading-mode"
                     />
                 </Field>
-                <Toggle
-                    label="Mode signal uniquement"
-                    description="Le bot détecte et logge sans exécuter d'ordres."
-                    value={local.signal_only_mode}
-                    onChange={(v) => setAndSave("signal_only_mode", v)}
-                    testid="settings-signal-only"
-                />
                 <NumberField
                     label="Fenêtre sweep/CHoCH (bougies LTF)"
                     value={local.recent_window}
@@ -337,8 +330,8 @@ export default function Settings({ settings, refresh }) {
                             Mode tap : il suffit qu&apos;une bougie récente ait touché l&apos;order block
                             (mèches comprises) au lieu d&apos;exiger une clôture dedans. Prend beaucoup
                             plus de trades, mais <b>perdant sur le backtest 6 mois</b> (déc. 2025 → juin 2026 :
-                            profit factor 0,85–0,92, drawdown jusqu&apos;à 68%). À tester en backtest ou en
-                            mode signal uniquement — pas recommandé en exécution réelle.
+                            profit factor 0,85–0,92, drawdown jusqu&apos;à 68%). À vérifier en
+                            backtest avant toute utilisation.
                         </span>
                     </div>
                 )}
