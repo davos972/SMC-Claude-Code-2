@@ -1266,6 +1266,52 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_s
     return sig, None
 
 
+def params_from_settings(s: Dict[str, Any]) -> Dict[str, Any]:
+    """Réglages → arguments d'analyze(). SOURCE UNIQUE de cette conversion.
+
+    Les quatre appelants (bot live, backtest, analyse du dashboard, rejeu) doivent
+    produire EXACTEMENT la même analyse : sans ce point de passage unique, le graphique
+    finirait par afficher des zones tracées avec d'autres réglages que ceux qui décident
+    des trades. Même esprit que le moteur SMC unique partagé live + backtest.
+    """
+    s = s or {}
+    return {
+        "fractal_n": int(s.get("fractal_n", 3)),
+        "min_rr": float(s.get("min_rr", 2.0)),
+        "recent_window": int(s.get("recent_window", 6)),
+        "require_fvg": bool(s.get("require_fvg_entry", False)),
+        "require_sequence": bool(s.get("require_sweep_then_choch", False)),
+        "require_unmitigated": bool(s.get("require_unmitigated_ob", False)),
+        "require_pd": bool(s.get("require_premium_discount", True)),
+        "ob_entry_mode": str(s.get("ob_entry_mode", "close")),
+        "swing_method": str(s.get("swing_method", "two_candle")),
+        "swing_confirm": int(s.get("swing_confirm", 2)),
+        "ob_zone": str(s.get("ob_zone", "wick")),
+        "break_mode": str(s.get("structure_break_mode", "close")),
+        "tp_target": str(s.get("tp_target", "range_bound")),
+        "max_ob_touches": int(s.get("max_ob_touches", 0)),
+        "require_displacement": bool(s.get("require_displacement", False)),
+        "require_daily_bias": bool(s.get("require_daily_bias", False)),
+        "require_po3": bool(s.get("require_po3", False)),
+        "po3_wick_ratio": float(s.get("po3_wick_ratio", 0.20)),
+        "liquidity_cluster_atr": float(s.get("liquidity_cluster_atr", 0.25)),
+        "sl_mode": str(s.get("sl_mode", "poi")),
+        "require_inducement_swept": bool(s.get("require_inducement_swept", False)),
+        "require_second_choch": bool(s.get("require_second_choch", False)),
+        "second_choch_window": int(s.get("second_choch_window", 20)),
+        "use_asia_liquidity": bool(s.get("use_asia_liquidity", False)),
+        "use_pdh_pdl_liquidity": bool(s.get("use_pdh_pdl_liquidity", False)),
+        "asia_start_hour": int(s.get("asia_start_hour", 23)),
+        "asia_end_hour": int(s.get("asia_end_hour", 7)),
+        "asia_tz": str(s.get("asia_tz", "Europe/Paris")),
+        "poi_source": str(s.get("poi_source", "ob")),
+        "require_ote": bool(s.get("require_ote", False)),
+        "ote_low_pct": float(s.get("ote_low_pct", 0.618)),
+        "ote_high_pct": float(s.get("ote_high_pct", 0.786)),
+        "rejection_wick_ratio": float(s.get("rejection_wick_ratio", 0.5)),
+    }
+
+
 def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_entry: List[Candle],
             candles_daily: Optional[List[Candle]] = None,
             fractal_n: int = 3, min_rr: float = 2.0, recent_window: int = 6,

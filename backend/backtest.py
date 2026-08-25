@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from smc import analyze
+from smc import analyze, params_from_settings
 import sessions as sess
 
 logger = logging.getLogger(__name__)
@@ -153,44 +153,11 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     htf = settings.get("intraday_htf", "H1") if mode == "intraday" else settings.get("scalping_htf", "H1")
     mtf = settings.get("intraday_mtf", "M15") if mode == "intraday" else settings.get("scalping_mtf", "M15")
     ltf = settings.get("intraday_ltf", "M5") if mode == "intraday" else settings.get("scalping_ltf", "M1")
-    min_rr = float(settings.get("min_rr", 2.0))
-    fractal_n = int(settings.get("fractal_n", 3))
-    recent_window = int(settings.get("recent_window", 6))
-    require_fvg = bool(settings.get("require_fvg_entry", True))
-    require_sequence = bool(settings.get("require_sweep_then_choch", True))
-    require_unmitigated = bool(settings.get("require_unmitigated_ob", True))
-    require_pd = bool(settings.get("require_premium_discount", True))
-    ob_entry_mode = str(settings.get("ob_entry_mode", "close"))
-    # Méthodes de tracé (Manuel de détection + Synthèse V3, cf. DECISIONS.md 2026-08-25).
-    # Priorité à la requête pour pouvoir comparer deux méthodes sans toucher aux Réglages.
-    def _dparam(key, default):
-        v = req.get(key)
-        return v if v is not None else settings.get(key, default)
-    swing_method = str(_dparam("swing_method", "two_candle"))
-    swing_confirm = int(_dparam("swing_confirm", 2))
-    ob_zone = str(_dparam("ob_zone", "wick"))
-    break_mode = str(_dparam("structure_break_mode", "close"))
-    tp_target = str(_dparam("tp_target", "range_bound"))
-    max_ob_touches = int(_dparam("max_ob_touches", 0))
-    require_displacement = bool(_dparam("require_displacement", False))
-    require_daily_bias = bool(_dparam("require_daily_bias", False))
-    require_po3 = bool(_dparam("require_po3", False))
-    po3_wick_ratio = float(_dparam("po3_wick_ratio", 0.20))
-    liquidity_cluster_atr = float(_dparam("liquidity_cluster_atr", 0.25))
-    sl_mode = str(_dparam("sl_mode", "poi"))
-    require_inducement_swept = bool(_dparam("require_inducement_swept", False))
-    require_second_choch = bool(_dparam("require_second_choch", False))
-    second_choch_window = int(_dparam("second_choch_window", 20))
-    use_asia_liquidity = bool(_dparam("use_asia_liquidity", False))
-    use_pdh_pdl_liquidity = bool(_dparam("use_pdh_pdl_liquidity", False))
-    asia_start_hour = int(_dparam("asia_start_hour", 23))
-    asia_end_hour = int(_dparam("asia_end_hour", 7))
-    asia_tz = str(_dparam("asia_tz", "Europe/Paris"))
-    poi_source = str(_dparam("poi_source", "ob"))
-    require_ote = bool(_dparam("require_ote", False))
-    ote_low_pct = float(_dparam("ote_low_pct", 0.618))
-    ote_high_pct = float(_dparam("ote_high_pct", 0.786))
-    rejection_wick_ratio = float(_dparam("rejection_wick_ratio", 0.5))
+    # Conversion réglages → paramètres du moteur : SOURCE UNIQUE partagée avec le bot
+    # live et l'analyse du dashboard (smc.params_from_settings). La requête a priorité
+    # sur les Réglages pour pouvoir comparer deux méthodes sans rien changer dans l'app.
+    smc_params = params_from_settings(
+        {**settings, **{k: v for k, v in req.items() if v is not None}})
     # Trailing / break-even (OFF par défaut = aucun changement vs baseline).
     # Logique PARTAGÉE avec le live (bot_loop._apply_trailing utilise le même
     # compute_trailing_sl ; en live il est piloté par les Réglages).
@@ -371,27 +338,7 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
             continue
 
         result = analyze(htf_window, mtf_window, ltf_window, d1_window or None,
-                         fractal_n=fractal_n, min_rr=min_rr,
-                         recent_window=recent_window, require_fvg=require_fvg,
-                         require_sequence=require_sequence, require_unmitigated=require_unmitigated,
-                         require_pd=require_pd, ob_entry_mode=ob_entry_mode,
-                         swing_method=swing_method, swing_confirm=swing_confirm,
-                         ob_zone=ob_zone, break_mode=break_mode, tp_target=tp_target,
-                         max_ob_touches=max_ob_touches,
-                         require_displacement=require_displacement,
-                         require_daily_bias=require_daily_bias, require_po3=require_po3,
-                         po3_wick_ratio=po3_wick_ratio,
-                         liquidity_cluster_atr=liquidity_cluster_atr, sl_mode=sl_mode,
-                         require_inducement_swept=require_inducement_swept,
-                         require_second_choch=require_second_choch,
-                         second_choch_window=second_choch_window,
-                         use_asia_liquidity=use_asia_liquidity,
-                         use_pdh_pdl_liquidity=use_pdh_pdl_liquidity,
-                         asia_start_hour=asia_start_hour, asia_end_hour=asia_end_hour,
-                         asia_tz=asia_tz, poi_source=poi_source,
-                         require_ote=require_ote, ote_low_pct=ote_low_pct,
-                         ote_high_pct=ote_high_pct,
-                         rejection_wick_ratio=rejection_wick_ratio)
+                         **smc_params)
         sig = result.get("signal")
         if sig:
             entry_price = sig["entry"] + (spread_price if sig["side"] == "buy" else -spread_price)

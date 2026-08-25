@@ -33,7 +33,7 @@ from metaapi_client import (  # noqa: E402
     MetaApiNotConfiguredError,
     metaapi_client,
 )
-from smc import analyze  # noqa: E402
+from smc import analyze, params_from_settings as smc_params  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("goldflow")
@@ -465,10 +465,15 @@ async def run_analysis(symbol: str = Body(default="XAUUSD", embed=True),
         htf = s.get("intraday_htf" if mode == "intraday" else "scalping_htf", "H1")
         mtf = s.get("intraday_mtf" if mode == "intraday" else "scalping_mtf", "M15")
         ltf = s.get("intraday_ltf" if mode == "intraday" else "scalping_ltf", "M5")
+    # Etage journalier (4e niveau) : jamais en mono-timeframe, ou le graphique
+    # afficherait un contexte qui n'est pas celui de la timeframe regardee.
+    d1_tf = "" if timeframe else str(
+        s.get("intraday_d1" if mode == "intraday" else "scalping_d1", "") or "")
 
     if not metaapi_client.is_configured():
         return {"configured": False, "error": "MetaApi non configuré.", "result": None}
 
+    d1_candles: List[Dict[str, Any]] = []
     try:
         if timeframe:
             ltf_candles = await metaapi_client.get_candles(symbol, timeframe, None, 300)
@@ -479,6 +484,13 @@ async def run_analysis(symbol: str = Body(default="XAUUSD", embed=True),
             ltf_candles = await metaapi_client.get_candles(symbol, ltf, None, 300)
     except MetaApiConnectionError as e:
         return {"configured": True, "error": str(e), "result": None}
+    if d1_tf:
+        # Enrichissement : son indisponibilite ne doit pas faire echouer l'analyse.
+        try:
+            d1_candles = await metaapi_client.get_candles(
+                symbol, d1_tf, None, bt_engine.WINDOW_D1)
+        except MetaApiConnectionError as e:
+            logger.warning("Contexte journalier (%s) indisponible: %s", d1_tf, e)
 
     # Normalize candle times to ISO strings for JSON
     def _norm(arr):
@@ -496,7 +508,8 @@ async def run_analysis(symbol: str = Body(default="XAUUSD", embed=True),
     htf_norm = _norm(htf_candles)
     mtf_norm = _norm(mtf_candles)
     ltf_norm = _norm(ltf_candles)
-    # Analyse 3 niveaux : MÊMES fenêtres que le backtest et le bot live. La branche
+    d1_in = _norm(d1_candles) or None
+    # Analyse 4 niveaux : MÊMES fenêtres que le backtest et le bot live. La branche
     # mono-timeframe (graphique) garde ses 300 bougies : c'est de l'affichage de
     # zones, pas une décision de trading — les tronquer ferait disparaître les
     # zones anciennes du graphique.
@@ -506,15 +519,8 @@ async def run_analysis(symbol: str = Body(default="XAUUSD", embed=True),
         htf_in = htf_norm[-bt_engine.WINDOW_HTF:]
         mtf_in = mtf_norm[-bt_engine.WINDOW_MTF:]
         ltf_in = ltf_norm[-bt_engine.WINDOW_LTF:]
-    result = analyze(htf_in, mtf_in, ltf_in,
-                     fractal_n=int(s.get("fractal_n", 3)),
-                     min_rr=float(s.get("min_rr", 2.0)),
-                     recent_window=int(s.get("recent_window", 6)),
-                     require_fvg=bool(s.get("require_fvg_entry", True)),
-                     require_sequence=bool(s.get("require_sweep_then_choch", True)),
-                     require_unmitigated=bool(s.get("require_unmitigated_ob", True)),
-                     require_pd=bool(s.get("require_premium_discount", True)),
-                     ob_entry_mode=str(s.get("ob_entry_mode", "close")))
+    result = analyze(htf_in, mtf_in, ltf_in, d1_in,
+                     **smc_params(s))
 
     if persist:
         sig = result.get("signal")
@@ -554,6 +560,8 @@ async def analysis_at_time(symbol: str = "XAUUSD", timestamp: str = "",
     htf = s.get("intraday_htf" if mode == "intraday" else "scalping_htf", "H1")
     mtf = s.get("intraday_mtf" if mode == "intraday" else "scalping_mtf", "M15")
     ltf = s.get("intraday_ltf" if mode == "intraday" else "scalping_ltf", "M5")
+    d1_tf = str(s.get("intraday_d1" if mode == "intraday" else "scalping_d1", "") or "")
+    d1_candles: List[Dict[str, Any]] = []
     try:
         from datetime import datetime as _dt
         end_dt = _dt.fromisoformat(timestamp.replace("Z", "+00:00")) if timestamp else None
@@ -562,6 +570,13 @@ async def analysis_at_time(symbol: str = "XAUUSD", timestamp: str = "",
         ltf_candles = await metaapi_client.get_candles(symbol, ltf, end_dt, min(window, 500))
     except Exception as e:
         return {"configured": True, "error": f"{type(e).__name__}: {e}", "result": None, "candles_ltf": []}
+    if d1_tf:
+        # Enrichissement : son absence ne doit pas casser le rejeu.
+        try:
+            d1_candles = await metaapi_client.get_candles(
+                symbol, d1_tf, end_dt, bt_engine.WINDOW_D1)
+        except Exception as e:
+            logger.warning("Rejeu : contexte journalier (%s) indisponible: %s", d1_tf, e)
 
     def _norm(arr):
         out = []
@@ -578,18 +593,12 @@ async def analysis_at_time(symbol: str = "XAUUSD", timestamp: str = "",
     htf_norm = _norm(htf_candles)
     mtf_norm = _norm(mtf_candles)
     ltf_norm = _norm(ltf_candles)
+    d1_norm = _norm(d1_candles)
     # Rejeu : mêmes fenêtres d'analyse que le backtest/live ; l'affichage (candles_ltf)
     # garde toutes les bougies demandées.
     result = analyze(htf_norm[-bt_engine.WINDOW_HTF:], mtf_norm[-bt_engine.WINDOW_MTF:],
-                     ltf_norm[-bt_engine.WINDOW_LTF:],
-                     fractal_n=int(s.get("fractal_n", 3)),
-                     min_rr=float(s.get("min_rr", 2.0)),
-                     recent_window=int(s.get("recent_window", 6)),
-                     require_fvg=bool(s.get("require_fvg_entry", True)),
-                     require_sequence=bool(s.get("require_sweep_then_choch", True)),
-                     require_unmitigated=bool(s.get("require_unmitigated_ob", True)),
-                     require_pd=bool(s.get("require_premium_discount", True)),
-                     ob_entry_mode=str(s.get("ob_entry_mode", "close")))
+                     ltf_norm[-bt_engine.WINDOW_LTF:], d1_norm or None,
+                     **smc_params(s))
     return {
         "configured": True, "result": result, "candles_ltf": ltf_norm,
         "mode": mode, "htf": htf, "mtf": mtf, "ltf": ltf, "timestamp": timestamp,
