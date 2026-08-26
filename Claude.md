@@ -117,20 +117,29 @@ comparaisons du 2026-07-28 (`_compare_entry_options`) et la première matrice de
 variantes du 2026-08-25/26. Ordre de grandeur mesuré sur 6 mois de XAUUSD M1 : ligne de
 base PF 0,85 → 0,81 ; filtre Daily Bias PF 1,52 → 0,80.
 
+### Campagne de backtests du 2026-08-26 (moteur corrigé) — points 1 à 4 traités
+
+47 configurations rejouées sur 6 mois de M1 réel + validation **hors échantillon**
+(12 juin → 26 août). Détail complet : DECISIONS.md 2026-08-26. En résumé :
+
+- **Retenu, pas encore appliqué en prod** : `require_unmitigated_ob` + `sl_mode="protected"`
+  (243 trades, PF 1,26, DD 8 %, t +1,68 ; au-dessus de la référence sur les deux périodes)
+- **Piège évité** : `ob_entry_mode="zone_50"` finissait n°1 en étude (PF 1,43, t +2,06) et
+  fait **0,72** hors échantillon. → **Toute règle candidate doit battre la référence sur
+  les DEUX périodes.** Un t significatif sur la seule période d'étude ne prouve rien
+- **Power of 3 (question en suspens) : tranchée.** Seuils 0,20 / 0,35 / 0,50 testés, aucun
+  n'aide (0,93-0,95 vs 0,97). Ne pas y revenir sans nouvelle donnée
+- **Daily Bias sur XAUUSD** : positif mais sur trop peu de trades (104) pour conclure
+- **TP partiels vs TP unique** : winrate 49 % vs 32 %, PF identique — confort de lecture,
+  pas d'espérance en plus
+- **Dégradent la référence** : OTE (0,71), inducement (0,79), FVG obligatoire (0,82),
+  Rejection block (0,90), séquence sweep→CHoCH (0,94), sans premium/discount (0,94)
+
 ### Ce qui reste à faire
 
-1. **Backtester sur 6 mois réels avec le moteur corrigé** — c'est LA priorité. Rien de ce
-   qui a été ajouté n'a été validé sur données réelles. Suivre le plan variable par
-   variable du §8 **et son protocole obligatoire** (dépôt à jour + réglages validés par
-   David avant lancement).
-2. **Comparer TP partiels vs TP unique** sur ces données réelles (`partial_tp_enabled`).
-3. **Régler le seuil du Power of 3** (`po3_wick_ratio`, défaut 0,20) : à cette valeur le
-   filtre ne rejette presque rien — le document dit lui-même que 97,75% des bougies
-   journalières ont une mèche opposée. Le monter pour qu'il filtre vraiment. **Question
-   laissée en suspens avec David.**
-4. **Valider Daily Bias et PO3 sur XAUUSD** avant d'activer leurs filtres (D2②) : les
-   68% et 97,75% viennent de GER40 et d'indices, pas de l'or.
-5. Non implémentés volontairement : **OB 2.0** (impose un 5e étage de timeframe) et
+1. **Valider en démo** la configuration retenue avant de l'appliquer en prod (t +1,68 < 2 :
+   piste sérieuse, pas preuve).
+2. Non implémentés volontairement : **OB 2.0** (impose un 5e étage de timeframe) et
    **SMT Divergence** (impose de suivre un 2e instrument corrélé en continu, casserait
    l'architecture mono-symbole). La Synthèse V3 les classe elle-même en dernier.
 
@@ -191,6 +200,11 @@ Avant de lancer le moindre backtest, dans cet ordre :
    (base Atlas), pour qu'il sache ce qui est testé vs ce qui tourne.
 4. À la restitution : dire quel moteur (commit) a produit les chiffres, et ce qui n'est
    pas modélisé (commissions, slippage, exécution partielle).
+5. **Ne JAMAIS modifier `smc.py`/`backtest.py` pendant qu'une matrice de backtests
+   tourne.** Chaque backtest est un processus séparé qui importe le moteur à son
+   démarrage : une édition en cours de route fait planter ceux qui démarrent pendant
+   la fenêtre d'incohérence (vécu le 2026-08-26 : 8 runs perdus sur un `NameError`),
+   et pire, ceux qui passent tournent avec une version différente des autres.
 
 ## 9. Garde-fous pour Claude Code
 

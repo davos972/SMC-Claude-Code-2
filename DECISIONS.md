@@ -16,6 +16,35 @@
 
 ---
 
+## 2026-08-26 — Campagne de backtests sur moteur corrigé : validation hors échantillon obligatoire
+**Décision :** toute règle SMC candidate doit battre la référence sur DEUX périodes — la
+période d'étude (15 déc. 2025 → 12 juin 2026) ET une période hors échantillon jamais
+utilisée pour choisir (12 juin → 26 août 2026, cache téléchargé après coup). Un bon score
+sur la seule période d'étude ne vaut rien. Réglages de la campagne (validés par David) :
+étages D1→H1→M15→M5, sessions Londres 08:00-17:00 et New York 08:00-17:00 (heures locales),
+spread 16 points (Axi), capital = solde réel du compte, risque 1 %, trades/jour illimités,
+arrêt à 3 pertes dans la même session, TP partiels actifs, confluences toutes OFF au départ.
+**Retenu :** `require_unmitigated_ob = True` + `sl_mode = "protected"` — 243 trades sur
+8,5 mois, PF 1,26, DD 8,0 %, t +1,68, au-dessus de la référence sur les DEUX périodes
+(1,21 vs 0,97 en étude ; 1,38 vs 1,30 hors échantillon). C'est la Smart Money Trap du
+Manuel (§4.1 : ne pas entrer sur un OB déjà mitigé) plus le SL structurel de la Synthèse
+(étape 8). **Pas encore appliqué en prod** : t < 2, donc piste sérieuse, pas preuve.
+**Écarté — et c'est le résultat important :** `ob_entry_mode = "zone_50"` (entrée sous la
+médiane de l'OB) finissait **n°1** de la période d'étude — 176 trades, PF 1,36, puis 1,43
+combinée au SL protégé, avec t = +2,06, le seul résultat significatif de la matrice. Hors
+échantillon : **PF 0,72**, très en dessous d'une référence à 1,30. Sans le découpage en
+deux périodes, cette configuration serait partie en production. Idem pour toutes ses
+combinaisons (second CHOCH : 2,54 → 0,35).
+**Également écarté :** OTE (PF 0,71, le plus destructeur), inducement pris (0,79), FVG
+obligatoire (0,82), Rejection block (0,90), séquence sweep→CHoCH (0,94), retrait du filtre
+premium/discount (0,94 — le noyau du document tient). **Power of 3 : question du seuil
+tranchée** — testé à 0,20 / 0,35 / 0,50, aucun n'aide (0,93-0,95 contre 0,97 pour la
+référence). Ce n'est pas un problème de calibrage, le filtre n'apporte rien sur l'or ;
+ses 97,75 % viennent d'indices. **TP partiels vs TP unique** : winrate 49 % contre 32 %,
+mais PF identique (0,97 vs 1,00) — ils lissent la courbe, ils n'ajoutent pas d'espérance.
+**Non modélisé :** commissions, slippage, exécution partielle, filtre news. Scripts :
+`backend/_matrix2.py`, `_oos.py`, `_report2.py` (jetables, convention `_*`).
+
 ## 2026-08-26 — La raison d'un signal décrit ce qui s'est vraiment produit
 **Décision :** `smc._signal_reason` compose le texte du signal à partir des conditions
 RÉELLEMENT constatées : déclencheur (`Sweep→CHoCH` / `CHoCH→Sweep` selon l'ordre réel des
