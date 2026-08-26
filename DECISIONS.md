@@ -16,6 +16,32 @@
 
 ---
 
+## 2026-08-26 (suite) — Troisième période : le SL protégé sort, l'OB non mitigé confirme
+**Décision :** à la demande de David (« juin-août 2026 et le début 2026 sont des périodes
+spéciales »), les 47 configurations ont été rejouées sur un TROISIÈME jeu de données
+indépendant : juillet → décembre 2025 (cache `_m1_cache_XAUUSD_2025-05-01_2026-01-01.json`,
+238 257 bougies M1, mai-juin en chauffe). L'or y monte de 3 311 à 4 311 $ — une forte
+tendance haussière, régime différent des deux autres. Référence : PF 0,99 sur 183 trades.
+**Ce qui change :** `sl_mode="protected"` est RETIRÉ de la recommandation. Sur les trois
+périodes il fait +0,03 / +0,09 / −0,26 par rapport à la référence : il n'ajoute rien à
+l'order block non mitigé, qui suffit seul.
+**Recommandation finale :** `require_unmitigated_ob = True` seul — 447 trades cumulés,
+PF 1,18, t +1,62, au-dessus de la référence sur les TROIS périodes (1,10 / 1,10 / 1,58 contre
+0,99 / 0,97 / 1,30), et il ne coupe que 3 % des opportunités. Second choix, à considérer
+ensuite : `require_daily_bias` — plus gros avantage par trade (PF 1,34 cumulé, t +1,69,
+3/3) mais il divise le nombre de trades par quatre, donc quatre fois plus de temps pour
+valider en démo.
+**Sept configurations sur 47 battent la référence sur les trois périodes** : Daily Bias,
+TP proche + Daily Bias, OB non mitigé, OB non mitigé + SL protégé, OB non mitigé + TP
+proche + Daily Bias, OB non mitigé + Daily Bias, TP au swing le plus proche. Toutes les
+combinaisons bâties sur `ob_entry_mode="zone_50"` sont 2/3 (elles s'effondrent hors
+échantillon), confirmant le diagnostic de surapprentissage.
+**Le noyau seul ne gagne pas :** référence cumulée sur les trois périodes = 488 trades,
+PF 1,02, t +0,22. Sans au moins une confluence validée, la stratégie est à l'équilibre.
+**Écarté :** conclure sur deux périodes. Sur les deux premières, `sl_mode="protected"`
+semblait acquis (3/3 en apparence) ; la troisième l'a départagé. Règle : une période
+supplémentaire coûte 30 minutes de calcul et évite un mauvais réglage en production.
+
 ## 2026-08-26 — Campagne de backtests sur moteur corrigé : validation hors échantillon obligatoire
 **Décision :** toute règle SMC candidate doit battre la référence sur DEUX périodes — la
 période d'étude (15 déc. 2025 → 12 juin 2026) ET une période hors échantillon jamais
