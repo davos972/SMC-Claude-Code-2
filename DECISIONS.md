@@ -16,6 +16,69 @@
 
 ---
 
+## 2026-08-26 (suite) — Documentation : un rôle par fichier, et un §0 « État courant »
+**Décision :** les quatre documents Markdown du projet cessent de raconter la même chose.
+Rôles exclusifs, énoncés en tête de `CLAUDE.md` : **`CLAUDE.md`** = ce qui EST vrai
+aujourd'hui (état, règles, garde-fous, commandes) ; **`DECISIONS.md`** = le POURQUOI daté ;
+**`REPRISE.md`** = le bloc à copier-coller pour ouvrir une session, qui ne décrit rien et
+ne fait que pointer ; **`CONTEXTE-COWORK.md`** = le seul brief autonome, pour un assistant
+sans accès au dépôt, explicitement subordonné au §0 de `CLAUDE.md` en cas de contradiction.
+`CLAUDE.md` gagne un **§0 « État courant »** en tête (commit déployé, état du bot, décision
+en attente, chantiers ouverts), un **§0bis** comparant les trois jeux de réglages qui
+coexistent, et un **§0ter** listant les résultats de backtest déjà acquis pour que personne
+ne les rejoue. Le §7 devient une table de renvoi vers ce fichier au lieu d'un troisième
+récit. La numérotation §1–§13 est conservée : `DECISIONS.md` (§9) et `CONTEXTE-COWORK.md`
+(§12) y renvoient.
+**Pourquoi :** l'audit a trouvé le commit de prod **faux** dans `CLAUDE.md` (`dc84d1d` au
+lieu de `698ceba`), trois travaux terminés encore listés comme « marche à suivre »
+prioritaire (connexion MetaApi, audit du graphique, fiabilisation du backtest), une
+instruction « vérifier que c'est implémenté » sur du code implémenté depuis longtemps, et
+une contradiction directe entre le §11 (« fichiers `_*` supprimables sans risque ») et le
+§7 (« caches à réutiliser ») — un modèle appliquant le §11 effaçait des heures de
+téléchargement MetaApi. Toutes ces erreurs viennent du même mécanisme : le même fait
+recopié dans plusieurs fichiers, mis à jour dans un seul.
+**Découvert au passage, et c'est le plus important :** le dépôt GitHub n'est pas
+`davos972/SMC-APP` (affirmé depuis l'origine) mais **`davos972/SMC-Claude-Code-2`**.
+Surtout, **l'écart entre la prod et ce qui a été mesuré est bien plus large que les seules
+sessions**. D'après `_prod_settings.json` (snapshot Atlas du 2026-08-25), la prod tourne en
+mode **scalping H1→M5→M1→M1** avec **RR minimum 1** et **TP partiels désactivés**, alors
+que la campagne des 47 configurations a mesuré **intraday D1→H1→M15→M5, RR 2, TP partiels
+actifs**. Aucun chiffre de la campagne ne décrit ce que ferait la prod dans son état
+actuel. À noter aussi : `scalping_mtf` et `scalping_ltf` valent tous deux M1 — structure
+et déclencheur sur la même timeframe, ce qui n'est pas l'analyse à quatre étages du §3 et
+n'a jamais été mesuré.
+**Écarté :** (1) supprimer `CONTEXTE-COWORK.md` comme pur doublon — il a un public réel
+(un assistant sans accès au dépôt) ; il est conservé, corrigé, et explicitement subordonné.
+(2) Renuméroter les sections de `CLAUDE.md` pour insérer l'état courant — deux fichiers
+pointent sur des numéros ; le §0 évite la casse. (3) Purger l'historique du §7 : les
+résultats de backtest acquis (§0ter) doivent rester dans `CLAUDE.md`, pas seulement ici,
+sinon quelqu'un rejouera OTE ou Power of 3.
+**Complément du même jour — les documents SMC entrent dans le dépôt.** Le `CLAUDE.md` et
+`backend/smc.py` citaient le « Manuel de détection SMC » et la « Synthèse stratégie V3 »
+une trentaine de fois, avec numéros de section, alors que **ni l'un ni l'autre n'était
+dans le projet** : aucune règle du moteur n'était vérifiable à la source. David les a
+fournis ; ils sont désormais dans `repo/docs/`, en `.docx` (qui fait foi) **et** en
+conversion Markdown lisible et cherchable. La correspondance des numéros a été vérifiée
+une par une (Manuel §3.2 = IFVG, §3.3 = BPR, §4.1 = Order Block, §6.1 = Range asiatique ;
+V3 §5.8, §Étape 5, §10 = noyau/confluences) — elle colle exactement.
+**Écarté :** (1) ne verser que le `.md` — le `.docx` est l'original de David, le perdre
+serait perdre l'autorité ; (2) ne verser que le `.docx` — illisible par `grep` et par un
+modèle sans convertisseur, donc inutile en pratique ; (3) utiliser `pandoc` ou
+`python-docx` : aucun des deux n'est installé sur le PC de David, d'où `docs/docx2md.py`,
+écrit avec la seule bibliothèque standard et versé avec les documents pour que la
+conversion reste reproductible.
+**Écart documenté au passage :** le §10 de la Synthèse V3 met **sweep ET CHOCH** dans le
+noyau ; le moteur exige sweep **OU** CHoCH (`smc.py:1207`). Ce n'est pas un oubli : imposer
+la séquence a été mesuré et dégrade les résultats (PF 0,94 vs 0,97). Le réglage existe
+(`require_sweep_then_choch`), il reste OFF. C'est écrit dans `docs/README.md` pour que
+personne ne « corrige » le code vers le document sans refaire la mesure.
+
+**Vérifié, pas supposé :** timeouts MetaApi à 240 s, instance `apiLong`, progression et
+annulation du backtest, styles et calques du graphique, repli `.env` sur les tokens,
+absence d'affichage de `last_error` dans `frontend/src`, limite des 6 mois côté API,
+et `py -m pytest backend/tests/test_backtest_lookahead.py backend/tests/test_signal_reason.py`
+→ **11 passed**. Aucun code modifié : cette entrée ne concerne que la documentation.
+
 ## 2026-08-26 (suite) — Troisième période : le SL protégé sort, l'OB non mitigé confirme
 **Décision :** à la demande de David (« juin-août 2026 et le début 2026 sont des périodes
 spéciales »), les 47 configurations ont été rejouées sur un TROISIÈME jeu de données
