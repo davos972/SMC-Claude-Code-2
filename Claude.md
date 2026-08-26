@@ -19,8 +19,12 @@
 ## 0. ÉTAT COURANT — 2026-08-26
 
 **Ce qui tourne.** Prod sur Render (`goldflow-backend` + `goldflow-frontend`), base
-MongoDB Atlas, `main` = **`698ceba`**. Le bot est **à l'arrêt** (`bot_running: false`)
-et David a demandé qu'il le reste tant qu'il n'a pas tranché le point 1 ci-dessous.
+MongoDB Atlas. **La prod tourne sur `origin/main`, pas sur la copie locale** — le vrai
+numéro se lit toujours avec `git rev-parse --short origin/main`, ne jamais le supposer.
+Dernier commit fonctionnel déployé : **`698ceba`** (2026-08-26) ; les commits postérieurs
+de ce jour sont documentaires et ne changent aucun comportement.
+Le bot est **à l'arrêt** (`bot_running: false`) et David a demandé qu'il le reste tant
+qu'il n'a pas tranché le point 1 ci-dessous.
 
 ⚠️ **L'APK Android tourne encore sur `d90c6a7`** (n° 9). Le frontend n'a pas changé
 depuis, donc ce n'est pas bloquant — mais ne pas prétendre le contraire à David.
