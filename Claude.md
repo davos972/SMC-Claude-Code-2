@@ -122,8 +122,13 @@ base PF 0,85 → 0,81 ; filtre Daily Bias PF 1,52 → 0,80.
 47 configurations rejouées sur 6 mois de M1 réel + validation **hors échantillon**
 (12 juin → 26 août). Détail complet : DECISIONS.md 2026-08-26. En résumé :
 
-- **Retenu, pas encore appliqué en prod** : `require_unmitigated_ob` + `sl_mode="protected"`
-  (243 trades, PF 1,26, DD 8 %, t +1,68 ; au-dessus de la référence sur les deux périodes)
+- **Trois périodes indépendantes** (juil.→déc. 2025, déc. 2025→juin 2026, juin→août 2026).
+  Une règle ne compte que si elle bat la référence sur les TROIS. Référence cumulée :
+  488 trades, PF 1,02 — **le noyau seul est à l'équilibre**
+- **Retenu, pas encore appliqué en prod** : `require_unmitigated_ob` SEUL (447 trades,
+  PF 1,18, t +1,62, 3/3, ne coupe que 3 % des trades). `sl_mode="protected"` a été retiré
+  après la 3e période (+0,03 / +0,09 / −0,26 vs référence : n'ajoute rien). Second choix :
+  `require_daily_bias` (PF 1,34, t +1,69, 3/3, mais 4× moins de trades)
 - **Piège évité** : `ob_entry_mode="zone_50"` finissait n°1 en étude (PF 1,43, t +2,06) et
   fait **0,72** hors échantillon. → **Toute règle candidate doit battre la référence sur
   les DEUX périodes.** Un t significatif sur la seule période d'étude ne prouve rien
