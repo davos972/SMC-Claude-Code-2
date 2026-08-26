@@ -16,6 +16,35 @@
 
 ---
 
+## 2026-08-26 — La raison d'un signal décrit ce qui s'est vraiment produit
+**Décision :** `smc._signal_reason` compose le texte du signal à partir des conditions
+RÉELLEMENT constatées : déclencheur (`Sweep→CHoCH` / `CHoCH→Sweep` selon l'ordre réel des
+index / `Sweep seul` / `CHoCH seul`), présence ou non d'une FVG non comblée, type de POI
+retenu (OB / BPR / Breaker / Mitigation / Rejection, lu dans `poi.zone`) et son état
+mitigé ou non, mode d'entrée (`dans` / `tap sur` / `sous la médiane de`), zone
+premium/discount déduite du **prix réel** et non du sens du trade, et en suffixe les
+confluences vérifiées (`displacement`, `inducement pris`, `2e CHoCH`). `fvg_ok` est donc
+calculé même quand `require_fvg_entry` est désactivé. Quand tous les filtres du noyau sont
+actifs, le texte produit est **identique au mot près** à l'ancien.
+Tests : `backend/tests/test_signal_reason.py` (8 tests unitaires).
+**Pourquoi :** le texte était figé (`"Sweep→CHoCH + FVG dans OB {zone}"`) alors que les
+filtres sont désactivables et le sont en prod. Mesuré sur un mois réel de XAUUSD avec les
+réglages de backtest validés : sur 45 trades, **0** n'avait la séquence sweep→CHoCH,
+**aucun** n'avait de FVG, et 9 étaient sur un OB déjà mitigé — tous étiquetés
+« Sweep→CHoCH + FVG ». David lit ce journal pour comprendre le bot ; un texte décoratif y
+est un mensonge, pas un détail cosmétique.
+**Écarté :** (1) ajouter des champs booléens structurés au `Signal` et composer la phrase
+côté frontend — plus lourd (migration Mongo, 2 écrans) sans rien apporter à la lecture ;
+à reconsidérer le jour où on voudra filtrer les trades par type de déclencheur. (2) Se
+contenter du snapshot des réglages déjà stocké dans `trades` — il dit quels filtres
+étaient actifs, pas ce qui s'est produit sur CE setup (filtre FVG désactivé, une FVG peut
+être présente ou non). (3) Ajouter un champ `kind` à `OrderBlock` pour nommer le type de
+POI — inutile, `zone` porte déjà l'information.
+**Note :** cette décision avait été prise le 2026-08-25 sur l'ancien `smc.py` ; ces
+travaux, non commités, ont été rendus caducs par la réécriture du moteur du même jour.
+Réimplémentée ici sur le nouveau moteur, enrichie des nouveaux types de POI et des
+confluences.
+
 ## 2026-08-26 — Le backtest lisait le futur (anticipation sur les étages HTF/MTF/D1)
 **Décision :** les fenêtres d'analyse des étages supérieurs ne sont plus découpées par
 `bisect.bisect_right(htf_times, cur_time)` sur les temps de **début** de bougie. Une

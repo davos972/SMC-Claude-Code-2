@@ -1088,6 +1088,55 @@ _OUT_OF_ZONE_REASONS = {
 }
 
 
+# Libellé lisible du type de POI retenu. La zone porte déjà l'information : "wick"/"body"
+# = order block classique, les autres = blocs dérivés (Manuel §3.3, §4.3-4.5).
+_POI_LABELS = {"bpr": "BPR", "breaker": "Breaker", "mitigation": "Mitigation block",
+               "rejection": "Rejection block"}
+
+
+def _signal_reason(side, rr, last_close, pd_struct, poi, ob_entry_mode,
+                   has_sweep, has_choch, choch_after_sweep, fvg_ok,
+                   displacement_ok=False, inducement_swept=False,
+                   second_choch_ok=False) -> str:
+    """Raison LISIBLE d'un signal accepté, construite à partir des conditions
+    RÉELLEMENT constatées — jamais d'un texte figé.
+
+    Les filtres d'entrée sont désactivables et le sont en pratique : un signal peut naître
+    d'un simple sweep, sans FVG, sur un OB déjà mitigé. Le journal doit le dire, sinon
+    David lit « Sweep→CHoCH + FVG » pour un trade qui n'avait ni CHoCH ni FVG.
+
+    Exemples :
+      "Sweep→CHoCH + FVG dans OB discount → BUY (RR 1:2.35)"      (tous filtres actifs)
+      "Sweep seul sans FVG dans OB mitigé premium → SELL (RR 1:2.10)"
+      "CHoCH seul + FVG dans Breaker discount · displacement → BUY (RR 1:1.80)"
+    """
+    if has_sweep and has_choch:
+        trigger = "Sweep→CHoCH" if choch_after_sweep else "CHoCH→Sweep"
+    elif has_sweep:
+        trigger = "Sweep seul"
+    elif has_choch:
+        trigger = "CHoCH seul"
+    else:  # inatteignable : l'étape 3 exige au moins un déclencheur
+        trigger = "Sans déclencheur"
+
+    fvg_txt = "+ FVG" if fvg_ok else "sans FVG"
+    # Zone déduite du PRIX réel (et non du sens du trade) : avec require_premium_discount
+    # désactivé, un achat peut se faire en premium — il faut que ça se voie.
+    mid = pd_struct.get("mid") if pd_struct else None
+    zone = "" if mid is None else (" discount" if last_close <= mid else " premium")
+    label = _POI_LABELS.get(getattr(poi, "zone", "wick"), "OB")
+    if getattr(poi, "mitigated", False):
+        label += " mitigé" if label == "OB" else " (mitigé)"
+    # Mode d'entrée : le prix n'est pas au même endroit de la zone selon le réglage.
+    placement = {"tap": "tap sur", "zone_50": "sous la médiane de"}.get(ob_entry_mode, "dans")
+    extras = [t for t, ok in (("displacement", displacement_ok),
+                              ("inducement pris", inducement_swept),
+                              ("2e CHoCH", second_choch_ok)) if ok]
+    suffix = (" · " + " · ".join(extras)) if extras else ""
+    return (f"{trigger} {fvg_txt} {placement} {label}{zone}{suffix} "
+            f"→ {side.upper()} (RR 1:{rr:.2f})")
+
+
 def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_struct,
                   swings_target, sweeps_entry, events_entry, fvgs_entry,
                   min_rr, recent_window, require_fvg, require_sequence, require_pd=True,
@@ -1143,12 +1192,15 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_s
     recent_choch = [e for e in events_entry
                     if e.kind == "CHoCH" and e.direction == direction and last_idx - e.idx <= recent_window]
     chosen_sweep = recent_sweeps[-1] if recent_sweeps else None
+    # ORDRE réel des deux déclencheurs — sert au filtre de séquence ET à la raison
+    # affichée dans le journal (voir _signal_reason).
+    choch_after_sweep = bool(chosen_sweep) and any(e.idx > chosen_sweep.idx for e in recent_choch)
 
     if require_sequence:
         # Imposed sequence: liquidity sweep FIRST, then a CHoCH in the bias direction.
         if not chosen_sweep:
             return None, "Pas de sweep de liquidité récent (entrée)"
-        if not any(e.idx > chosen_sweep.idx for e in recent_choch):
+        if not choch_after_sweep:
             return None, "Pas de CHoCH après le sweep (séquence non respectée)"
     else:
         if not (recent_sweeps or recent_choch):
@@ -1189,14 +1241,14 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_s
         if not inducement.swept:
             return None, "Inducement pas encore pris (piège non déclenché)"
 
-    # 4) Strict FVG: price must sit inside an unfilled FVG of the bias direction
-    if require_fvg:
-        fvg_ok = any(
-            f.direction == direction and not f.filled and f.bottom <= last_close <= f.top
-            for f in fvgs_entry
-        )
-        if not fvg_ok:
-            return None, "Prix hors d'une FVG non comblée (entrée)"
+    # 4) Strict FVG: price must sit inside an unfilled FVG of the bias direction.
+    # Toujours calculé, même filtre désactivé, pour que la raison affichée dise la vérité.
+    fvg_ok = any(
+        f.direction == direction and not f.filled and f.bottom <= last_close <= f.top
+        for f in fvgs_entry
+    )
+    if require_fvg and not fvg_ok:
+        return None, "Prix hors d'une FVG non comblée (entrée)"
 
     # 5) Entry / SL / TP
     entry = last_close
@@ -1257,10 +1309,22 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_s
         return None, f"RR {rr:.2f} < min {min_rr}"
 
     side = "buy" if bullish else "sell"
-    zone = "discount" if bullish else "premium"
+    # Conditions réellement constatées, calculées ici (le signal est acquis) pour que la
+    # raison journalisée décrive CE setup et non le setup idéal. Coût négligeable.
+    displacement_ok = any(e.displacement for e in events_entry
+                          if e.direction == direction and last_idx - e.idx <= recent_window)
+    last_struct_idx = (len(candles_struct) - 1) if candles_struct else 0
+    second_choch_ok = bool(recent_choch) and any(
+        e.kind == "CHoCH" and e.direction == direction
+        and last_struct_idx - e.idx <= second_choch_window
+        for e in (events_struct or []))
     sig = Signal(
         side=side, entry=entry, sl=sl, tp=tp, rr=rr,
-        reason=f"Sweep→CHoCH + FVG dans OB {zone} → {side.upper()} (RR 1:{rr:.2f})",
+        reason=_signal_reason(side, rr, last_close, pd_struct, poi, ob_entry_mode,
+                              bool(recent_sweeps), bool(recent_choch),
+                              choch_after_sweep, fvg_ok,
+                              displacement_ok, bool(inducement and inducement.swept),
+                              second_choch_ok),
         poi_top=poi.top, poi_bottom=poi.bottom,
     )
     return sig, None
