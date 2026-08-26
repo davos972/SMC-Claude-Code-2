@@ -137,6 +137,19 @@ def _register_close(rm: Dict[str, Any], closed_trade: Dict[str, Any], open_trade
         rm["stop_session"] = f"{day_key}|{sinfo.get('session')}"
 
 
+def _partial_bar(bars: List[Dict]) -> Dict[str, Any]:
+    """Bougie EN FORMATION, reconstruite depuis les bougies du niveau d'entrée déjà
+    écoulées — ce que le bot live reçoit du broker à cet instant : uniquement du passé.
+
+    Sans elle, le backtest devrait soit ignorer la bougie en cours (trop sévère), soit
+    la prendre pré-agrégée avec son high/low/close définitifs, c'est-à-dire LIRE LE FUTUR
+    (défaut corrigé le 2026-08-26).
+    """
+    return {"time": bars[0]["time"], "open": bars[0]["open"],
+            "high": max(b["high"] for b in bars), "low": min(b["low"] for b in bars),
+            "close": bars[-1]["close"]}
+
+
 async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
                         on_progress=None, settings: Optional[Dict[str, Any]] = None,
                         point_size: float = 0.01, contract_size: float = 100.0) -> Dict[str, Any]:
@@ -202,38 +215,32 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     ltf_minutes = TF_MIN.get(ltf, 5)
 
     trades: List[Dict[str, Any]] = []
-    equity = 10000.0
+    # Capital de départ : le SOLDE RÉEL du compte quand il est connu (le serveur le lit
+    # chez le broker avant d'appeler), sinon 10 000 $ par défaut. Le risque étant un
+    # POURCENTAGE du capital, partir d'un capital fictif fausse la taille des lots, donc
+    # les montants et le drawdown en euros — pas seulement l'échelle du graphique.
+    equity = float(req.get("initial_balance") or 10000.0)
     equity_curve: List[Dict[str, Any]] = [{"time": _to_iso(candles_m1[0]["time"]), "equity": equity}]
 
     htf_candles = _aggregate(candles_m1, htf_minutes)
     mtf_candles = _aggregate(candles_m1, mtf_minutes)
     ltf_candles = _aggregate(candles_m1, ltf_minutes)
 
-    # Tableaux de temps pré-calculés : le temps croît de façon monotone, donc
-    # bisect_right donne en O(log n) le nombre de bougies HTF/MTF déjà clôturées,
-    # au lieu de refiltrer toute la liste à chaque bougie LTF (O(n²) → O(n log n)).
-    # Fenêtres STRICTEMENT identiques à l'ancien filtre → résultats inchangés.
-    htf_times = [h["time"] for h in htf_candles]
-    mtf_times = [h["time"] for h in mtf_candles]
-
     # --- Étage journalier (4e niveau, Synthèse V3 §2) ---
     # "D1" = vraies journées calendaires. La bougie du jour EN COURS ne peut pas être
     # pré-agrégée : elle contiendrait le high/low de la fin de journée, que le bot ne
     # peut pas connaître à 9h du matin (biais de anticipation). Elle est donc
-    # reconstruite au fil de l'eau depuis les bougies LTF déjà écoulées.
-    # Toute autre timeframe (ex. H1 pour le scalping) suit la voie standard : seules
-    # les bougies CLÔTURÉES sont visibles, comme pour le HTF et le MTF.
+    # reconstruite au fil de l'eau depuis les bougies LTF déjà écoulées — c'est le
+    # modèle appliqué depuis le 2026-08-26 à TOUS les étages (voir _partial_bar).
     daily_is_calendar = d1_tf == "D1"
     daily_completed: List[Dict] = []
     daily_dates: List[str] = []
     d1_candles: List[Dict] = []
-    d1_times: List[Any] = []
     if d1_tf and daily_is_calendar:
         daily_completed = _aggregate_daily(candles_m1)
         daily_dates = [d["date"] for d in daily_completed]
     elif d1_tf:
         d1_candles = _aggregate(candles_m1, TF_MIN.get(d1_tf, 60))
-        d1_times = [h["time"] for h in d1_candles]
     day_partial: Optional[Dict[str, Any]] = None
 
     # Etat des limites de risque (simule l'arret jour / pertes consecutives / drawdown du live).
@@ -273,17 +280,33 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
                 day_partial["high"] = max(day_partial["high"], c["high"])
                 day_partial["low"] = min(day_partial["low"], c["low"])
                 day_partial["close"] = c["close"]
-        hk = bisect.bisect_right(htf_times, cur_time)
-        mk = bisect.bisect_right(mtf_times, cur_time)
-        htf_window = htf_candles[max(0, hk - WINDOW_HTF):hk]
-        mtf_window = mtf_candles[max(0, mk - WINDOW_MTF):mk]
+        # Fenêtres des étages supérieurs — ANTI-ANTICIPATION (voir DECISIONS.md 2026-08-26).
+        # `_dec` est la minute de DÉCISION : la clôture de la bougie d'entrée analysée.
+        # Une bougie HTF n'est visible que si elle est CLÔTURÉE à cet instant ; la bougie
+        # en cours est reconstruite depuis les bougies d'entrée déjà écoulées, exactement
+        # comme le bot live la reçoit du broker (du passé, jamais du futur).
+        _dec = (i + 1) * ltf_minutes
+        hk = min(len(htf_candles), _dec // htf_minutes)
+        mk = min(len(mtf_candles), _dec // mtf_minutes)
+        htf_window = htf_candles[max(0, hk - WINDOW_HTF + 1):hk]
+        mtf_window = mtf_candles[max(0, mk - WINDOW_MTF + 1):mk]
+        _hs = (hk * htf_minutes) // ltf_minutes
+        if _hs <= i:
+            htf_window = htf_window + [_partial_bar(ltf_candles[_hs:i + 1])]
+        _ms = (mk * mtf_minutes) // ltf_minutes
+        if _ms <= i:
+            mtf_window = mtf_window + [_partial_bar(ltf_candles[_ms:i + 1])]
         ltf_window = ltf_candles[max(0, i - (WINDOW_LTF - 1)): i + 1]
         if d1_tf and daily_is_calendar and day_partial is not None:
             di = bisect.bisect_left(daily_dates, day_partial["date"])
             d1_window = daily_completed[max(0, di - WINDOW_D1 + 1):di] + [day_partial]
         elif d1_tf and not daily_is_calendar:
-            dk = bisect.bisect_right(d1_times, cur_time)
-            d1_window = d1_candles[max(0, dk - WINDOW_D1):dk]
+            _d1m = TF_MIN.get(d1_tf, 60)
+            dk = min(len(d1_candles), _dec // _d1m)
+            d1_window = d1_candles[max(0, dk - WINDOW_D1 + 1):dk]
+            _ds = (dk * _d1m) // ltf_minutes
+            if _ds <= i:
+                d1_window = d1_window + [_partial_bar(ltf_candles[_ds:i + 1])]
         else:
             d1_window = []
         if len(htf_window) < 30 or len(mtf_window) < 30:

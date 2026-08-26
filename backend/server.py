@@ -792,6 +792,18 @@ async def _execute_backtest(bt_id: str, req: Dict[str, Any]) -> None:
         logger.warning("get_symbol_spec(%s) échec backtest, défauts XAUUSD: %s", req["symbol"], e)
         point_size, contract_size = 0.01, 100.0
 
+    # Capital de départ = solde réel du compte (demandé par David le 2026-08-26) : le
+    # risque est un % du capital, donc un capital fictif fausse lots, P&L et drawdown.
+    # Indisponible (mode dégradé) → le moteur retombe sur 10 000 $.
+    if not req.get("initial_balance"):
+        try:
+            info = await metaapi_client.get_account_information()
+            bal = float(info.get("balance") or 0)
+            if bal > 0:
+                req["initial_balance"] = bal
+        except Exception as e:
+            logger.warning("Solde du compte indisponible pour le backtest, 10 000 $ par défaut: %s", e)
+
     await on_status(f"Replay SMC sur {len(candles)} bougies M1…", 0.0)
 
     async def on_progress(pct: float) -> None:

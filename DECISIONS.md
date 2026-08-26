@@ -16,6 +16,36 @@
 
 ---
 
+## 2026-08-26 — Le backtest lisait le futur (anticipation sur les étages HTF/MTF/D1)
+**Décision :** les fenêtres d'analyse des étages supérieurs ne sont plus découpées par
+`bisect.bisect_right(htf_times, cur_time)` sur les temps de **début** de bougie. Une
+bougie supérieure n'est visible que si elle est CLÔTURÉE à la minute de décision, et la
+bougie EN FORMATION est reconstruite depuis les bougies du niveau d'entrée déjà écoulées
+(`backtest._partial_bar`) — exactement ce que le bot live reçoit du broker. Le calcul
+passe par des index (`_dec = (i+1) * ltf_minutes`), l'agrégation étant positionnelle.
+Test de non-régression : `backend/tests/test_backtest_lookahead.py` (3 tests ; les 2
+premiers ÉCHOUENT sur l'ancien code, vérifié).
+**Pourquoi :** `bisect_right` sur les temps de début inclut la bougie en cours, déjà
+agrégée avec son high/low/close DÉFINITIFS. Preuve sur données réelles (cache M1 XAUUSD) :
+en analysant la bougie M1 de 16:47, la fenêtre HTF contenait la bougie M5 16:45→16:49
+terminée, close 4669,95 — le prix de 16:49. En scalping avec `scalping_d1="H1"`, le filtre
+Daily Bias voyait jusqu'à 59 minutes d'avenir ; c'était TOUT son avantage apparent.
+Mesuré sur 6 mois de XAUUSD M1 (40 configurations rejouées sur 3 moteurs) : Daily Bias
+PF 1,52 → 0,80, Power of 3 PF 1,20 → 0,82, meilleure combinaison +47 412 $ → +894 $,
+ligne de base PF 0,85 → 0,81. Aucune des 40 configurations n'a d'avantage démontrable
+une fois le biais retiré (meilleur PF 1,06, t ≈ 0,5), alors que la perte de la config de
+prod, elle, est significative (t = −2,75). Le garde-fou « jamais d'anticipation » existait
+déjà dans CLAUDE.md §9 mais ne visait que le journalier : il vaut pour les quatre étages.
+**Écarté :** (1) simplement SUPPRIMER la bougie en cours des fenêtres — plus sévère que le
+live, qui la voit partielle ; écart mesuré non négligeable (PF base 0,82 vs 0,81) et,
+surtout, ce n'est pas ce que fait le bot. (2) Garder `bisect` en visant les temps de FIN de
+bougie — équivalent mais dépendant du format des temps (str ISO vs datetime) là où
+l'arithmétique d'index est exacte. (3) Ne rien changer et « corriger mentalement » les
+résultats : impossible, l'effet va de −2 % à +90 % de P&L selon les filtres.
+**Reste à vérifier :** le rejeu `/analysis/at-time` (server.py) demande à MetaApi les
+bougies jusqu'à un horodatage ; si l'API renvoie la bougie CONTENANT cet instant, le même
+biais existe à l'affichage. Sans effet sur les décisions de trading, à traiter à part.
+
 ## 2026-08-25 — Retrait du mode « Signal uniquement »
 
 **Décision :** le mode « Signal uniquement » est SUPPRIMÉ — réglage, branche dans

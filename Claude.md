@@ -108,11 +108,21 @@ Le verrou du compte réel (`account_type` + `real_confirmed`) est intact.
 Le comportement de détection, lui, a changé (swings 2 bougies, OB en mèches, TP borne de
 range) — ce ne sont pas des options mais les nouveaux défauts.
 
+### Correctif du 2026-08-26 — anticipation dans le backtest
+
+Le moteur de backtest **lisait le futur** sur les étages HTF/MTF/D1 (détail : DECISIONS.md
+2026-08-26 et §9). Corrigé, avec test de non-régression. **Conséquence : tout chiffre de
+backtest produit avant ce commit est optimiste et ne doit plus être cité** — y compris les
+comparaisons du 2026-07-28 (`_compare_entry_options`) et la première matrice des 40
+variantes du 2026-08-25/26. Ordre de grandeur mesuré sur 6 mois de XAUUSD M1 : ligne de
+base PF 0,85 → 0,81 ; filtre Daily Bias PF 1,52 → 0,80.
+
 ### Ce qui reste à faire
 
-1. **Backtester sur 6 mois réels** — c'est LA priorité. Rien de ce qui a été ajouté n'a
-   été validé sur données réelles ; les chiffres cités en session viennent de données
-   synthétiques et ne disent rien de l'or. Suivre le plan variable par variable du §8.
+1. **Backtester sur 6 mois réels avec le moteur corrigé** — c'est LA priorité. Rien de ce
+   qui a été ajouté n'a été validé sur données réelles. Suivre le plan variable par
+   variable du §8 **et son protocole obligatoire** (dépôt à jour + réglages validés par
+   David avant lancement).
 2. **Comparer TP partiels vs TP unique** sur ces données réelles (`partial_tp_enabled`).
 3. **Régler le seuil du Power of 3** (`po3_wick_ratio`, défaut 0,20) : à cette valeur le
    filtre ne rejette presque rien — le document dit lui-même que 97,75% des bougies
@@ -163,6 +173,25 @@ deux méthodes sans rien changer dans les Réglages de l'app.
 ⚠️ Les chiffres de la Synthèse V3 (68% Daily Bias, 97,75% Power of 3) viennent de
 GER40 et d'indices, **pas de l'or**. Ils ne se transfèrent pas automatiquement à XAUUSD.
 
+### Protocole OBLIGATOIRE avant tout backtest (règle posée par David le 2026-08-26)
+
+Un backtest lancé sur un moteur périmé ou avec des réglages non validés ne « donne pas
+une indication » : il fait perdre des heures et oriente des décisions dans le vide.
+Avant de lancer le moindre backtest, dans cet ordre :
+
+1. **Vérifier que le dépôt local est à jour** : `git fetch origin && git status -sb`.
+   S'il est en retard sur `origin/main`, mettre à jour AVANT (la prod tourne sur
+   `origin/main`, pas sur la copie locale). Vérifier aussi qu'aucune correction du moteur
+   n'est en cours : backtester avec un moteur différent de celui du live n'a aucune valeur.
+2. **Lister à David TOUS les réglages qui seront en vigueur** — pas seulement ceux qui
+   changent : timeframes des 4 étages, spread, capital, risque, RR minimum, sessions,
+   limites (trades/jour, pertes consécutives, drawdown), filtres actifs/inactifs, gestion
+   (trailing, TP partiels), période et source des données. Il valide AVANT le lancement.
+3. **Rappeler les écarts** entre ces réglages et ceux réellement enregistrés en prod
+   (base Atlas), pour qu'il sache ce qui est testé vs ce qui tourne.
+4. À la restitution : dire quel moteur (commit) a produit les chiffres, et ce qui n'est
+   pas modélisé (commissions, slippage, exécution partielle).
+
 ## 9. Garde-fous pour Claude Code
 
 - Ne jamais committer de token/secret ; `.env` reste hors Git
@@ -173,7 +202,7 @@ GER40 et d'indices, **pas de l'or**. Ils ne se transfèrent pas automatiquement 
 - Ne pas affaiblir la protection par clé API (`API_KEY`/`X-API-Key`) ni élargir `_PUBLIC_PATHS` dans `server.py`
 - **Une seule conversion réglages → moteur** : `smc.params_from_settings`. Les QUATRE appelants d'`analyze()` (bot live, backtest, analyse du dashboard, rejeu) doivent passer par elle. Sans ça, le graphique finit par afficher des zones tracées avec d'autres réglages que ceux qui décident des trades — c'est exactement ce qui était arrivé aux deux appels de `server.py`
 - **Toute nouvelle règle SMC arrive DÉSACTIVÉE** : détectée et affichée, mais jamais imposée comme filtre tant qu'un backtest ne l'a pas validée (Synthèse V3 §10 et §11)
-- **Jamais d'anticipation dans le backtest** : ne jamais pré-agréger une bougie EN COURS (la bougie du jour est reconstruite au fil de l'eau). Un high de fin de journée connu dès le matin fausse tout
+- **Jamais d'anticipation dans le backtest** : ne jamais pré-agréger une bougie EN COURS. La règle vaut pour les QUATRE étages, pas seulement le journalier. Elle a été violée jusqu'au 2026-08-26 : les fenêtres HTF/MTF/D1 étaient découpées avec `bisect_right` sur les temps de **début**, ce qui livrait la bougie supérieure en cours déjà agrégée avec son high/low/close définitifs (prouvé : en analysant la M1 de 16:47, le moteur voyait la M5 16:45→16:49 terminée). Toute bougie supérieure non clôturée doit être reconstruite depuis les bougies du niveau d'entrée écoulées (`backtest._partial_bar`). Test de non-régression : `backend/tests/test_backtest_lookahead.py`
 - Journal de trading : ne JAMAIS combler un P&L manquant par une estimation. Si
   l'historique broker est indisponible, le trade est clôturé avec `result: "unknown"` et
   `pnl: null`, et il est exclu des statistiques (visible dans la liste, jamais compté)
@@ -195,7 +224,14 @@ Tous les fichiers `_*.py`, `_*.txt`, `_*.log`, `_m1_cache_*.json` sont des **scr
 (racine du dépôt), et `REACT_APP_BACKEND_URL` est lu depuis `frontend/.env` avec
 priorité à la variable d'environnement si elle est déjà définie.
 
-**Ce sont des tests d'intégration : le backend doit tourner AVANT de lancer pytest.**
+**Tests unitaires (depuis le 2026-08-26) — ni serveur, ni MongoDB, ni MetaApi :**
+```powershell
+py -m pytest backend/tests/test_backtest_lookahead.py -v
+```
+Attendu : `3 passed`. Ils vérifient que le backtest ne voit jamais le futur (cf. §9).
+C'est le modèle à suivre pour tout nouveau test du moteur : rapide, sans dépendance.
+
+**`backend_test.py`, lui, est un test d'intégration : le backend doit tourner AVANT de lancer pytest.**
 Ils tapent sur l'API HTTP (`http://localhost:8000/api`), ils ne démarrent pas le
 serveur eux-mêmes. Ils s'exécutent en **mode dégradé** (sans token MetaApi valide) —
 c'est voulu : ils vérifient que l'app refuse de simuler des données quand MetaApi
