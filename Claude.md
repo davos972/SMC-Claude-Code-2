@@ -35,7 +35,7 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
 - **Entrée basse timeframe** valide si : biais clair + retour dans une POI bien placée + sweep ou CHoCH LTF + RR minimum atteignable. Confluences supplémentaires toutes **OFF par défaut** (displacement, second CHOCH, inducement pris, OTE, Daily Bias, Power of 3)
 - **Règle de méthode (Synthèse V3 §10)** : noyau + **1 à 3 confluences maximum**. Ne JAMAIS tout activer en même temps — « cet empilement ne se produit quasiment jamais et paralyse l'exécution ». Chaque variable se teste SÉPARÉMENT en backtest
 - **Analyse à la clôture de bougie** de la timeframe d'entrée (pas tick par tick)
-- **Sessions strictes** : trading UNIQUEMENT pendant Londres (8h–11h heure de Londres) et New York (8h–11h heure de NY), heure d'été gérée via pytz (`backend/sessions.py`). Les positions ouvertes restent ouvertes après la session (protégées par SL/TP broker)
+- **Sessions strictes** : trading UNIQUEMENT pendant Londres et New York, heures LOCALES de chaque place, heure d'été gérée via pytz (`backend/sessions.py`). Les positions ouvertes restent ouvertes après la session (protégées par SL/TP broker). ⚠️ Trois valeurs coexistent : le défaut historique du code (8h–11h), **les horaires validés en backtest le 2026-08-26 (8h–17h Londres et 8h–17h New York, heures locales)**, et ce qui est enregistré en prod (01:00–23:00 / 12:00–00:00, soit quasi 24h — jamais mesuré). Toujours vérifier la base Atlas avant d'interpréter un trade
 
 ## 4. Gestion du risque (tout paramétrable dans Réglages)
 
@@ -43,7 +43,7 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
 - SL structurel (sous/sur l'order block ou le sweep), TP sur la liquidité opposée, RR minimum (défaut 1:2) sinon trade ignoré
 - **Arrêt auto après 3 pertes consécutives** (break-even ne compte pas) — reprise paramétrable : prochaine session (défaut) ou lendemain
 - **Arrêt auto sur drawdown max** (défaut 3%) — même politique de reprise
-- Max 5 trades/jour, une seule position par symbole
+- Max 5 trades/jour (défaut du code ; **500 en prod**, et David a demandé le 2026-08-26 que le bot puisse prendre toutes les occasions — la campagne de backtest a tourné en illimité). Une seule position par symbole. Le vrai garde-fou est l'arrêt après 3 pertes consécutives dans la MÊME session
 - **Mode prop firm** activable (défauts calés BlueGuardian Instant Funding : DD jour/total, Guardian Shield, reset 17h EST, high watermark trailing ; marge de sécurité 20% — s'arrête AVANT les limites réelles ; paramétrable pour d'autres firmes)
 - **Filtre news** : pause 30 min avant/après les annonces USD à fort impact (flux Forex Factory / faireconomy, `backend/news.py`)
 - ~~Mode « Signal uniquement »~~ : **retiré le 2026-08-25** (David trade sur compte démo Axi, où il n'apportait rien). Un setup validé part toujours à l'exécution. Le verrou du compte réel (`account_type` + double confirmation `real_confirmed`) est indépendant et reste en place
@@ -117,34 +117,72 @@ comparaisons du 2026-07-28 (`_compare_entry_options`) et la première matrice de
 variantes du 2026-08-25/26. Ordre de grandeur mesuré sur 6 mois de XAUUSD M1 : ligne de
 base PF 0,85 → 0,81 ; filtre Daily Bias PF 1,52 → 0,80.
 
-### Campagne de backtests du 2026-08-26 (moteur corrigé) — points 1 à 4 traités
+### Point d'état au 2026-08-26 — fin de session « moteur corrigé + campagne 3 périodes »
 
-47 configurations rejouées sur 6 mois de M1 réel + validation **hors échantillon**
-(12 juin → 26 août). Détail complet : DECISIONS.md 2026-08-26. En résumé :
+**Déployé en prod.** `main` = `dc84d1d` (Render redéployé automatiquement). Quatre commits
+ce jour-là : `db61adb` (correctif d'anticipation + capital réel), `fa22e69` (raison des
+signaux), `cf8a828` et `dc84d1d` (documentation de la campagne).
+⚠️ **L'APK n'a PAS été recompilé** : il tourne encore sur `d90c6a7`. Le frontend n'a pas
+changé ce jour-là, donc ce n'est pas bloquant.
 
-- **Trois périodes indépendantes** (juil.→déc. 2025, déc. 2025→juin 2026, juin→août 2026).
-  Une règle ne compte que si elle bat la référence sur les TROIS. Référence cumulée :
-  488 trades, PF 1,02 — **le noyau seul est à l'équilibre**
-- **Retenu, pas encore appliqué en prod** : `require_unmitigated_ob` SEUL (447 trades,
-  PF 1,18, t +1,62, 3/3, ne coupe que 3 % des trades). `sl_mode="protected"` a été retiré
-  après la 3e période (+0,03 / +0,09 / −0,26 vs référence : n'ajoute rien). Second choix :
-  `require_daily_bias` (PF 1,34, t +1,69, 3/3, mais 4× moins de trades)
-- **Piège évité** : `ob_entry_mode="zone_50"` finissait n°1 en étude (PF 1,43, t +2,06) et
-  fait **0,72** hors échantillon. → **Toute règle candidate doit battre la référence sur
-  les DEUX périodes.** Un t significatif sur la seule période d'étude ne prouve rien
-- **Power of 3 (question en suspens) : tranchée.** Seuils 0,20 / 0,35 / 0,50 testés, aucun
-  n'aide (0,93-0,95 vs 0,97). Ne pas y revenir sans nouvelle donnée
-- **Daily Bias sur XAUUSD** : positif mais sur trop peu de trades (104) pour conclure
-- **TP partiels vs TP unique** : winrate 49 % vs 32 %, PF identique — confort de lecture,
-  pas d'espérance en plus
-- **Dégradent la référence** : OTE (0,71), inducement (0,79), FVG obligatoire (0,82),
-  Rejection block (0,90), séquence sweep→CHoCH (0,94), sans premium/discount (0,94)
+**Ce qui a changé dans le code**
+1. `backtest.py` : les étages HTF/MTF/D1 ne voient plus le futur (`_partial_bar`, fenêtres
+   découpées par index sur la minute de décision). Test : `tests/test_backtest_lookahead.py`.
+2. `backtest.py` + `server.py` : le backtest part du **solde réel du compte** lu chez le
+   broker (`req["initial_balance"]`), plus d'un 10 000 $ fictif. Retombe sur 10 000 $ en
+   mode dégradé.
+3. `smc.py` : `_signal_reason` compose le texte du signal à partir des conditions
+   réellement constatées. Test : `tests/test_signal_reason.py`.
+
+**Ce que la campagne a établi** (47 configurations × 3 périodes indépendantes, détail dans
+DECISIONS.md 2026-08-26)
+- Réglages de la campagne, validés par David : étages **D1→H1→M15→M5**, sessions
+  **Londres 08:00-17:00 et New York 08:00-17:00 (heures LOCALES)**, spread **16 points**
+  (compte Axi), capital = solde réel, risque 1 %, **trades/jour illimités**, arrêt à
+  3 pertes dans la même session, TP partiels actifs, confluences toutes OFF au départ
+- Une règle ne compte que si elle bat la référence sur les **TROIS** périodes
+  (juil.→déc. 2025 · déc. 2025→juin 2026 · juin→août 2026). Sept sur 47 y arrivent
+- **Recommandé, pas encore appliqué** : `require_unmitigated_ob` **seul** — 447 trades
+  cumulés, PF 1,18, t +1,62, 3/3, ne coupe que 3 % des opportunités
+- **Second choix** : `require_daily_bias` (PF 1,34, t +1,69, 3/3) mais 4× moins de trades
+- **`sl_mode="protected"` écarté** après la 3e période (+0,03 / +0,09 / −0,26 vs référence)
+- **Piège documenté** : `ob_entry_mode="zone_50"` finissait n°1 de la période d'étude
+  (PF 1,43, t +2,06, le SEUL résultat significatif) et fait 0,72 hors échantillon
+- **Le noyau seul est à l'équilibre** : référence cumulée 488 trades, PF 1,02
+- **Questions tranchées** : le seuil du Power of 3 n'est pas en cause (0,20/0,35/0,50
+  dégradent tous) ; les TP partiels montent le winrate (49 % vs 32 %) sans ajouter
+  d'espérance ; le filtre premium/discount se justifie (le retirer coûte 0,03 à 0,04 de PF)
+- **Dégradent partout** : OTE (0,71), inducement (0,79), FVG obligatoire (0,82), Rejection
+  block, séquence sweep→CHoCH imposée
+
+**Outillage laissé en place** (dans `backend/`, tout en `_*` donc hors Git)
+- Caches M1 XAUUSD : `_m1_cache_XAUUSD_2025-05-01_2026-01-01.json` (238 257 bougies),
+  `_m1_cache_XAUUSD_2025-12-15_2026-06-12.json`, `_m1_cache_XAUUSD_2026-06-12_2026-08-26.json`
+- `_prod_settings.json` : instantané des réglages Atlas du 2026-08-25 (sans secrets)
+- `_matrix2.py` (47 variantes + réglages de la campagne), `_period.py` (rejeu sur une
+  période nommée avec bougies de chauffe), `_run_matrix2.py` / `_run_period.py` (lancement
+  parallèle), `_report2.py` (tableau), `_fetch_m1.py` (téléchargement d'un cache)
+- Résultats bruts : `backend/_matrix2_out/_m2_<periode>_<entree>_<dd>_<variante>.json`
+- Rapport lisible : https://claude.ai/code/artifact/a540b784-9c2a-4970-b381-c0aeae82a31a
+
+**Pour relancer une comparaison** (depuis `backend/`) :
+```powershell
+py _run_period.py 2025h2 --workers 8          # les 47 variantes sur juil.-déc. 2025
+py _report2.py --entry m5 --data 2025h2 --dd on
+```
 
 ### Ce qui reste à faire
 
-1. **Valider en démo** la configuration retenue avant de l'appliquer en prod (t +1,68 < 2 :
-   piste sérieuse, pas preuve).
-2. Non implémentés volontairement : **OB 2.0** (impose un 5e étage de timeframe) et
+1. **Décider d'activer `require_unmitigated_ob` en prod** (Réglages → « OB non mitigé
+   obligatoire »). Décision de David, non prise à ce jour.
+2. **Valider en démo** avant d'y croire : t +1,62, il en faudrait 2. Trois périodes
+   concordantes rendent la piste sérieuse, elles ne la prouvent pas.
+3. **Les sessions enregistrées en prod ne sont PAS celles validées** : Atlas contient
+   Londres 01:00-23:00 et New York 12:00-00:00 (quasi 24h), et `max_trades_per_day = 500`.
+   La campagne n'a rien mesuré dans ce cadre. À aligner si David applique la configuration.
+4. **Variante entrée M1** (`intraday_ltf = "M1"`) jamais mesurée jusqu'au bout — les runs
+   lancés ont été arrêtés pour repartir avec le capital réel.
+5. Non implémentés volontairement : **OB 2.0** (impose un 5e étage de timeframe) et
    **SMT Divergence** (impose de suivre un 2e instrument corrélé en continu, casserait
    l'architecture mono-symbole). La Synthèse V3 les classe elle-même en dernier.
 
