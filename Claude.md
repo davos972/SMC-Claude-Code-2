@@ -29,28 +29,46 @@ qu'il n'a pas tranché le point 1 ci-dessous.
 ⚠️ **L'APK Android tourne encore sur `d90c6a7`** (n° 9). Le frontend n'a pas changé
 depuis, donc ce n'est pas bloquant — mais ne pas prétendre le contraire à David.
 
+🚨 **NE PAS DÉMARRER LE BOT SUR LES RÉGLAGES ACTUELLEMENT ENREGISTRÉS EN PROD.** La pile
+d'étages qui y est enregistrée (scalping `H1→M5→M1→M1`) a été mesurée le 2026-08-26 :
+**perdante sur les trois périodes, PF 0,86, −3 848 $ sur 1 481 trades, DD 48 %, t −2,85**.
+C'est le résultat le plus significatif du projet, et il est négatif (§0ter).
+
 **Décision en attente — c'est celle de David, ne rien changer sans son accord explicite.**
-La campagne de backtests du 2026-08-26 (47 configurations × 3 périodes indépendantes,
-moteur corrigé) recommande d'activer **`require_unmitigated_ob` seul** : 447 trades
-cumulés, PF 1,18, t +1,62, au-dessus de la référence sur les trois périodes, ne coupe que
-3 % des opportunités. Second choix : `require_daily_bias` (PF 1,34, t +1,69, mais 4× moins
-de trades, donc 4× plus de temps pour valider en démo). **Le noyau seul** (les six conditions toujours exigées — définies au §3) **est à l'équilibre**
-(488 trades, PF 1,02) : sans au moins une confluence validée, la stratégie ne gagne rien.
+La configuration la mieux étayée au 2026-08-26 est :
+
+```
+Mode          intraday
+Étages        D1 → H1 → M15 → M1
+Filtre        require_unmitigated_ob = ON   (seule confluence active)
+Sessions      Londres 08:00–17:00 et New York 08:00–17:00 (heures LOCALES)
+RR minimum    1
+TP partiels   activés
+Risque        1 % par trade
+```
+
+**576 trades sur trois périodes indépendantes · PF 1,21 · +3 148 $ sur 4 919 $ ·
+DD max 11,9 % · t +2,08 · rentable sur les TROIS périodes.** C'est le premier `t`
+au-dessus de 2 du projet.
+
+⚠️ **Réserve non levée, à rappeler chaque fois qu'on cite ces chiffres** :
+`require_unmitigated_ob` bat sa propre référence sur 3/3 périodes en entrée M5, mais
+seulement **2/3 en entrée M1** (1,12 contre 1,25 hors échantillon), et son avantage vient
+surtout d'une seule période. C'est la meilleure configuration mesurée, **pas une
+certitude**. Sans ce filtre, la pile A seule fait PF 1,10, t +1,10, rentable 3/3.
 
 **Chantiers ouverts, dans l'ordre**
 
-1. **La décision d'activer ou non.** Appartient à David, non prise à ce jour.
-2. **Si oui : aligner la prod sur la configuration mesurée.** L'écart n'est PAS limité aux
-   sessions (cf. §0bis, à lire en entier) : la prod est en **scalping H1→M5→M1→M1, RR 1,
-   TP partiels désactivés**, alors que toute la campagne a mesuré **intraday D1→H1→M15→M5,
-   RR 2, TP partiels actifs**. Activer `require_unmitigated_ob` sans aligner le reste ferait
-   tourner le bot dans un cadre que **rien n'a mesuré** — le PF 1,18 ne s'y appliquerait pas.
-   C'est un lot, pas deux décisions séparées.
-3. **Valider en démo avant d'y croire.** t +1,62, il en faudrait 2. Trois périodes
-   concordantes rendent la piste sérieuse, elles ne la prouvent pas.
-4. **Variante entrée M1** (`intraday_ltf = "M1"`) : jamais mesurée jusqu'au bout, les
-   runs lancés ont été arrêtés pour repartir avec le capital réel.
-5. **Petit reste technique** : l'état du compte MetaApi (`DEPLOYING`…) et `last_error`
+1. **La décision d'appliquer ou non cette configuration.** Appartient à David, non prise
+   à ce jour. Ce n'est pas un ajustement mais un **remplacement complet** des réglages de
+   prod : mode, étages, sessions, TP partiels et plafond de trades changent tous (§0bis).
+2. **Valider en démo avant d'y croire.** Trois périodes concordantes rendent la piste
+   sérieuse, elles ne la prouvent pas.
+3. **Comprendre l'inversion de la période juin→août 2026.** Sur la seule journée du
+   2026-08-26, **trois** effets mesurés sur juillet 2025 → juin 2026 se sont inversés hors
+   échantillon (le RR, `zone_50`, le passage M5→M1). Le régime récent diffère ; moyenner
+   trois périodes est peut-être la mauvaise méthode. Question ouverte, jamais traitée.
+4. **Petit reste technique** : l'état du compte MetaApi (`DEPLOYING`…) et `last_error`
    ne sont **pas affichés** dans Réglages (aucune occurrence dans `frontend/src`). Le
    backend les expose ; c'est le dernier reliquat du diagnostic de connexion de juillet.
 
@@ -72,7 +90,7 @@ comportement de prod qui tourne sur de tout autres réglages.
 |---|---|---|---|
 | **Mode** | intraday | **scalping** | **intraday** |
 | **Étages** | D1→H1→M15→M5 | **H1→M5→M1→M1** | **D1→H1→M15→M5** |
-| **RR minimum** | 2,0 | **1,0** | **2,0** |
+| RR minimum | 2,0 | **1,0** | **1,0** (hérité du snapshot de prod, jamais surchargé par `_matrix2.py`) |
 | **TP partiels** | activés | **désactivés** | **activés** |
 | Session Londres | 08:00–11:00 | **01:00–23:00** | **08:00–17:00** (heure locale) |
 | Session New York | 08:00–11:00 | **12:00–00:00** | **08:00–17:00** (heure locale) |
@@ -125,6 +143,86 @@ rejouer coûte des heures pour rien. Le raisonnement complet est dans `DECISIONS
   (PF 1,43, t +2,06, le SEUL résultat significatif de la matrice) et fait **0,72** hors
   échantillon. Sans le découpage en périodes, cette configuration serait partie en prod.
   C'est la raison d'être de la règle « plusieurs périodes ou rien ».
+- **RR minimum : testé le 2026-08-26, ne donne aucune règle fiable.** Balayage 1 / 1,5 / 2 / 3,
+  avec et sans `require_unmitigated_ob`, sur les trois périodes (24 runs). Monter le RR
+  améliore les deux périodes anciennes et **dégrade régulièrement la période hors
+  échantillon** (famille OB non mitigé : 1,58 → 1,42 → 1,19 → 1,05 quand le RR passe de 1
+  à 3 ; référence seule à RR 3 : 0,73 hors échantillon contre 1,13 et 1,18 ailleurs).
+  **`RR 2 + OB non mitigé` est un second piège de type `zone_50`** : meilleure ligne du
+  tableau (PF cumulé 1,25, t +1,85 — le t le plus élevé obtenu à ce jour, DD 8,2 % contre
+  12,1 %) mais **2/3 périodes seulement**, l'échec portant sur la période hors échantillon.
+  Seuls `RR 1` et `RR 1,5` combinés à l'OB non mitigé tiennent 3/3 — c'est-à-dire la
+  configuration déjà recommandée. **Le RR de 1 enregistré en prod n'est donc pas un défaut
+  à corriger.** ⚠️ Réserve non levée : à RR 1, TP1 tombe sur la cible finale et l'échelle
+  de TP partiels est écrasée ; ces runs ne séparent pas l'effet du RR de celui du retour
+  d'une échelle de TP fonctionnelle. Un contrôle en `partial_tp_enabled=False` le
+  trancherait.
+- **Le filtre de session gagne sa place — 24h/24 est moins bon, sur les trois périodes.**
+  Mesuré le 2026-08-26 sur la pile A + `require_unmitigated_ob`, un seul écart (les quatre
+  horaires passés à 00:00–23:59, couverture vérifiée : 0 minute non couverte sur 1 440) :
+
+  | | Trades | PF cumulé | P&L | Pire DD | t | Gain/trade |
+  |---|---|---|---|---|---|---|
+  | Sessions 08:00–17:00 | 576 | **1,21** | 3 148 $ | **11,9 %** | **+2,08** | **5,47 $** |
+  | 24h/24 | 789 | 1,15 | 3 258 $ | 12,5 % | +1,78 | 4,13 $ |
+
+  **PF plus bas sur 3/3 périodes** (−0,02 / −0,09 / −0,02) et **DD plus haut sur 3/3**
+  (+0,6 / +4,2 / +0,7 pt), pour **+37 % de trades** et seulement **+3,5 % de P&L**. Le
+  gain par trade tombe de 5,47 $ à 4,13 $ : les heures hors session diluent la qualité
+  sans rien rapporter. **C'est le seul résultat de la journée où la période hors
+  échantillon confirme les deux autres au lieu de les contredire** — donc le plus fiable.
+  ⚠️ Le test est même FAVORABLE au 24 h : sans sessions distinctes, l'arrêt après 3 pertes
+  dure jusqu'au lendemain (`resume_policy` compare `jour|session`, et l'étiquette est
+  « londres » 1 439 minutes sur 1 440), ce qui protège la variante 24 h. Un vrai bot 24 h
+  qui reprendrait plus tôt ferait probablement pire.
+- **Ce qui décide, c'est le CONTEXTE au-dessus, pas la timeframe d'entrée.** Quatre piles
+  mesurées le 2026-08-26 sur les trois périodes, tout le reste identique (réglages de la
+  campagne). Deux critères distincts, à ne pas confondre : « rentable sur chaque période »
+  (PF > 1) et « bat sa propre référence sur chaque période ».
+
+  | Pile | Trades | PF cumulé | Pire DD | t | PF par période | Rentable |
+  |---|---|---|---|---|---|---|
+  | **A** `D1→H1→M15→M1` | 667 | 1,10 | 15,2 % | +1,10 | 1,04 / 1,09 / 1,25 | **3/3** |
+  | **A + OB non mitigé** | 576 | **1,21** | **11,9 %** | **+2,08** | 1,08 / 1,33 / 1,12 | **3/3** |
+  | B `H1→M15→M5→M1` | 1 035 | 1,02 | 24,0 % | +0,31 | 1,16 / 0,96 / 0,81 | 1/3 |
+  | B + OB non mitigé | 1 001 | 1,04 | 23,0 % | +0,56 | 1,16 / 0,99 / 0,85 | 1/3 |
+  | C `H1→M5→M1→M1` (prod) | 1 481 | 0,86 | 48,4 % | −2,85 | 0,87 / 0,90 / 0,71 | 0/3 |
+  | M5 `D1→H1→M15→M5` | 488 | 1,02 | 12,8 % | +0,22 | 0,99 / 0,97 / 1,30 | 1/3 |
+  | M5 + OB non mitigé | 447 | 1,18 | 12,1 % | +1,62 | 1,10 / 1,10 / 1,58 | 3/3 |
+
+  **Les deux piles qui gardent le contexte `D1→H1→M15` fonctionnent, avec une entrée en M1
+  comme en M5. Les deux qui prennent H1 comme biais échouent** (B : 1/3 ; C : perdante
+  partout). C'est exactement l'avertissement déjà présent dans `models.py`
+  (« H1 = perdant, DD catastrophique »), confirmé sur le moteur corrigé. **Scalper en M1
+  est viable — à condition de garder les quatre étages D1→H1→M15 au-dessus.**
+  ⚠️ `require_unmitigated_ob` reste ambigu : 3/3 contre sa référence en M5, mais **2/3 en
+  M1** (1,12 contre 1,25 hors échantillon). Le t de +2,08 de « A + OB non mitigé » est le
+  meilleur du projet, la constance ne suit pas. Ne pas trancher sur le seul t.
+- 🚨 **La pile d'étages enregistrée en PROD est PERDANTE sur les trois périodes.**
+  Mesurée le 2026-08-26 (scalping `H1→M5→M1→M1`, tout le reste aux réglages de la
+  campagne) : **PF 0,86 · 1 481 trades · −3 848 $ · t −2,85**, PF par période
+  0,87 / 0,90 / 0,71, pire drawdown cumulé **48 %**. Avec `require_unmitigated_ob` elle
+  remonte à 0,97 — toujours perdante, DD 31 %. **C'est le résultat le plus significatif
+  jamais obtenu sur ce projet, et il est négatif** : |t| = 2,85 dépasse le seuil de 2 que
+  les configurations gagnantes n'atteignent pas. En prod, `scalping_mtf` et `scalping_ltf`
+  valent tous deux M1 : structure et déclencheur sur la même bougie, ce n'est pas
+  l'analyse à quatre étages du §3. **Ne pas démarrer le bot sur cette configuration.**
+- **Entrée M1 avec un vrai contexte à quatre étages** (`D1→H1→M15→M1`, variante « A ») :
+  PF 1,10 seule (667 trades, t +1,10) et **PF 1,21 avec `require_unmitigated_ob`
+  (576 trades, t +2,08)** — le premier t au-dessus de 2 du projet. ⚠️ **Mais la règle des
+  trois périodes n'est PAS satisfaite** : contre sa propre référence, l'OB non mitigé fait
+  1,08 / 1,33 / **1,12 contre 1,25** hors échantillon, soit 2/3. Le cumul est le meilleur
+  jamais vu, la constance ne suit pas. Ne pas trancher sur le seul t.
+- **M1 vs M5 : pas de gagnant net.** En cumul l'entrée M1 fait mieux (1,10 contre 1,02 en
+  référence), mais **sur la période hors échantillon le M5 est meilleur dans les deux
+  familles** (1,30 contre 1,25 en référence ; 1,58 contre 1,12 avec l'OB non mitigé).
+  C'est la troisième fois qu'un effet mesuré sur 2025-début 2026 s'inverse sur juin-août
+  2026 (déjà vu sur le RR et sur `zone_50`) — le régime de marché récent diffère.
+- **Piège de lecture du drawdown** : `max_drawdown_pct` (3 % par défaut) est un
+  coupe-circuit **JOURNALIER**, comparé à l'équité de début de journée
+  (`backtest.py:130-132`), avec reprise à la session suivante. Un DD cumulé de 30 à 48 %
+  est donc parfaitement compatible avec un réglage à 3 %. Ne jamais présenter le réglage
+  comme une limite de perte totale.
 - ⚠️ **Tout chiffre de backtest produit avant le 2026-08-26 est optimiste** et ne doit plus
   être cité : le moteur lisait le futur (cf. §9). Cela inclut les comparaisons du
   2026-07-28 et la première matrice de 40 variantes.
@@ -249,6 +347,7 @@ complet est dans `DECISIONS.md`, entrée par entrée, la plus récente en haut.
 
 | Date | Ce qui s'est joué | Entrée dans DECISIONS.md |
 |---|---|---|
+| 2026-08-26 | **La pile d'étages décide de tout ; la config de prod est perdante** | « La pile d'étages décide de tout » |
 | 2026-08-26 | Documentation : un rôle par fichier, §0 « État courant » | « Documentation : un rôle par fichier » |
 | 2026-08-26 | Troisième période de backtest : le SL protégé sort, l'OB non mitigé confirme | « Troisième période » |
 | 2026-08-26 | Campagne sur moteur corrigé, règle du hors échantillon | « Campagne de backtests sur moteur corrigé » |

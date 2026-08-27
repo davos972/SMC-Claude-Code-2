@@ -16,6 +16,70 @@
 
 ---
 
+## 2026-08-26 (suite) — La pile d'étages décide de tout ; la configuration de prod est perdante
+**Décision :** la configuration de référence du projet devient **intraday
+`D1 → H1 → M15 → M1`, `require_unmitigated_ob` actif, sessions Londres et New York
+08:00–17:00 heures locales, RR 1, TP partiels actifs, risque 1 %** — 576 trades sur trois
+périodes indépendantes, PF 1,21, DD max 11,9 %, **t +2,08** (le premier au-dessus de 2 du
+projet), rentable sur les TROIS périodes. **Pas encore appliquée en prod** : c'est la
+décision de David, et la réserve ci-dessous n'est pas levée.
+
+**Pourquoi cette campagne a eu lieu :** David a demandé des backtests à RR 1, puis a
+signalé que la configuration testée entrait en M5 alors qu'il veut scalper en M1. Sa
+question était fondée — les 47 configurations de la campagne, et donc la recommandation
+`require_unmitigated_ob` à PF 1,18, portaient toutes sur une entrée M5 jamais remise en
+cause. Quatre piles d'étages ont alors été mesurées, un seul écart entre elles.
+
+**Ce qui est établi (chiffres complets dans CLAUDE.md §0ter) :**
+1. **La pile enregistrée en prod (`H1→M5→M1→M1`) est perdante sur les trois périodes** :
+   PF 0,86, −3 848 $, DD 48 %, **t −2,85**. C'est le résultat le plus significatif jamais
+   obtenu sur ce projet, et il est négatif. Le bot était à l'arrêt : cela l'a protégé.
+2. **Ce qui décide, c'est le contexte au-dessus, pas la timeframe d'entrée.** Les deux
+   piles qui gardent `D1→H1→M15` sont rentables (entrée M1 comme M5) ; les deux qui
+   prennent H1 comme biais échouent (B : 1/3 ; C : 0/3). `models.py` portait déjà la note
+   « H1 = perdant, DD catastrophique » — confirmée sur le moteur corrigé.
+3. **Scalper en M1 est viable**, à condition de garder les quatre étages au-dessus.
+4. **Le filtre de session se justifie** : en 24h/24, le PF baisse sur 3/3 périodes et le
+   DD monte sur 3/3, pour +37 % de trades et +3,5 % de P&L seulement (gain par trade
+   5,47 $ → 4,13 $). **Seul test de la journée où la période hors échantillon confirme les
+   deux autres** — donc le plus fiable de tous.
+5. **Le RR minimum ne donne aucune règle fiable** : monter à 1,5 / 2 / 3 aide sur les deux
+   périodes anciennes et dégrade régulièrement la période hors échantillon. Le RR 1
+   enregistré en prod n'est pas un défaut.
+
+**Écarté :** (1) `RR 2 + OB non mitigé`, meilleure ligne du balayage RR (PF 1,25, t +1,85,
+DD ramené à 8 %) mais 2/3 périodes — même forme de piège que `zone_50`. (2) La pile B
+(`H1→M15→M5→M1`, le scalping tel que le code le prévoit) : 1/3, DD 24 %. (3) Le 24h/24.
+(4) Conclure sur le seul `t` : celui de la configuration retenue est le meilleur du
+projet, mais son avantage sur sa propre référence vient surtout d'une période.
+
+**Réserve non levée, à dire à David chaque fois qu'on cite ces chiffres :**
+`require_unmitigated_ob` bat sa propre référence sur 3/3 périodes en entrée M5, mais
+seulement **2/3 en entrée M1** (1,12 contre 1,25 hors échantillon). La configuration
+retenue est la meilleure mesurée, ce n'est pas une certitude — la validation en démo
+reste indispensable.
+
+**Signal de fond à ne pas oublier :** sur cette seule journée, **trois** effets mesurés
+sur juillet 2025 → juin 2026 se sont inversés sur juin → août 2026 (le RR, `zone_50`, le
+passage M5→M1). Le régime récent du marché diffère. Moyenner trois périodes est peut-être
+la mauvaise méthode ; la question n'est pas tranchée.
+
+**Deux bugs de l'outillage corrigés au passage** (fichiers `_*`, hors Git) :
+`_run_period.py` ne transmettait pas `--entry` — `--entry m1` tournait silencieusement en
+M5, ce qui explique que la variante M1 n'ait jamais abouti depuis des semaines ; et
+`_period.py` figeait `mode: "intraday"` dans la requête alors que c'est elle, et non les
+réglages, qui décide si le moteur lit les étages `intraday_*` ou `scalping_*`
+(`backtest.py:163`) — sans ce correctif, toute variante « scalping » aurait produit des
+chiffres faux qui ressemblaient à des vrais. **Leçon : dans cet outillage, vérifier ce qui
+est réellement transmis au moteur, jamais ce que l'usage documenté laisse croire.** C'est
+la même erreur qui avait fait écrire « RR 2 » dans le §0bis alors que toute la campagne
+tournait à RR 1, `min_rr` étant hérité du snapshot de prod sans jamais être surchargé.
+
+**Piège de lecture consigné :** `max_drawdown_pct` (3 %) est un coupe-circuit
+**journalier**, comparé à l'équité de début de journée (`backtest.py:130-132`), avec
+reprise ensuite. Un DD cumulé de 48 % est parfaitement compatible avec ce réglage. Ne
+jamais le présenter comme une limite de perte totale.
+
 ## 2026-08-26 (suite) — Documentation : un rôle par fichier, et un §0 « État courant »
 **Décision :** les quatre documents Markdown du projet cessent de raconter la même chose.
 Rôles exclusifs, énoncés en tête de `CLAUDE.md` : **`CLAUDE.md`** = ce qui EST vrai
@@ -41,9 +105,10 @@ recopié dans plusieurs fichiers, mis à jour dans un seul.
 `davos972/SMC-APP` (affirmé depuis l'origine) mais **`davos972/SMC-Claude-Code-2`**.
 Surtout, **l'écart entre la prod et ce qui a été mesuré est bien plus large que les seules
 sessions**. D'après `_prod_settings.json` (snapshot Atlas du 2026-08-25), la prod tourne en
-mode **scalping H1→M5→M1→M1** avec **RR minimum 1** et **TP partiels désactivés**, alors
-que la campagne des 47 configurations a mesuré **intraday D1→H1→M15→M5, RR 2, TP partiels
-actifs**. Aucun chiffre de la campagne ne décrit ce que ferait la prod dans son état
+mode **scalping H1→M5→M1→M1** avec **TP partiels désactivés**, alors que la campagne des
+47 configurations a mesuré **intraday D1→H1→M15→M5, TP partiels actifs**. (Le RR minimum
+vaut 1 des deux côtés : `_matrix2.base_settings()` part du snapshot de prod et ne surcharge
+jamais `min_rr` — vérifié en exécutant le chemin de code, pas en lisant la prose.) Aucun chiffre de la campagne ne décrit ce que ferait la prod dans son état
 actuel. À noter aussi : `scalping_mtf` et `scalping_ltf` valent tous deux M1 — structure
 et déclencheur sur la même timeframe, ce qui n'est pas l'analyse à quatre étages du §3 et
 n'a jamais été mesuré.
