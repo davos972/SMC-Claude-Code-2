@@ -16,6 +16,275 @@
 
 ---
 
+## 2026-08-27 (suite) — La page Réglages ne montre plus que ce qui se décide encore
+**Décision :** l'écran Réglages passe de **987 à 734 lignes** et de 14 sections à 9. Sont
+retirés de l'interface les réglages sur lesquels la campagne a statué et que David ne
+changera plus : **mode de trading, réglage des quatre étages, méthodes de détection
+(swing, tracé OB, cassure, cible TP, placement SL, displacement), liquidité et zones
+(second CHoCH, inducement, OTE, PDH/PDL, range asiatique, `poi_source`), sessions de
+trading, trades par jour, et le sélecteur démo/réel.** En tête de page arrive un bloc
+**« Configuration validée » en LECTURE SEULE**.
+
+⚠️ **Aucune valeur n'a été modifiée en base.** Retirer un champ de l'écran ne touche pas
+Atlas, et `put_settings` continue d'accepter toutes les clés (la liste blanche
+`DEFAULT_SETTINGS` est inchangée) : un script ou un futur écran peut toujours les écrire.
+C'est un changement d'**interface**, pas de comportement.
+
+**Pourquoi :** demande de David — « enlever les réglages qu'on ne touche pas ». Le motif de
+fond est plus fort que le confort : sur une colonne de 480 px, **86 contrôles dont ~40
+doivent rester à leur valeur mesurée** transforment chaque visite en occasion de casser
+une configuration qui a coûté trois périodes de backtest à établir. Le risque le plus
+concret était le sélecteur **Mode**, à deux touches du « scalping » — qui aurait
+instantanément réactivé les clés `scalping_*` toujours en base, c'est-à-dire la pile
+mesurée **perdante** (PF 0,86, t −2,85).
+
+**Le bloc « Configuration validée » est le cœur du changement.** Il n'affiche pas des
+valeurs codées en dur : il **lit les réglages réellement enregistrés** et les compare à la
+configuration mesurée (constante `CONFIG_VALIDEE`, 30 clés). Vert quand tout correspond,
+**rouge avec la liste nominative des écarts** dès qu'un réglage dérive. Autrement dit,
+l'écran cesse d'être un formulaire pour devenir un **contrôle** : masquer un réglage sans
+rendre sa valeur visible aurait juste déplacé le problème — on ne verrait plus la dérive
+au lieu de ne plus pouvoir la provoquer. Il porte aussi l'avertissement « performances
+passées » et rappelle que `require_unmitigated_ob` **n'est pas démontré supérieur** à son
+absence.
+
+**Écarté — et c'est le seul point où la demande de David n'a pas été suivie à la lettre :
+la section « Serveur » n'a pas été supprimée**, elle a été déplacée tout en bas dans un
+bloc replié « Dépannage — connexion de cet appareil ». Elle contient l'**URL du backend et
+la clé API**, stockées par appareil dans `localStorage` (`client.js`), pas en base.
+L'URL a un repli à la compilation (`REACT_APP_BACKEND_URL`) — **la clé API n'en a aucun**.
+La supprimer rendrait toute nouvelle installation de l'APK, ou tout `localStorage` vidé,
+**définitivement incapable de joindre le serveur** dès lors que `API_KEY` est définie sur
+Render : plus d'écran pour la saisir, et aucune correction possible sans recompiler.
+Repliée, elle est invisible en usage normal et reste disponible le jour où elle sauve
+l'installation. **À signaler à David : si `API_KEY` n'est PAS définie sur Render, il peut
+demander la suppression pure et simple.**
+
+**Écarté aussi :** (1) **supprimer les sections « Contexte journalier », « Trailing stop »
+et « Mode Prop Firm »**, qui répondent pourtant au même critère (réglages jamais touchés,
+tous OFF) — David ne les a pas nommées, et retirer plus que demandé est exactement le
+genre d'initiative qui fait perdre confiance dans un écran. Elles restent, à lui de
+trancher. (2) **Effacer les clés devenues invisibles de la base** : elles documentent ce
+qui tournait, et le §0bis prévient déjà qu'un retour en mode scalping les réactiverait.
+(3) **Masquer les champs plutôt que les retirer** (`disabled`) : un champ grisé invite
+encore à chercher comment le réactiver.
+
+**Vérifié, pas supposé :** `npx craco build` **réussit** (190,65 kB gzip, seul avertissement
+restant : une dépendance `useCallback` préexistante dans `Dashboard.jsx`, sans rapport) ;
+analyse syntaxique JSX via `@babel/parser` ; aucune référence orpheline aux dix
+identifiants supprimés (`onAccountTypeChange`, `ACCOUNT_TYPE_OPTIONS`,
+`TRADING_MODE_OPTIONS`, `showRealModal`, `RealAccountModal`, `SelectField`, `TimeField`,
+`TF_LIST`, `TF_OPT`, import `Lock`) ; **aucun `data-testid` supprimé n'est référencé
+ailleurs** dans `frontend/src` ni dans les tests backend — rien de cassé. Le code mort a
+été retiré avec les sections : deux aides de rendu, deux constantes, la modale de
+confirmation du compte réel et un import.
+
+**Découvert au passage — le §0 affirmait une chose fausse depuis des semaines.** Le
+chantier « l'état du compte MetaApi et `last_error` ne sont pas affichés dans Réglages »
+était **déjà fait**. Le composant `MetaApiStatusBanner` couvre six états — non configuré,
+en déploiement, connecté, **erreur avec le texte de `last_error`**, backend injoignable,
+configuré-non-connecté — et se rafraîchit toutes les 10 s. Le §0 est corrigé ; **plus aucun
+reliquat technique n'est ouvert.** Troisième affirmation de la documentation invalidée en
+deux jours en allant simplement lire le code, après le champ mort `bot_running` et la
+colonne PROD du §0bis.
+
+**Note sur le verrou du compte réel :** retirer le sélecteur démo/réel **ne l'affaiblit
+pas**, il le renforce — le passage en réel n'est plus déclenchable depuis l'app, et la
+double confirmation côté backend (`put_settings` refuse `account_type="real"` sans
+`real_confirmed`) reste intacte. Un texte en lecture seule rappelle à sa place que c'est le
+**token MetaApi** qui détermine le compte, aujourd'hui un compte démo chez Axi — ce que le
+libellé « Réel » laissait croire à tort.
+
+## 2026-08-27 (suite) — Application des réglages testés, et le bot qui tournait à notre insu
+**Décision :** les **11 réglages de la configuration de référence sont écrits dans Atlas**
+(accord explicite de David, bot à l'arrêt au moment de l'écriture) : mode `intraday`,
+étages `D1→H1→M15→M1`, `require_unmitigated_ob` ON, sessions Londres et New York
+08:00–17:00 locales, TP partiels ON, trades/jour illimités, et **désactivation de
+`require_daily_bias` et `require_second_choch`** qui étaient actifs en prod. **Le bot n'a
+PAS été redémarré** — c'est une décision distincte, elle appartient à David.
+
+**Découverte majeure, faite en lisant Atlas avant d'écrire : le bot TOURNAIT.** Le §0
+affirmait « bot à l'arrêt (`bot_running: false`) » depuis deux jours. La réalité :
+`bot_state.running = true` depuis le **2026-08-26 04:31 UTC**, soit ~34 h de trading réel,
+avec **2 trades pris le 2026-08-27** — sur la pile d'étages mesurée la veille à PF 0,86 /
+t −2,85. David l'a arrêté à 14:48 UTC avant toute écriture.
+
+**Cause racine : `settings.bot_running` est un champ MORT.** Il n'existe que comme valeur
+par défaut dans `models.py:200` et **aucun code ne le lit** — vérifié par recherche sur
+l'ensemble du backend et du frontend. Le champ qui commande réellement est
+`bot_state.running` (collection `bot_state`), celui que teste l'auto-reprise au démarrage
+du serveur (`server.py:105`) et la boucle elle-même. Personne n'avait vérifié que le champ
+cité dans la documentation était celui que le code utilise. **C'est la même erreur que les
+trois faux-semblants de l'outillage `_*` du 2026-08-26 : croire la prose plutôt que
+d'exécuter le code.** Garde-fou ajouté au §9.
+
+**Second écart découvert au passage — la colonne PROD du §0bis était fausse.** Elle
+annonçait « confluences toutes OFF ». En réalité `require_second_choch` était **ON** dès le
+snapshot du 2026-08-25, et `require_daily_bias` a été activé en prod entre le 25 et le 27.
+La campagne forçait toutes les confluences à OFF (`_matrix2.base_settings`), ce qui a
+masqué l'écart. **Conséquence à assumer : le backtest « pile de prod » (PF 0,86, t −2,85)
+ne modélisait pas exactement ce qui tournait.** La conclusion tient — c'est la pile
+d'étages qui perd, et l'écart mesuré contre la pile A reste significatif — mais ce chiffre
+ne doit plus être présenté comme la mesure fidèle de la prod d'alors.
+
+**Les 11 clés modifiées** (valeurs précédentes → nouvelles) :
+
+| Réglage | Avant | Après |
+|---|---|---|
+| `trading_mode` | scalping | **intraday** |
+| `intraday_ltf` | M5 | **M1** |
+| `require_unmitigated_ob` | False | **True** |
+| `require_daily_bias` | **True** | False |
+| `require_second_choch` | **True** | False |
+| `partial_tp_enabled` | False | **True** |
+| `session_london_start` / `_end` | 01:00 / 23:00 | **08:00 / 17:00** |
+| `session_newyork_start` / `_end` | 12:00 / 00:00 | **08:00 / 17:00** |
+| `max_trades_per_day` | 500 | **999999** |
+
+Inchangés parce que déjà conformes : `min_rr` (1), `intraday_d1/htf/mtf` (D1/H1/M15),
+`risk_per_trade_pct` (1 %), `max_consec_losses` (3), `max_drawdown_pct` (3 %),
+`trailing_mode` (off), `require_premium_discount` (True), `swing_method`, `ob_zone`,
+`sl_mode`, `ob_entry_mode`, `tp_target`, filtre news.
+
+**Méthode d'écriture, à réutiliser telle quelle :** la cible n'a pas été recopiée depuis la
+prose du `CLAUDE.md` mais **reconstruite en exécutant `_matrix2.base_settings("on", "m1")`
++ `VARIANTS["rr-1-unmit"]`** — les réglages exacts qui ont produit les chiffres. Le script
+d'application refuse d'écrire si `bot_state.running` est vrai, filtre les clés par la même
+liste blanche `DEFAULT_SETTINGS` que `put_settings` (`server.py:161`), ne touche jamais aux
+clés secrètes / compte / notifications, et **sauvegarde les anciennes valeurs dans un
+fichier de restauration avant d'écrire**. La liste blanche a d'ailleurs servi : la clé
+`signal_only_mode`, encore présente dans le snapshot de prod, a été écartée (le mode a été
+retiré le 2026-08-25).
+
+**Vérifié après écriture, en exécutant le code du moteur** et non en relisant la base :
+`smc.params_from_settings()` sur les réglages vivants renvoie `require_unmitigated = True`
+(⚠️ la clé du moteur ne s'appelle PAS `require_unmitigated_ob`), `min_rr = 1.0`,
+`sl_mode = poi`, `ob_entry_mode = close`, `tp_target = range_bound`, et les étages lus sont
+bien `D1 → H1 → M15 → M1`. `bot_state.running` toujours `False` après l'opération.
+
+**Écarté :** (1) **Passer par l'API `PUT /api/settings` de Render** — plus propre en
+principe, mais la clé API se saisit par appareil dans l'app et n'est pas dans le `.env`
+local ; l'écriture directe reproduit exactement ce que fait `store.update_settings`
+(`store.py:44`), avec la même liste blanche appliquée en amont. (2) **Laisser David saisir
+les 11 réglages à la main** dans la page Réglages : onze champs répartis dans cinq
+sections, sur mobile, sans possibilité de vérifier le résultat côté moteur — trop d'erreurs
+possibles pour un remplacement complet. (3) **Effacer les clés `scalping_*`** devenues
+inertes : elles ne sont plus lues en mode intraday, les effacer ferait perdre l'historique
+de ce qui tournait, et le §0bis documente désormais qu'elles redeviendraient actives si
+quelqu'un rebasculait le mode. (4) **Redémarrer le bot dans la foulée** : jamais sans
+demande explicite de David.
+
+**Ce que ça change pour la suite :** pour la première fois, **la prod et la configuration
+mesurée coïncident**. Les chiffres de la pile A + OB non mitigé (PF 1,21, 576 trades)
+décrivent donc réellement ce que ferait le bot — aux réserves connues près (commissions,
+slippage, exécution partielle, filtre news non modélisés ; avantage du filtre non
+démontré). L'étape suivante est la validation en démo, dont le rôle a été redéfini le
+matin même : vérifier l'exécution réelle, pas départager deux configurations.
+
+## 2026-08-27 — La règle des trois périodes ne suffit pas : il manquait la marge d'erreur
+**Décision :** toute comparaison entre deux variantes de backtest doit désormais être
+accompagnée de **la marge d'erreur sur l'écart** — l'écart de gain moyen par trade et son
+`t` (test de Welch), pas seulement deux profit factors côte à côte. La règle « plusieurs
+périodes ou rien » est **conservée mais rétrogradée** : nécessaire, pas suffisante. Une
+variante ne compte que si elle bat la référence sur toutes les périodes **et** que l'écart
+dépasse sa propre marge d'erreur. Corollaire immédiat : **la réserve qui bloquait la
+décision de David (`require_unmitigated_ob` à 2/3 en entrée M1) est retirée — elle
+n'existait pas.** Elle décrivait du bruit.
+
+**Pourquoi :** David a demandé pourquoi la période juin→août 2026 « se comporte à
+l'envers ». Réponse mesurée : **elle ne se comporte pas à l'envers, il n'y a rien à
+expliquer.** Les trois inversions du 2026-08-26 (le RR, `zone_50`, le passage M5→M1) ont
+été rejouées au test du bruit sur les 186 fichiers de résultats déjà sur disque, sans
+relancer un seul backtest. **Sur 18 comparaisons, aucune n'atteint |t| = 2 ; la plus forte
+est à 1,33.** Hors échantillon, l'écart référence ↔ OB non mitigé vaut **−1,85 $ par trade
+avec une marge de ± 11,71 $** : le vrai effet peut aussi bien valoir −25 $ que +21 $. Une
+direction a été lue dans un nuage de points, trois fois de suite.
+
+**La cause de l'erreur, et c'est le point à retenir : deux questions différentes ont été
+confondues.**
+
+| Question | Comment on y répond | Config recommandée |
+|---|---|---|
+| (a) Cette configuration gagne-t-elle de l'argent ? | `t` sur le gain moyen | **t = +2,08** ✅ |
+| (b) Est-elle MEILLEURE que sa référence ? | `t` sur **l'écart** | **t = +0,97** ❌ indécidable |
+
+Le `t +2,08` célébré comme « le premier au-dessus de 2 du projet » répond à la question
+(a). C'est la (b) qui justifie d'activer une confluence, et **elle n'avait jamais été
+calculée**. L'avantage de `require_unmitigated_ob` sur sa référence vaut **+3,22 $/trade
+± 3,33 $** en entrée M1 (fourchette plausible : −3,43 $ à +9,88 $) et **t +1,08** en M5.
+Le filtre n'est pas mauvais : il est **non démontré, dans les deux sens**.
+
+**Défaut de méthode découvert au passage — les deux runs ne comparent pas les mêmes
+trades.** Un filtre ne peut que RETIRER des opportunités, pourtant des trades
+APPARAISSENT : 110 coupés / 81 apparus sur `2025h2`, 157/106 sur `etude`, 31/20 sur `oos`.
+Le recouvrement n'est que de **52 à 66 %**. La cause est mécanique et parfaitement
+légitime (une seule position à la fois, arrêt après 3 pertes) : bloquer un trade à 13h38
+libère le créneau de 13h49. Conséquence : ce qu'on mesurait comme « l'effet du filtre »
+est l'effet du filtre **plus un rebrassage de la moitié du portefeuille**. Vaut pour les
+47 configurations de la campagne, pas seulement pour celle-ci.
+
+**La règle 3/3 telle qu'appliquée ne trie pas mieux que pile ou face.** Entonnoir réel
+reconstruit depuis les fichiers : 46 variantes sur la période d'étude → 31 battent la
+référence → 16 portées jusqu'au hors échantillon → **8 tiennent 3/3, soit 50 % de
+survie** — exactement le taux d'une pièce de monnaie. Et le chiffre qui résume tout :
+**sur les 46 variantes, ZÉRO n'atteint |t| ≥ 2 contre la référence** sur la période
+d'étude, alors que le hasard seul en aurait produit environ 2,3. La campagne a trouvé
+**moins de signal que du bruit pur n'en aurait fabriqué**. La règle reste utile — elle a
+écarté `zone_50` avant la production — mais seule, elle ne discrimine pas.
+
+**Ce qui SURVIT au test, et qui en sort renforcé :**
+1. **La pile de prod perd vraiment.** t −2,85 dans l'absolu, et en duel direct contre la
+   pile à quatre étages **t = +2,17** (**+2,89** avec l'OB non mitigé). Ce résultat n'a pas
+   été pêché parmi 47 candidates : quatre piles décidées d'avance, donc pas de biais de
+   sélection. **L'interdiction de démarrer le bot sur les réglages de prod est confirmée.**
+2. **La configuration recommandée est régulièrement rentable**, pas portée par un coup de
+   chance : 10 mois gagnants sur 14, et **+1 250 $ sur 459 trades même en retirant les
+   trois meilleurs mois**.
+3. **Ce qui est démontré, c'est la PILE D'ÉTAGES, pas le filtre.** La décision en attente
+   porte donc sur `D1→H1→M15→M1` contre le `H1→M5→M1→M1` de la prod — là le dossier est
+   net — et non sur `require_unmitigated_ob`, qui reste un choix par défaut raisonnable
+   mais non prouvé.
+
+**Corrigé dans le §0ter :** « les deux piles qui prennent H1 comme biais échouent » était
+un cran trop affirmatif. La pile B (`H1→M15→M5→M1`) contre la pile A donne **t = +0,67**,
+non significatif. L'échec est établi pour la **pile de prod (C)**, pas pour la pile B.
+
+**L'hypothèse « le régime récent diffère » ne tient pas non plus à la mesure.** Calculée
+sur les bougies M1 des caches : amplitude quotidienne moyenne de **1,54 %** sur `2025h2`,
+**2,49 %** sur `etude`, **2,07 %** hors échantillon. Le hors échantillon est **entre les
+deux autres** ; c'est `2025h2` (marché calme et tendanciel) qui est l'exception. Il n'y a
+pas de régime aberrant à expliquer, seulement 79 trades.
+
+**Conséquence pour la validation en démo, à dire à David sans détour :** au rythme mesuré
+(~41 trades/mois), départager `require_unmitigated_ob` de sa référence demanderait environ
+**2 450 trades, soit près de cinq ans**. **La démo ne peut pas trancher cette question.**
+Son rôle reste indispensable mais il est autre : vérifier que l'exécution réelle (spread,
+slippage, filtre news, ordres posés chez le broker) se comporte comme le backtest le
+suppose. Ne jamais lui demander de valider un avantage statistique.
+
+**Écarté :** (1) **Chercher une explication de marché à l'inversion** — c'était la demande
+initiale ; il fallait d'abord vérifier qu'il y avait quelque chose à expliquer, et il n'y
+avait rien. (2) **Télécharger une quatrième période** : sans marge d'erreur, une période
+de plus n'aurait fait qu'ajouter un quatrième tirage à pile ou face — et avec la marge
+d'erreur, on voit qu'il en faudrait des dizaines. (3) **Conclure que la configuration
+recommandée est mauvaise** : elle ne l'est pas, elle est rentable et régulière ; c'est son
+AVANTAGE SUR SA RÉFÉRENCE qui est indécidable, pas sa rentabilité. (4) **Jeter la règle
+des trois périodes** : elle a évité `zone_50` en production, elle reste le premier filtre.
+(5) **Corriger le rebrassage en forçant les deux runs sur les mêmes trades** : ce serait
+mesurer un bot qui n'existe pas — la contrainte « une position à la fois » est réelle.
+
+**Méthode :** aucun backtest relancé, aucun réglage modifié, aucun code de l'app touché.
+Tout est recalculé depuis les 186 fichiers de `backend/_matrix2_out/` (qui stockent chaque
+trade individuellement) et les trois caches M1. La méthode reproduit **exactement** les
+chiffres publiés le 2026-08-26 (PF 1,21 / t +2,08 / 576 trades ; PF 0,86 / t −2,85 /
+1 481 trades), ce qui la valide avant d'en tirer des conclusions nouvelles.
+
+**Question ouverte, la seule qui reste :** **août 2026 est le mois le plus directionnel
+des 16 mesurés** (+576 $, directivité 0,312, la plus forte de tout l'échantillon) et c'est
+**le pire mois de la stratégie** (−361 $, PF 0,73). Une stratégie SMC censée suivre le
+biais directionnel qui perd son plus gros mois de tendance, c'est peut-être le vrai signal
+— et il n'a jamais été regardé.
+
 ## 2026-08-26 (suite) — La pile d'étages décide de tout ; la configuration de prod est perdante
 **Décision :** la configuration de référence du projet devient **intraday
 `D1 → H1 → M15 → M1`, `require_unmitigated_ob` actif, sessions Londres et New York
