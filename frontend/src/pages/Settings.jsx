@@ -1,28 +1,17 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { toast } from "sonner";
-import { Lock, AlertTriangle, Save, Plug, CheckCircle2, Loader2, Globe } from "lucide-react";
+import { AlertTriangle, Save, Plug, CheckCircle2, Loader2, Globe } from "lucide-react";
 import SegmentedControl from "../components/SegmentedControl";
 import { endpoints, getBackendUrl, setBackendUrl, getApiKey, setApiKey } from "../api/client";
-
-const TRADING_MODE_OPTIONS = [
-    { value: "intraday", label: "Intraday (H1 → M5)" },
-    { value: "scalping", label: "Scalping (M15 → M1)" },
-];
 
 const RESUME_POLICY_OPTIONS = [
     { value: "next_session", label: "Prochaine session" },
     { value: "next_day", label: "Lendemain" },
 ];
 
-const ACCOUNT_TYPE_OPTIONS = [
-    { value: "demo", label: "Démo" },
-    { value: "real", label: "Réel", icon: <Lock className="w-3.5 h-3.5" /> },
-];
-
 export default function Settings({ settings, refresh }) {
     const [local, setLocal] = useState(null);
     const [saving, setSaving] = useState(false);
-    const [showRealModal, setShowRealModal] = useState(false);
     const [token, setToken] = useState("");
     const [connectionStatus, setConnectionStatus] = useState(null);
     const [mtStatus, setMtStatus] = useState(null);
@@ -148,56 +137,13 @@ export default function Settings({ settings, refresh }) {
         );
     }
 
-    const onAccountTypeChange = (v) => {
-        if (v === "real") {
-            setShowRealModal(true);
-        } else {
-            set("account_type", "demo");
-            save({ account_type: "demo", real_confirmed: false });
-        }
-    };
-
     return (
         <div className="space-y-4 animate-fade-in" data-testid="settings-page">
-            {/* Backend server URL (per-device override, used by the mobile app) */}
-            <Section title="Serveur" icon={<Globe className="w-4 h-4" />}>
-                <Field label="URL du serveur backend">
-                    <input
-                        type="url"
-                        value={backendUrl}
-                        onChange={(e) => setBackendUrlLocal(e.target.value)}
-                        placeholder="ex. https://goldflow-backend.onrender.com"
-                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-3 focus:border-gold focus:outline-none"
-                        data-testid="settings-backend-url"
-                    />
-                </Field>
-                <div className="text-xs text-text-secondary">
-                    Adresse du backend que cette application utilise (mémorisée sur cet appareil).
-                    Changer d&apos;adresse recharge l&apos;application.
-                </div>
-                <Field label="Clé API (si le serveur en exige une)">
-                    <input
-                        type="password"
-                        value={apiKey}
-                        onChange={(e) => setApiKeyLocal(e.target.value)}
-                        placeholder="Clé secrète (header X-API-Key)"
-                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-3 focus:border-gold focus:outline-none"
-                        data-testid="settings-api-key"
-                    />
-                </Field>
-                <div className="text-xs text-text-secondary">
-                    Doit correspondre à la variable d&apos;environnement API_KEY du backend
-                    (mémorisée sur cet appareil). Laisser vide si le serveur n&apos;en exige pas.
-                </div>
-                <button
-                    onClick={() => { setBackendUrl(backendUrl); setApiKey(apiKey); window.location.reload(); }}
-                    className="w-full py-3 border border-bd rounded-xl text-text-primary hover:border-gold/50 transition-colors flex items-center justify-center gap-2"
-                    data-testid="settings-backend-url-apply"
-                >
-                    <Save className="w-4 h-4" />
-                    <span className="text-sm">Appliquer et recharger</span>
-                </button>
-            </Section>
+            {/* Récapitulatif en lecture seule de la configuration validée en backtest
+                (campagne du 2026-08-26, appliquée en prod le 2026-08-27). Les réglages
+                correspondants ont été retirés de cet écran : ce bloc sert à VÉRIFIER qu'ils
+                sont bien ceux-là, et à rendre visible toute dérive. */}
+            <ConfigValidee local={local} />
 
             {/* MetaApi connection */}
             <Section title="Connexion MetaApi" icon={<Plug className="w-4 h-4" />}>
@@ -222,26 +168,11 @@ export default function Settings({ settings, refresh }) {
                         data-testid="settings-metaapi-accountid"
                     />
                 </Field>
-                <Field label="Type de compte">
-                    <SegmentedControl
-                        value={local.account_type}
-                        onChange={onAccountTypeChange}
-                        options={ACCOUNT_TYPE_OPTIONS}
-                        testid="settings-account-type"
-                    />
-                </Field>
-                {local.account_type === "real" && (
-                    <div className="text-xs text-gold bg-gold/10 border border-gold/30 rounded-xl p-3 flex items-start gap-2">
-                        <AlertTriangle className="w-4 h-4 mt-0.5" />
-                        <span>Compte réel actif. Les ordres seront placés avec de l&apos;argent réel.</span>
-                    </div>
-                )}
-                {local.account_type !== "real" && (
-                    <div className="text-xs text-text-secondary bg-bg border border-bd rounded-xl p-3 flex items-start gap-2">
-                        <Lock className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                        <span>Le compte réel nécessite une double confirmation et l&apos;acceptation des risques.</span>
-                    </div>
-                )}
+                <div className="text-xs text-text-secondary bg-bg border border-bd rounded-xl p-3">
+                    C&apos;est le <b>token MetaApi</b> ci-dessus qui détermine le compte utilisé —
+                    aujourd&apos;hui un compte <b>démo</b> chez Axi. Le sélecteur démo/réel a été retiré
+                    de cet écran : il ne changeait pas de compte, et son libellé prêtait à confusion.
+                </div>
                 <div className="flex gap-2">
                     <button onClick={() => save({ metaapi_account_id: local.metaapi_account_id })}
                             disabled={saving}
@@ -257,25 +188,6 @@ export default function Settings({ settings, refresh }) {
                         <span className="text-sm">Tester</span>
                     </button>
                 </div>
-            </Section>
-
-            {/* Mode */}
-            <Section title="Mode de trading">
-                <Field label="Mode">
-                    <SegmentedControl
-                        value={local.trading_mode}
-                        onChange={(v) => setAndSave("trading_mode", v)}
-                        options={TRADING_MODE_OPTIONS}
-                        testid="settings-trading-mode"
-                    />
-                </Field>
-                <NumberField
-                    label="Fenêtre sweep/CHoCH (bougies LTF)"
-                    value={local.recent_window}
-                    onChange={(v) => setAndSaveDebounced("recent_window", v)}
-                    step={1}
-                    testid="settings-recent-window"
-                />
             </Section>
 
             {/* Stratégie SMC */}
@@ -342,115 +254,8 @@ export default function Settings({ settings, refresh }) {
                     onChange={(v) => setAndSave("verbose_journal", v)}
                     testid="settings-verbose-journal"
                 />
-                <div className="text-[10px] uppercase font-bold tracking-widest text-text-secondary pt-1">
-                    Intraday — journalier / biais / structure / entrée
-                </div>
-                <div className="grid grid-cols-4 gap-2">
-                    <SelectField label="Journalier" value={local.intraday_d1} onChange={(v) => setAndSave("intraday_d1", v)} options={TF_OPT} testid="settings-intraday-d1" />
-                    <SelectField label="Biais" value={local.intraday_htf} onChange={(v) => setAndSave("intraday_htf", v)} options={TF_LIST} testid="settings-intraday-htf" />
-                    <SelectField label="Structure" value={local.intraday_mtf} onChange={(v) => setAndSave("intraday_mtf", v)} options={TF_LIST} testid="settings-intraday-mtf" />
-                    <SelectField label="Entrée" value={local.intraday_ltf} onChange={(v) => setAndSave("intraday_ltf", v)} options={TF_LIST} testid="settings-intraday-ltf" />
-                </div>
-                <div className="text-[10px] uppercase font-bold tracking-widest text-text-secondary pt-1">
-                    Scalping — journalier / biais / structure / entrée
-                </div>
-                <div className="grid grid-cols-4 gap-2">
-                    <SelectField label="Journalier" value={local.scalping_d1} onChange={(v) => setAndSave("scalping_d1", v)} options={TF_OPT} testid="settings-scalping-d1" />
-                    <SelectField label="Biais" value={local.scalping_htf} onChange={(v) => setAndSave("scalping_htf", v)} options={TF_LIST} testid="settings-scalping-htf" />
-                    <SelectField label="Structure" value={local.scalping_mtf} onChange={(v) => setAndSave("scalping_mtf", v)} options={TF_LIST} testid="settings-scalping-mtf" />
-                    <SelectField label="Entrée" value={local.scalping_ltf} onChange={(v) => setAndSave("scalping_ltf", v)} options={TF_LIST} testid="settings-scalping-ltf" />
-                </div>
-                <div className="text-xs text-text-secondary">
-                    L&apos;étage journalier est un enrichissement : « Désactivé » ramène l&apos;analyse
-                    aux 3 niveaux d&apos;avant, à l&apos;identique.
-                </div>
             </Section>
 
-            {/* Méthodes de détection — Manuel SMC */}
-            <Section title="Méthodes de détection">
-                <div className="text-xs text-text-secondary -mt-1">
-                    Comment le moteur TRACE les éléments SMC. Chaque option garde l&apos;ancienne
-                    méthode pour pouvoir comparer en backtest avant d&apos;adopter la nouvelle.
-                </div>
-                <Field label="Détection des sommets et creux">
-                    <select
-                        value={local.swing_method || "two_candle"}
-                        onChange={(e) => setAndSave("swing_method", e.target.value)}
-                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
-                        data-testid="settings-swing-method"
-                    >
-                        <option value="two_candle">Règle des 2 bougies (manuel SMC)</option>
-                        <option value="fractal">Fractale N bougies (méthode historique)</option>
-                    </select>
-                </Field>
-                {local.swing_method === "two_candle" ? (
-                    <NumberField label="Bougies opposées de confirmation" value={local.swing_confirm}
-                        onChange={(v) => setAndSaveDebounced("swing_confirm", v)} step={1}
-                        testid="settings-swing-confirm" />
-                ) : (
-                    <NumberField label="Fractale N" value={local.fractal_n}
-                        onChange={(v) => setAndSaveDebounced("fractal_n", v)} step={1}
-                        testid="settings-fractal-n" />
-                )}
-                <Field label="Tracé de l&apos;order block">
-                    <select
-                        value={local.ob_zone || "wick"}
-                        onChange={(e) => setAndSave("ob_zone", e.target.value)}
-                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
-                        data-testid="settings-ob-zone"
-                    >
-                        <option value="wick">Mèches comprises — high à low (manuel SMC)</option>
-                        <option value="body">Corps seul — open/close (historique)</option>
-                    </select>
-                </Field>
-                <Field label="Cassure de structure (BOS / CHoCH)">
-                    <select
-                        value={local.structure_break_mode || "close"}
-                        onChange={(e) => setAndSave("structure_break_mode", e.target.value)}
-                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
-                        data-testid="settings-break-mode"
-                    >
-                        <option value="close">Clôture au-delà (conservateur)</option>
-                        <option value="wick">Mèche suffit (agressif)</option>
-                    </select>
-                </Field>
-                <Field label="Cible du take profit">
-                    <select
-                        value={local.tp_target || "range_bound"}
-                        onChange={(e) => setAndSave("tp_target", e.target.value)}
-                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
-                        data-testid="settings-tp-target"
-                    >
-                        <option value="range_bound">Borne opposée du range (manuel SMC)</option>
-                        <option value="liquidity">BSL / SSL la plus proche</option>
-                        <option value="nearest_swing">Sommet/creux le plus proche (historique)</option>
-                    </select>
-                </Field>
-                <Field label="Placement du stop loss">
-                    <select
-                        value={local.sl_mode || "poi"}
-                        onChange={(e) => setAndSave("sl_mode", e.target.value)}
-                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
-                        data-testid="settings-sl-mode"
-                    >
-                        <option value="poi">Bord de l&apos;order block / du sweep (historique)</option>
-                        <option value="protected">Au-delà du niveau protégé (manuel SMC)</option>
-                    </select>
-                </Field>
-                <NumberField
-                    label="Fraîcheur OB — écarter après N touchés (0 = jamais)"
-                    value={local.max_ob_touches}
-                    onChange={(v) => setAndSaveDebounced("max_ob_touches", v)} step={1}
-                    testid="settings-max-ob-touches"
-                />
-                <Toggle
-                    label="Displacement obligatoire"
-                    description="La bougie de cassure doit laisser une FVG derrière elle : un vrai déplacement, pas un mouvement mou."
-                    value={local.require_displacement}
-                    onChange={(v) => setAndSave("require_displacement", v)}
-                    testid="settings-require-displacement"
-                />
-            </Section>
 
             {/* Contexte journalier */}
             <Section title="Contexte journalier">
@@ -479,101 +284,6 @@ export default function Settings({ settings, refresh }) {
                     testid="settings-po3-ratio" />
             </Section>
 
-            {/* Liquidité et zones */}
-            <Section title="Liquidité et zones">
-                <Toggle
-                    label="Second CHoCH obligatoire"
-                    description="Un 1er changement de structure sur l'unité de temps structure PUIS un 2nd sur celle d'entrée. Répond au piège « ne prends jamais le premier CHoCH »."
-                    value={local.require_second_choch}
-                    onChange={(v) => setAndSave("require_second_choch", v)}
-                    testid="settings-require-second-choch"
-                />
-                {local.require_second_choch && (
-                    <NumberField label="Second CHoCH — fenêtre (bougies structure)"
-                        value={local.second_choch_window}
-                        onChange={(v) => setAndSaveDebounced("second_choch_window", v)} step={1}
-                        testid="settings-second-choch-window" />
-                )}
-                <Toggle
-                    label="Inducement pris obligatoire"
-                    description="Le piège à stops placé juste avant la zone doit avoir été déclenché avant d'entrer."
-                    value={local.require_inducement_swept}
-                    onChange={(v) => setAndSave("require_inducement_swept", v)}
-                    testid="settings-require-inducement"
-                />
-                <Toggle
-                    label="Zone OTE (62-79%) obligatoire"
-                    description="Filtre bien plus strict que premium/discount : n'entre que dans la bande profonde du retracement. Peu d'opportunités."
-                    value={local.require_ote}
-                    onChange={(v) => setAndSave("require_ote", v)}
-                    testid="settings-require-ote"
-                />
-                {local.require_ote && (
-                    <div className="grid grid-cols-2 gap-2">
-                        <NumberField label="OTE — borne basse" value={local.ote_low_pct}
-                            onChange={(v) => setAndSaveDebounced("ote_low_pct", v)} step={0.01}
-                            testid="settings-ote-low" />
-                        <NumberField label="OTE — borne haute" value={local.ote_high_pct}
-                            onChange={(v) => setAndSaveDebounced("ote_high_pct", v)} step={0.01}
-                            testid="settings-ote-high" />
-                    </div>
-                )}
-                <Toggle
-                    label="Liquidité PDH / PDL"
-                    description="Ajoute le haut et le bas de la veille aux niveaux de liquidité (cibles TP et stops protégés)."
-                    value={local.use_pdh_pdl_liquidity}
-                    onChange={(v) => setAndSave("use_pdh_pdl_liquidity", v)}
-                    testid="settings-use-pdh-pdl"
-                />
-                <Toggle
-                    label="Liquidité du range asiatique"
-                    description="Ajoute les bornes de la nuit (23h-7h Paris) aux niveaux de liquidité. Le manuel le donne surtout pertinent sur paires européennes — l'or bouge la nuit, à tester."
-                    value={local.use_asia_liquidity}
-                    onChange={(v) => setAndSave("use_asia_liquidity", v)}
-                    testid="settings-use-asia"
-                />
-                {local.use_asia_liquidity && (
-                    <div className="grid grid-cols-2 gap-2">
-                        <NumberField label="Nuit — heure de début" value={local.asia_start_hour}
-                            onChange={(v) => setAndSaveDebounced("asia_start_hour", v)} step={1}
-                            testid="settings-asia-start" />
-                        <NumberField label="Nuit — heure de fin" value={local.asia_end_hour}
-                            onChange={(v) => setAndSaveDebounced("asia_end_hour", v)} step={1}
-                            testid="settings-asia-end" />
-                    </div>
-                )}
-                <Field label="Zones acceptées comme point d&apos;intérêt">
-                    <select
-                        value={local.poi_source || "ob"}
-                        onChange={(e) => setAndSave("poi_source", e.target.value)}
-                        className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
-                        data-testid="settings-poi-source"
-                    >
-                        <option value="ob">Order blocks seuls (défaut)</option>
-                        <option value="ob,bpr">Order blocks + BPR</option>
-                        <option value="ob,breaker">Order blocks + Breaker</option>
-                        <option value="ob,mitigation">Order blocks + Mitigation</option>
-                        <option value="ob,rejection">Order blocks + Rejection</option>
-                        <option value="all">Toutes les zones</option>
-                    </select>
-                </Field>
-                {(local.poi_source || "").includes("rejection") || local.poi_source === "all" ? (
-                    <NumberField label="Rejection Block — taille min. de la mèche (0-1)"
-                        value={local.rejection_wick_ratio}
-                        onChange={(v) => setAndSaveDebounced("rejection_wick_ratio", v)} step={0.05}
-                        testid="settings-rejection-ratio" />
-                ) : null}
-                <NumberField label="Liquidité — tolérance de regroupement des sommets"
-                    value={local.liquidity_cluster_atr}
-                    onChange={(v) => setAndSaveDebounced("liquidity_cluster_atr", v)} step={0.05}
-                    testid="settings-liquidity-cluster" />
-                <div className="text-xs text-text-secondary">
-                    Teste un seul type de zone à la fois : c&apos;est la seule façon de savoir
-                    lequel apporte vraiment quelque chose. La tolérance de regroupement s&apos;exprime
-                    en amplitude moyenne d&apos;une bougie : plus elle est haute, plus des sommets
-                    éloignés comptent comme un seul réservoir de liquidité.
-                </div>
-            </Section>
 
             {/* TP échelonnés */}
             <Section title="Take profit échelonnés">
@@ -657,20 +367,6 @@ export default function Settings({ settings, refresh }) {
                 )}
             </Section>
 
-            {/* Sessions */}
-            <Section title="Sessions de trading">
-                <div className="text-xs text-text-secondary -mt-1">
-                    Le bot ne trade que pendant ces fenêtres (heure locale de chaque place,
-                    heure d&apos;été gérée automatiquement).
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                    <TimeField label="Londres début" value={local.session_london_start} onChange={(v) => setAndSave("session_london_start", v)} testid="settings-london-start" />
-                    <TimeField label="Londres fin" value={local.session_london_end} onChange={(v) => setAndSave("session_london_end", v)} testid="settings-london-end" />
-                    <TimeField label="New York début" value={local.session_newyork_start} onChange={(v) => setAndSave("session_newyork_start", v)} testid="settings-ny-start" />
-                    <TimeField label="New York fin" value={local.session_newyork_end} onChange={(v) => setAndSave("session_newyork_end", v)} testid="settings-ny-end" />
-                </div>
-            </Section>
-
             {/* Risk */}
             <Section title="Gestion du risque">
                 <Slider
@@ -684,7 +380,6 @@ export default function Settings({ settings, refresh }) {
                 <NumberField label="RR minimum" value={local.min_rr} onChange={(v) => setAndSaveDebounced("min_rr", v)} step={0.1} testid="settings-min-rr" />
                 <NumberField label="Pertes consécutives max" value={local.max_consec_losses} onChange={(v) => setAndSaveDebounced("max_consec_losses", v)} step={1} testid="settings-max-losses" />
                 <NumberField label="Drawdown maximum (%)" value={local.max_drawdown_pct} onChange={(v) => setAndSaveDebounced("max_drawdown_pct", v)} step={0.1} testid="settings-max-dd" />
-                <NumberField label="Trades max / jour" value={local.max_trades_per_day} onChange={(v) => setAndSaveDebounced("max_trades_per_day", v)} step={1} testid="settings-max-trades" />
                 <Field label="Reprise après arrêt auto">
                     <SegmentedControl
                         value={local.resume_policy}
@@ -759,6 +454,58 @@ export default function Settings({ settings, refresh }) {
                 <Toggle label="Annonce éco imminente" value={local.notif_news} onChange={(v) => setAndSave("notif_news", v)} testid="settings-notif-news" />
             </Section>
 
+            {/* Connexion de CET appareil au backend. Rarement utile, mais indispensable
+                sur un nouvel appareil ou après réinstallation de l'APK : sans la clé API,
+                l'application ne peut plus joindre le serveur. Replié, jamais supprimé. */}
+            <details className="bg-panel border border-bd rounded-card p-4" data-testid="settings-depannage">
+                <summary className="text-[11px] font-bold uppercase tracking-widest text-text-secondary cursor-pointer flex items-center gap-2">
+                    <Globe className="w-4 h-4" />Dépannage — connexion de cet appareil
+                </summary>
+                <div className="text-xs text-text-secondary mt-3">
+                    À ne toucher que si l&apos;application n&apos;arrive plus à joindre le serveur
+                    (nouvel appareil, APK réinstallée). Ces deux valeurs sont mémorisées sur cet
+                    appareil uniquement, pas en base.
+                </div>
+                <div className="space-y-3 mt-3">
+                    <Field label="URL du serveur backend">
+                        <input
+                            type="url"
+                            value={backendUrl}
+                            onChange={(e) => setBackendUrlLocal(e.target.value)}
+                            placeholder="ex. https://goldflow-backend.onrender.com"
+                            className="num w-full bg-bg border border-bd rounded-xl px-3 py-3 focus:border-gold focus:outline-none"
+                            data-testid="settings-backend-url"
+                        />
+                    </Field>
+                    <div className="text-xs text-text-secondary">
+                        Adresse du backend que cette application utilise (mémorisée sur cet appareil).
+                        Changer d&apos;adresse recharge l&apos;application.
+                    </div>
+                    <Field label="Clé API (si le serveur en exige une)">
+                        <input
+                            type="password"
+                            value={apiKey}
+                            onChange={(e) => setApiKeyLocal(e.target.value)}
+                            placeholder="Clé secrète (header X-API-Key)"
+                            className="num w-full bg-bg border border-bd rounded-xl px-3 py-3 focus:border-gold focus:outline-none"
+                            data-testid="settings-api-key"
+                        />
+                    </Field>
+                    <div className="text-xs text-text-secondary">
+                        Doit correspondre à la variable d&apos;environnement API_KEY du backend
+                        (mémorisée sur cet appareil). Laisser vide si le serveur n&apos;en exige pas.
+                    </div>
+                    <button
+                        onClick={() => { setBackendUrl(backendUrl); setApiKey(apiKey); window.location.reload(); }}
+                        className="w-full py-3 border border-bd rounded-xl text-text-primary hover:border-gold/50 transition-colors flex items-center justify-center gap-2"
+                        data-testid="settings-backend-url-apply"
+                    >
+                        <Save className="w-4 h-4" />
+                        <span className="text-sm">Appliquer et recharger</span>
+                    </button>
+                </div>
+            </details>
+
             {/* Save All */}
             <button onClick={() => save(local)} disabled={saving}
                 className="w-full py-3.5 bg-gold text-bg font-bold rounded-xl hover:brightness-110 transition-all disabled:opacity-60 flex items-center justify-center gap-2"
@@ -767,17 +514,84 @@ export default function Settings({ settings, refresh }) {
                 <span>{saving ? "Sauvegarde…" : "Sauvegarder tous les paramètres"}</span>
             </button>
 
-            {showRealModal && (
-                <RealAccountModal
-                    onCancel={() => setShowRealModal(false)}
-                    onConfirm={() => {
-                        set("account_type", "real");
-                        set("real_confirmed", true);
-                        save({ account_type: "real", real_confirmed: true });
-                        setShowRealModal(false);
-                    }}
-                />
+        </div>
+    );
+}
+
+// ─── Configuration validée en backtest, affichée en lecture seule ───────────────
+// Référence : campagne des trois périodes (2026-08-26), appliquée en prod le 2026-08-27.
+// 576 trades, PF 1,21. Les réglages listés ici ne sont plus modifiables depuis l'écran :
+// ce bloc existe pour qu'on puisse VOIR qu'ils sont bien appliqués, et repérer une dérive.
+const CONFIG_VALIDEE = {
+    trading_mode: "intraday",
+    intraday_d1: "D1", intraday_htf: "H1", intraday_mtf: "M15", intraday_ltf: "M1",
+    require_unmitigated_ob: true, require_premium_discount: true,
+    require_fvg_entry: false, require_sweep_then_choch: false, require_displacement: false,
+    require_second_choch: false, require_inducement_swept: false, require_ote: false,
+    require_daily_bias: false, require_po3: false,
+    session_london_start: "08:00", session_london_end: "17:00",
+    session_newyork_start: "08:00", session_newyork_end: "17:00",
+    min_rr: 1, partial_tp_enabled: true, risk_per_trade_pct: 1,
+    max_consec_losses: 3, max_drawdown_pct: 3, trailing_mode: "off",
+    swing_method: "two_candle", ob_zone: "wick", structure_break_mode: "close",
+    poi_source: "ob", ob_entry_mode: "close", sl_mode: "poi", tp_target: "range_bound",
+};
+
+function memeValeur(a, b) {
+    if (typeof b === "number") return Number(a) === b;
+    return a === b;
+}
+
+function ConfigValidee({ local }) {
+    const derives = Object.keys(CONFIG_VALIDEE).filter(
+        (k) => !memeValeur(local[k], CONFIG_VALIDEE[k])
+    );
+    const illimite = Number(local.max_trades_per_day) >= 999999;
+    const ok = derives.length === 0 && illimite;
+
+    const lignes = [
+        ["Mode", local.trading_mode],
+        ["Étages", [local.intraday_d1, local.intraday_htf, local.intraday_mtf, local.intraday_ltf].filter(Boolean).join(" → ")],
+        ["Filtre actif", local.require_unmitigated_ob ? "Order block non mitigé" : "aucun"],
+        ["Premium / Discount", local.require_premium_discount ? "exigé" : "désactivé"],
+        ["Sessions (heure locale)", `Londres ${local.session_london_start}–${local.session_london_end} · New York ${local.session_newyork_start}–${local.session_newyork_end}`],
+        ["RR minimum", local.min_rr],
+        ["Risque par trade", `${local.risk_per_trade_pct} %`],
+        ["TP échelonnés", local.partial_tp_enabled ? "activés" : "désactivés"],
+        ["Trades par jour", illimite ? "illimité" : local.max_trades_per_day],
+        ["Arrêts auto", `${local.max_consec_losses} pertes d'affilée · drawdown ${local.max_drawdown_pct} % (par jour)`],
+    ];
+
+    return (
+        <div className={`border rounded-card p-4 ${ok ? "bg-panel border-bd" : "bg-red/10 border-red/40"}`}
+             data-testid="settings-config-validee">
+            <div className="text-[11px] font-bold uppercase tracking-widest text-text-secondary mb-1 flex items-center gap-2">
+                {ok ? <CheckCircle2 className="w-4 h-4 text-green" /> : <AlertTriangle className="w-4 h-4 text-red" />}
+                Configuration validée
+            </div>
+            <div className="text-xs text-text-secondary mb-3">
+                {ok
+                    ? "Le moteur tourne exactement sur la configuration mesurée en backtest (576 trades, profit factor 1,21). Ces réglages ne sont plus modifiables depuis cet écran."
+                    : "⚠ Un ou plusieurs réglages ne correspondent plus à la configuration mesurée. Signale-le avant de démarrer le bot."}
+            </div>
+            <div className="space-y-1.5">
+                {lignes.map(([k, v]) => (
+                    <div key={k} className="flex items-baseline justify-between gap-3 text-sm">
+                        <span className="text-text-secondary text-xs flex-shrink-0">{k}</span>
+                        <span className="num text-right text-text-primary">{String(v)}</span>
+                    </div>
+                ))}
+            </div>
+            {!ok && (
+                <div className="text-xs text-red mt-3 break-words">
+                    Écarts : {[...derives, ...(illimite ? [] : ["max_trades_per_day"])].join(", ")}
+                </div>
             )}
+            <div className="text-[11px] text-text-secondary mt-3 leading-relaxed">
+                Les performances passées ne préjugent pas des performances futures. Le filtre
+                « order block non mitigé » n&apos;est pas démontré supérieur à son absence : c&apos;est
+                un choix par défaut, pas un acquis.
+            </div>
         </div>
     );
 }
@@ -816,39 +630,6 @@ function NumberField({ label, value, onChange, step, testid, hint }) {
                 data-testid={testid}
             />
             {hint && <div className="text-xs text-text-secondary mt-1">{hint}</div>}
-        </Field>
-    );
-}
-
-const TF_LIST = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
-// Étage journalier : "" = désactivé (retour à l'analyse 3 niveaux).
-const TF_OPT = ["", ...TF_LIST];
-
-function SelectField({ label, value, onChange, options, testid }) {
-    return (
-        <Field label={label}>
-            <select
-                value={value || ""}
-                onChange={(e) => onChange(e.target.value)}
-                className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
-                data-testid={testid}
-            >
-                {options.map((o) => <option key={o} value={o}>{o === "" ? "Désactivé" : o}</option>)}
-            </select>
-        </Field>
-    );
-}
-
-function TimeField({ label, value, onChange, testid }) {
-    return (
-        <Field label={label}>
-            <input
-                type="time"
-                value={value || ""}
-                onChange={(e) => onChange(e.target.value)}
-                className="num w-full bg-bg border border-bd rounded-xl px-3 py-2.5 focus:border-gold focus:outline-none"
-                data-testid={testid}
-            />
         </Field>
     );
 }
@@ -949,39 +730,3 @@ function MetaApiStatusBanner({ status }) {
     );
 }
 
-function RealAccountModal({ onCancel, onConfirm }) {
-    const [check1, setCheck1] = useState(false);
-    const [check2, setCheck2] = useState(false);
-    return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center px-4" data-testid="real-account-modal">
-            <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onCancel} />
-            <div className="relative w-full max-w-sm bg-panel border border-red/40 rounded-2xl p-5 animate-fade-in">
-                <div className="flex items-center gap-2 text-red mb-3">
-                    <AlertTriangle className="w-5 h-5" />
-                    <h3 className="font-bold">Passage en compte réel</h3>
-                </div>
-                <p className="text-sm text-text-secondary leading-relaxed mb-4">
-                    Tu t&apos;apprêtes à activer le trading sur un compte réel.
-                    Les ordres placés engageront ton vrai capital. Le trading sur le forex et l&apos;or comporte des risques de perte importants.
-                </p>
-                <label className="flex items-start gap-2 mb-2 text-sm cursor-pointer">
-                    <input type="checkbox" checked={check1} onChange={(e) => setCheck1(e.target.checked)} className="mt-0.5 accent-gold" data-testid="real-check-1" />
-                    <span>Je comprends que les ordres seront placés avec de l&apos;argent réel.</span>
-                </label>
-                <label className="flex items-start gap-2 mb-4 text-sm cursor-pointer">
-                    <input type="checkbox" checked={check2} onChange={(e) => setCheck2(e.target.checked)} className="mt-0.5 accent-gold" data-testid="real-check-2" />
-                    <span>J&apos;accepte les risques liés au trading automatique.</span>
-                </label>
-                <div className="flex gap-2">
-                    <button onClick={onCancel} className="flex-1 py-2.5 border border-bd rounded-xl text-text-secondary" data-testid="real-cancel">Annuler</button>
-                    <button
-                        onClick={onConfirm}
-                        disabled={!check1 || !check2}
-                        className="flex-1 py-2.5 bg-red text-bg font-bold rounded-xl disabled:opacity-40"
-                        data-testid="real-confirm"
-                    >Activer le réel</button>
-                </div>
-            </div>
-        </div>
-    );
-}
