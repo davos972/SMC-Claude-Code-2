@@ -21,8 +21,11 @@
 **Ce qui tourne.** Prod sur Render (`goldflow-backend` + `goldflow-frontend`), base
 MongoDB Atlas. **La prod tourne sur `origin/main`, pas sur la copie locale** — le vrai
 numéro se lit toujours avec `git rev-parse --short origin/main`, ne jamais le supposer.
-Dernier commit fonctionnel déployé : **`698ceba`** (2026-08-26) ; les commits postérieurs
-de ce jour sont documentaires et ne changent aucun comportement.
+Dernier commit déployé : **`506e7bc`** (2026-09-07). Le dernier commit qui touche le
+**moteur** reste `db61adb` (anti-anticipation, 2026-08-26) : depuis, seuls le frontend et
+la documentation ont bougé. `6465189` allège la page Réglages — c'est le **frontend** ;
+`backend/` n'a pas changé depuis le 2026-08-26, donc aucun changement de comportement du
+bot n'a été déployé.
 🟢 **État du bot : EN MARCHE**, sur la configuration validée, **aucune position ouverte**.
 Lu dans Atlas le **2026-09-07 à 05:16 UTC** (`bot_state.running = true`, `trades_today = 0`).
 Redémarré par David le 2026-08-27 à 17:59 UTC, après l'écriture des réglages testés à 15:44.
