@@ -21,11 +21,18 @@
 **Ce qui tourne.** Prod sur Render (`goldflow-backend` + `goldflow-frontend`), base
 MongoDB Atlas. **La prod tourne sur `origin/main`, pas sur la copie locale** — le vrai
 numéro se lit toujours avec `git rev-parse --short origin/main`, ne jamais le supposer.
-Dernier commit déployé : **`ef32ba4`** (2026-09-07). Le dernier commit qui touche le
-**moteur** reste `db61adb` (anti-anticipation, 2026-08-26) : depuis, seuls le frontend et
-la documentation ont bougé. `6465189` allège la page Réglages — c'est le **frontend** ;
-`backend/` n'a pas changé depuis le 2026-08-26, donc aucun changement de comportement du
-bot n'a été déployé.
+🚫 **Ce paragraphe ne contient PLUS de numéro de commit — et il ne doit jamais en
+reprendre.** Trois fois de suite (`698ceba`, `506e7bc`, `ef32ba4`) le numéro écrit ici
+s'est périmé au commit suivant, y compris dans le commit qui corrigeait justement ce
+défaut. **Le commit déployé se lit, il ne se documente pas** :
+```powershell
+git rev-parse --short origin/main     # ce qui tourne en prod
+git log --oneline -1 origin/main -- backend/    # dernier changement de COMPORTEMENT
+```
+Repère stable et utile : le dernier commit qui touche le **moteur SMC** (`smc.py` /
+`backtest.py`) est `db61adb` (anti-anticipation, 2026-08-26). Les décisions de trading
+n'ont donc pas changé depuis — tout le reste est frontend, documentation, ou garde-fous
+prop firm.
 🔴 **État du bot : À L'ARRÊT** (`bot_state.running = false`, `stop_reason = "manual"`),
 arrêté par David le **2026-09-08 à 06:43 UTC**. Aucune position ouverte.
 ⚠️ Cet état change sans prévenir : **toujours le relire dans Atlas**, ne jamais le recopier
