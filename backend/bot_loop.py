@@ -11,7 +11,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import news as news_engine
 import sessions as sess
@@ -63,6 +63,63 @@ def _trading_day_key(now_utc: datetime, s: Dict) -> str:
             d = d + timedelta(days=1)
         return d.isoformat()
     return now_utc.date().isoformat()
+
+
+def _as_utc(ts: Any) -> Optional[datetime]:
+    """ISO (ou datetime) -> datetime AWARE en UTC. None si illisible."""
+    if isinstance(ts, datetime):
+        d = ts
+    else:
+        try:
+            d = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    return d.replace(tzinfo=timezone.utc) if d.tzinfo is None else d.astimezone(timezone.utc)
+
+
+def prop_consistency(trades: List[Dict[str, Any]], s: Dict) -> Dict[str, Any]:
+    """Regle de coherence prop firm : le MEILLEUR JOUR doit rester <= X % du profit total.
+
+    Calcul PUR (aucune I/O). Les trades clotures sont regroupes par JOUR PROP — le
+    reset de 17h EST, via `_trading_day_key`, pas le jour calendaire.
+
+    ⚠️ Cette regle N'ARRETE JAMAIS le bot (decision de David, 2026-09-08). Contrairement
+    aux trois autres regles prop, la violer ne fait pas perdre le compte : elle bloque ou
+    reduit un PAYOUT. Couper le bot pour la respecter reviendrait a renoncer a du profit
+    reel pour proteger une date de retrait. On surveille et on alerte, point.
+
+    Un P&L inconnu (`pnl` a None) est EXCLU du calcul, comme partout ailleurs dans le
+    journal — jamais comble par une estimation (garde-fou du CLAUDE.md §9).
+    """
+    limit = float(s.get("prop_consistency_pct", 20.0) or 0.0)
+    par_jour: Dict[str, float] = {}
+    for t in trades:
+        if t.get("status") != "closed" or t.get("pnl") is None:
+            continue
+        d = _as_utc(t.get("close_time") or t.get("open_time"))
+        if d is None:
+            continue
+        k = _trading_day_key(d, s)
+        par_jour[k] = par_jour.get(k, 0.0) + float(t["pnl"])
+
+    total = sum(par_jour.values())
+    gagnants = {k: v for k, v in par_jour.items() if v > 0}
+    base = {"limite_pct": limit, "profit_total": round(total, 2),
+            "jours": len(par_jour), "jours_gagnants": len(gagnants),
+            "meilleur_jour": None, "meilleur_jour_date": None,
+            "ratio_pct": None, "ok": True, "manque_pour_payout": 0.0}
+    if limit <= 0 or not gagnants or total <= 0:
+        # Pas de regle, pas encore de jour gagnant, ou cumul negatif : rien a dire.
+        return base
+    date_max = max(gagnants, key=lambda k: gagnants[k])
+    best = gagnants[date_max]
+    ratio = best / total * 100.0
+    # Profit total minimum pour que ce meilleur jour repasse sous la limite.
+    total_requis = best * 100.0 / limit
+    base.update(meilleur_jour=round(best, 2), meilleur_jour_date=date_max,
+                ratio_pct=round(ratio, 1), ok=ratio <= limit,
+                manque_pour_payout=round(max(0.0, total_requis - total), 2))
+    return base
 
 
 async def _notify(ntype: str, category: str, title: str, message: str) -> None:
@@ -383,8 +440,38 @@ async def _check_closed_positions(current_equity: float, magic_number: int) -> N
                 await store.set_bot_state({"consec_losses": consec})
                 await _notify("warning", "close_trade", f"Trade fermé {symbol}",
                               f"Perte −${abs(delta):.2f} · {consec} perte(s) consécutive(s)")
+        if closed_ids:
+            await _check_prop_consistency()
     except Exception as e:
         logger.warning("_check_closed_positions failed: %s", e)
+
+
+async def _check_prop_consistency() -> None:
+    """Alerte (sans jamais arreter) quand le meilleur jour depasse la limite de coherence.
+
+    N'alerte qu'au CHANGEMENT de situation : la signature « date du meilleur jour + ratio
+    arrondi » est memorisee dans bot_state. Sans ca, chaque cloture de trade renverrait la
+    meme alerte pendant des jours.
+    """
+    try:
+        s = await store.get_settings()
+        if not s.get("prop_firm_enabled") or float(s.get("prop_consistency_pct", 0) or 0) <= 0:
+            return
+        st = prop_consistency(await store.list_trades(limit=10000), s)
+        state = await store.get_bot_state()
+        signature = "" if st["ok"] else f"{st['meilleur_jour_date']}|{st['ratio_pct']:.0f}"
+        if signature == (state.get("consistency_signature") or ""):
+            return
+        await store.set_bot_state({"consistency_signature": signature})
+        if not st["ok"]:
+            await _notify(
+                "warning", "prop",
+                "Règle de cohérence dépassée",
+                f"Le {st['meilleur_jour_date']} pèse {st['ratio_pct']:.0f} % du profit total "
+                f"(limite {st['limite_pct']:.0f} %). Il manque ${st['manque_pour_payout']:.0f} "
+                f"de profit ailleurs pour pouvoir demander un payout. Le bot continue de trader.")
+    except Exception as e:
+        logger.warning("_check_prop_consistency failed: %s", e)
 
 
 def _partial_tp_params(s: Dict) -> Dict[str, Any]:

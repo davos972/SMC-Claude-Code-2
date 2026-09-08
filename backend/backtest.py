@@ -114,6 +114,40 @@ def _bt_calc_lot(balance: float, risk_pct: float, entry: float, sl: float,
     return max(0.01, min(max_lot, round(lot * 100) / 100))
 
 
+def max_positions_allowed(max_concurrent: int, risk_pct: float, max_dd_pct: float) -> int:
+    """Nombre MAXIMUM de positions simultanees autorisees. Logique unique (backtest + live).
+
+    Le plafond demande par David le 2026-09-07 : le risque cumule des positions ouvertes
+    ne doit JAMAIS pouvoir depasser le drawdown maximum. Avec 1 % par trade et un DD max
+    de 3 %, cela borne a 3 positions — meme si `max_concurrent_positions` valait 10.
+
+    ⚠️ Ce plafond est indispensable : `max_drawdown_pct` ne protege PAS de ce cas. Il
+    n'est evalue qu'a la FERMETURE d'un trade (`_register_close`), sur l'equite REALISEE ;
+    rien ne surveille la perte latente de positions encore ouvertes. Sans la borne
+    ci-dessous, N positions a 1 % pourraient perdre N % avant le moindre declenchement.
+    """
+    cap = max(1, int(max_concurrent))
+    if risk_pct > 0 and max_dd_pct > 0:
+        cap = min(cap, max(1, int(max_dd_pct // risk_pct)))
+    return cap
+
+
+def _apply_stop_check(rm: Dict[str, Any], equity: float, max_consec: int, max_dd_pct: float,
+                      cdt: Optional[datetime], sinfo: Dict[str, Any],
+                      settings: Dict[str, Any]) -> None:
+    """Declenche l'arret auto si le compteur de pertes ou le drawdown jour est atteint."""
+    stop = rm["consec"] >= max_consec
+    if not stop:
+        dse = rm.get("day_start_equity") or equity
+        dd = (dse - equity) / dse * 100 if dse > 0 else 0
+        stop = dd >= max_dd_pct
+    if stop:
+        rm["stopped"] = True
+        day_key = _bt_day_key(cdt, settings) if cdt else rm["day"]
+        rm["stop_day"] = day_key
+        rm["stop_session"] = f"{day_key}|{sinfo.get('session')}"
+
+
 def _register_close(rm: Dict[str, Any], closed_trade: Dict[str, Any], open_trade: Dict[str, Any],
                     equity: float, max_consec: int, max_dd_pct: float,
                     cdt: Optional[datetime], sinfo: Dict[str, Any], settings: Dict[str, Any]) -> None:
@@ -125,16 +159,33 @@ def _register_close(rm: Dict[str, Any], closed_trade: Dict[str, Any], open_trade
         rm["consec"] = 0
     else:
         rm["consec"] += 1
-    stop = rm["consec"] >= max_consec
-    if not stop:
-        dse = rm.get("day_start_equity") or equity
-        dd = (dse - equity) / dse * 100 if dse > 0 else 0
-        stop = dd >= max_dd_pct
-    if stop:
-        rm["stopped"] = True
-        day_key = _bt_day_key(cdt, settings) if cdt else rm["day"]
-        rm["stop_day"] = day_key
-        rm["stop_session"] = f"{day_key}|{sinfo.get('session')}"
+    _apply_stop_check(rm, equity, max_consec, max_dd_pct, cdt, sinfo, settings)
+
+
+def _register_closes(rm: Dict[str, Any], fermes: List[Any], equity: float, max_consec: int,
+                     max_dd_pct: float, cdt: Optional[datetime], sinfo: Dict[str, Any],
+                     settings: Dict[str, Any], grouping: str = "each") -> None:
+    """Traite les trades fermes DANS LA MEME bougie.
+
+    grouping="each"  : chaque perte incremente le compteur — comportement historique,
+                       identique au bot live, et le seul valide a 1 position.
+    grouping="batch" : plusieurs positions perdues dans la meme bougie ne comptent que
+                       pour UNE perte. Coherent avec le fait que des positions
+                       simultanees de meme sens sont UN seul pari (96 % des positions
+                       rapprochees sont de meme sens, mesure du 2026-09-07) — mais c'est
+                       un ASSOUPLISSEMENT d'un garde-fou : a ne mesurer, pas a activer.
+    """
+    if grouping == "batch" and len(fermes) > 1:
+        pertes = 0
+        for closed, ot in fermes:
+            be_threshold = ot.get("_equity_at_open", equity) * 0.001
+            if closed.get("pnl", 0.0) < -be_threshold:
+                pertes += 1
+        rm["consec"] = rm["consec"] + 1 if pertes else 0
+        _apply_stop_check(rm, equity, max_consec, max_dd_pct, cdt, sinfo, settings)
+        return
+    for closed, ot in fermes:
+        _register_close(rm, closed, ot, equity, max_consec, max_dd_pct, cdt, sinfo, settings)
 
 
 def _partial_bar(bars: List[Dict]) -> Dict[str, Any]:
@@ -206,6 +257,13 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
     max_consec = int(settings.get("max_consec_losses", 3))
     max_dd_pct = float(settings.get("max_drawdown_pct", 3.0))
     resume_policy = settings.get("resume_policy", "next_session")
+    # Positions simultanees (2026-09-07). Defauts = comportement historique STRICT :
+    # 1 position a la fois, aucune limite par sens, chaque perte comptee separement.
+    # Priorite a la requete comme le trailing, pour comparer sans toucher aux Reglages.
+    max_concurrent = max_positions_allowed(
+        int(_tparam("max_concurrent_positions", 1)), risk_pct, max_dd_pct)
+    max_per_side = int(_tparam("max_concurrent_per_side", 0))   # 0 = pas de limite
+    consec_grouping = str(_tparam("consec_loss_grouping", "each"))
 
     if not candles_m1:
         return {"trades": [], "metrics": {}, "equity_curve": []}
@@ -250,7 +308,7 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         "stopped": False, "stop_day": None, "stop_session": None,
     }
 
-    open_trade: Optional[Dict[str, Any]] = None
+    open_trades: List[Dict[str, Any]] = []
     step = max(1, len(ltf_candles) // 100)
 
     for i in range(60, len(ltf_candles)):
@@ -312,20 +370,29 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
         if len(htf_window) < 30 or len(mtf_window) < 30:
             continue
 
-        if open_trade:
-            _check_exit(open_trade, c, spread_price, trades, equity_curve, contract_size)
-            if open_trade.get("_closed"):
+        if open_trades:
+            restants, fermes = [], []
+            for ot in open_trades:
+                _check_exit(ot, c, spread_price, trades, equity_curve, contract_size)
+                if ot.get("_closed"):
+                    fermes.append((trades[-1], ot))
+                else:
+                    if trailing["mode"] != "off":
+                        # Sortie non déclenchée avec le SL courant : on resserre le SL
+                        # pour la bougie SUIVANTE (jamais dans la même bougie → conservateur).
+                        _update_trailing(ot, c, ltf_window, trailing)
+                    restants.append(ot)
+            open_trades = restants
+            if fermes:
                 equity = equity_curve[-1]["equity"]
                 # MAJ des limites (pertes consécutives + drawdown) comme le bot live.
-                _register_close(rm, trades[-1], open_trade, equity,
-                                max_consec, max_dd_pct, cdt, sinfo, settings)
-                open_trade = None
-            elif trailing["mode"] != "off":
-                # Sortie non déclenchée avec le SL courant : on resserre le SL
-                # pour la bougie SUIVANTE (jamais dans la même bougie → conservateur).
-                _update_trailing(open_trade, c, ltf_window, trailing)
+                _register_closes(rm, fermes, equity, max_consec, max_dd_pct,
+                                 cdt, sinfo, settings, consec_grouping)
 
-        if open_trade:
+        # Capacité globale atteinte → inutile d'analyser (et coûteux : `analyze` est le
+        # gros du temps de calcul). La limite PAR SENS, elle, ne peut être testée
+        # qu'une fois le signal connu : elle est appliquée juste avant l'ouverture.
+        if len(open_trades) >= max_concurrent:
             continue
 
         # Sessions: comme le bot live, on n'OUVRE de position que pendant Londres/NY.
@@ -364,10 +431,14 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
                          **smc_params)
         sig = result.get("signal")
         if sig:
+            # Limite PAR SENS : au plus N positions ouvertes du même côté. 0 = illimité.
+            if max_per_side > 0 and sum(
+                    1 for t in open_trades if t["side"] == sig["side"]) >= max_per_side:
+                continue
             entry_price = sig["entry"] + (spread_price if sig["side"] == "buy" else -spread_price)
             # Dimensionnement au risque % comme le live (et non plus 1 lot fixe).
             lot = _bt_calc_lot(equity, risk_pct, entry_price, float(sig["sl"]), contract_size, max_lot)
-            open_trade = {
+            open_trades.append({
                 "id": str(uuid.uuid4()),
                 "side": sig["side"],
                 "entry_time": _to_iso(c["time"]),
@@ -391,15 +462,17 @@ async def run_backtest(req: Dict[str, Any], candles_m1: List[Dict],
                 "_remaining_pct": 100.0,
                 "_realized": 0.0,
                 "_exit_weighted": 0.0,
-            }
+            })
             rm["trades_today"] += 1
 
     # Close any trade still open at the end of the period at the last candle's
     # close — otherwise it is silently omitted from the metrics (biasing winrate).
-    if open_trade and not open_trade.get("_closed") and ltf_candles:
+    for ot in open_trades:
+        if ot.get("_closed") or not ltf_candles:
+            continue
         # Le RESTE du volume est soldé au dernier cours — sinon le trade (et les
         # prises partielles déjà encaissées) disparaîtrait des métriques.
-        _realize(open_trade, ltf_candles[-1]["close"], open_trade["_remaining_pct"],
+        _realize(ot, ltf_candles[-1]["close"], ot["_remaining_pct"],
                  ltf_candles[-1], trades, equity_curve, contract_size,
                  reason="end_of_period", final=True)
 

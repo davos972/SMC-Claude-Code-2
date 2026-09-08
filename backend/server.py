@@ -614,6 +614,20 @@ async def delete_signals() -> Dict[str, Any]:
     return {"ok": True}
 
 
+# ---------------- prop firm : règle de cohérence ----------------
+
+@api.get("/prop/consistency")
+async def prop_consistency() -> Dict[str, Any]:
+    """Meilleur jour vs profit total, regroupé par jour prop (reset 17h EST).
+
+    Purement informatif : cette règle n'arrête jamais le bot (elle bloque un payout,
+    elle ne fait pas perdre le compte). Calcul unique partagé avec le bot :
+    `bot_loop.prop_consistency` — ne jamais en écrire une seconde version.
+    """
+    s = await store.get_settings()
+    return bot_loop.prop_consistency(await store.list_trades(limit=10000), s)
+
+
 # ---------------- notifications ----------------
 
 async def _notify(ntype: str, category: str, title: str, message: str) -> None:

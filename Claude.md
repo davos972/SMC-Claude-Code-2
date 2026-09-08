@@ -21,33 +21,42 @@
 **Ce qui tourne.** Prod sur Render (`goldflow-backend` + `goldflow-frontend`), base
 MongoDB Atlas. **La prod tourne sur `origin/main`, pas sur la copie locale** — le vrai
 numéro se lit toujours avec `git rev-parse --short origin/main`, ne jamais le supposer.
-Dernier commit déployé : **`506e7bc`** (2026-09-07). Le dernier commit qui touche le
+Dernier commit déployé : **`ef32ba4`** (2026-09-07). Le dernier commit qui touche le
 **moteur** reste `db61adb` (anti-anticipation, 2026-08-26) : depuis, seuls le frontend et
 la documentation ont bougé. `6465189` allège la page Réglages — c'est le **frontend** ;
 `backend/` n'a pas changé depuis le 2026-08-26, donc aucun changement de comportement du
 bot n'a été déployé.
-🟢 **État du bot : EN MARCHE**, sur la configuration validée, **aucune position ouverte**.
-Lu dans Atlas le **2026-09-07 à 05:16 UTC** (`bot_state.running = true`, `trades_today = 0`).
-Redémarré par David le 2026-08-27 à 17:59 UTC, après l'écriture des réglages testés à 15:44.
+🔴 **État du bot : À L'ARRÊT** (`bot_state.running = false`, `stop_reason = "manual"`),
+arrêté par David le **2026-09-08 à 06:43 UTC**. Aucune position ouverte.
 ⚠️ Cet état change sans prévenir : **toujours le relire dans Atlas**, ne jamais le recopier
-d'ici — c'est la règle qui a coûté 34 h de trading non documenté (§9).
+d'ici — c'est la règle qui a coûté 34 h de trading non documenté (§9). Démonstration en
+trois heures le 2026-09-07 : « aucune position ouverte, `trades_today = 0` » à 05:16, une
+position ouverte à 07:16, refermée au SL à 08:03.
 
-**Premiers résultats réels sur la configuration validée — 8 trades, du 2026-08-27 au
-2026-09-04** (collection `trades`, métriques par `backtest._compute_metrics`) :
+🆕 **CHANGEMENT DE COMPTE le 2026-09-08.** Le compte démo Axi à ~4 900 $ est remplacé par
+un **nouveau compte à 50 000 $** (nouvel `metaapi_account_id` en base ; les réglages Atlas
+ont priorité sur la variable Render, `server.py:73`). Conséquences :
+- **Journal de trading remis à zéro** (9 trades supprimés, sauvegarde
+  `backend/_journal_backup_2026-09-08_ancien-compte-axi.json`) et **collection `signals`
+  vidée** (4 515 documents, à la demande de David — il ne veut pas les conserver).
+- **`bot_state.current_day` a été vidé** pour forcer le rollover de `bot_loop.py:585` :
+  sans ça, `day_start_equity` serait resté à **4 858,87 $** (l'ancien compte) et le
+  coupe-circuit de drawdown aurait comparé le nouveau compte à l'ancien solde — arrêt
+  immédiat du bot au premier tour. Sauvegarde `_botstate_backup_2026-09-08.json`.
+- ⚠️ **Les chiffres de backtest en DOLLARS sont périmés d'un facteur 10.** Le capital de
+  campagne était 4 919,48 $. Les résultats restent valides en **proportion** (PF 1,21,
+  +64 % sur la période, DD 11,9 %), mais le drawdown de 11,9 % vaut désormais **5 950 $**
+  et non 585 $. À 1 % de risque, chaque trade risque **500 $** au lieu de 49 $.
+- **Limites prop firm corrigées** (accord explicite de David) : `prop_daily_dd_pct`
+  5 → **3**, `prop_total_dd_pct` 10 → **6**, `prop_initial_balance` 10 000 → **50 000**.
+  Atlas avait dérivé ; les valeurs du code (`models.py:179-180`) étaient les bonnes.
+  **`prop_firm_enabled` reste à `False`** — l'activer est une décision séparée.
 
-| Trades | Gagnants | Winrate | Profit factor | P&L | DD max | RR prévu moyen |
-|---|---|---|---|---|---|---|
-| 8 | 4 | 50 % | **0,84** | **−29,73 $** | 3,12 % | 2,48 |
-
-Sorties : 4 SL, 3 « trailing_sl », 1 TP. Sens : **7 ventes pour 1 achat**.
-
-🔴 **NE RIEN CONCLURE DE CES CHIFFRES — 8 TRADES NE MESURENT RIEN.** C'est le résultat
-direct de la règle du §8 : avec un écart-type d'environ 60 $ par trade, il faut plusieurs
-centaines de trades pour distinguer une performance d'un tirage au sort. Un PF de 0,84 sur
-8 trades est parfaitement compatible avec la configuration mesurée à 1,21, comme il le
-serait avec une configuration perdante. **Ne pas changer un réglage sur cette base**, et ne
-pas non plus s'en rassurer. Au rythme observé (~1 trade/jour), il faudra des mois avant que
-ce journal dise quoi que ce soit.
+🔴 **Le journal de trading est VIDE** : plus aucun résultat réel mesuré à ce jour sur le
+nouveau compte. Les 9 trades de l'ancien compte (PF 0,67, −76,71 $, **t −0,55**) ne
+mesuraient de toute façon rien — c'est la règle du §8 : avec un écart-type d'environ 60 $
+par trade, il faut plusieurs centaines de trades pour distinguer une performance d'un
+tirage au sort. Ils restent consultables dans la sauvegarde.
 
 ℹ️ **« trailing_sl » n'est PAS un trailing stop qui se serait rallumé.** `trailing_mode`
 vaut bien `off` ; `bot_loop.py:233` étiquette `trailing_sl` **toute** sortie dont le SL
@@ -70,15 +79,17 @@ parle au même backend et les réglages sont les mêmes — mais l'app mobile af
 l'ancien écran, sans le bloc « Configuration validée ». À recompiler quand David le
 voudra (GitHub Actions, cf. §6bis).
 
-🚨 **NE PAS DÉMARRER LE BOT SUR LES RÉGLAGES ACTUELLEMENT ENREGISTRÉS EN PROD.** La pile
-d'étages qui y est enregistrée (scalping `H1→M5→M1→M1`) a été mesurée le 2026-08-26 :
-**perdante sur les trois périodes, PF 0,86, −3 848 $ sur 1 481 trades, DD 48 %, t −2,85**.
-C'est le résultat le plus significatif du projet, et il est négatif (§0ter).
+⚠️ **NE JAMAIS REBASCULER LE MODE EN `scalping`.** Les clés `scalping_*` sont toujours en
+base (`H1→M5→M1→M1`) et redeviendraient actives instantanément : c'est la pile mesurée le
+2026-08-26 **perdante sur les trois périodes, PF 0,86, −3 848 $ sur 1 481 trades, DD 48 %,
+t −2,85** — le résultat le plus significatif du projet, et il est négatif (§0ter). Ce n'est
+plus ce qui tourne depuis le 2026-08-27, mais c'est à deux touches de le redevenir.
 
 ✅ **DÉCISION PRISE ET APPLIQUÉE le 2026-08-27** (accord explicite de David, bot à
-l'arrêt au moment de l'écriture). Les réglages ci-dessous sont **désormais ceux enregistrés
-dans Atlas** — 11 clés modifiées, détail et valeurs précédentes dans `DECISIONS.md`. Le bot
-n'a PAS été redémarré : c'est la décision suivante, et elle appartient à David.
+l'arrêt au moment de l'écriture). Les réglages ci-dessous sont **ceux enregistrés dans
+Atlas**, revérifiés le 2026-09-07 en les passant dans `smc.params_from_settings` — 11 clés
+modifiées, détail et valeurs précédentes dans `DECISIONS.md`. **Le bot tourne dessus depuis
+le 2026-08-27 à 17:59 UTC.**
 
 ```
 Mode          intraday
@@ -131,16 +142,36 @@ Sans lui, la pile A seule fait PF 1,10, t +1,10, rentable 3/3.
    comparaisons, aucune n'atteint |t| = 2), et le régime de juin→août 2026 n'est pas
    aberrant — son amplitude quotidienne (2,07 %) est ENTRE celles des deux autres périodes
    (1,54 % et 2,49 %). Détail complet dans `DECISIONS.md` (2026-08-27).
-4. **La seule question de fond qui reste ouverte : août 2026.** C'est le mois le plus
-   directionnel des 16 mesurés (+576 $, directivité 0,312, la plus forte de l'échantillon)
-   et **le pire mois de la stratégie** (−361 $, PF 0,73). Une stratégie censée suivre le
-   biais directionnel qui perd son plus gros mois de tendance — jamais regardé.
+4. ~~La seule question de fond qui reste ouverte : août 2026.~~ **TRAITÉ le 2026-09-07 :
+   la prémisse ne tient pas.** Le bot n'a PAS combattu la hausse d'août — il a pris
+   **78 % d'ACHATS** dans un mois qui montait de +576 $. Et il n'existe **aucune relation**
+   entre la directivité d'un mois et la performance (r −0,14, t −0,50 sur 14 mois ; au
+   niveau du trade, les mois directionnels font même **+3,30 $/trade de MIEUX** ± 5,35,
+   t +0,62). Août n'est donc pas la pointe d'un motif : il n'est même pas significativement
+   pire que les autres mois (écart −17,84 $ ± 13,55, **t −1,32**). Détail complet dans
+   `DECISIONS.md` (2026-09-07), rejouable par `backend/_directional.py`.
+   ✅ **Ce qui est démontré en revanche** : le bot **suit** bien le biais directionnel —
+   la part de ventes est corrélée au sens du marché à **r −0,73, t −3,72** sur 14 mois.
+   C'est le troisième résultat du projet à dépasser le seuil des 2, et il est rassurant.
+   ⚠️ **Ne pas rouvrir « le bot devrait mieux suivre la tendance » sans lire l'entrée** :
+   un filtre « ne trader que dans le sens de la tendance » a été testé et **ne survit pas
+   au changement de fenêtre** (t = −0,02 / +0,92 / +1,66 / +0,76 / −0,48 pour 5/10/20/40/60
+   jours). Le +1,66 flatteur était le fruit du choix de la fenêtre.
 5. ~~Petit reste technique : l'état MetaApi et `last_error` pas affichés.~~ **C'ÉTAIT
    FAUX — vérifié le 2026-08-27 en lisant le code.** Le composant `MetaApiStatusBanner`
    (`frontend/src/pages/Settings.jsx`) affiche déjà les six états : non configuré, en
    déploiement, connecté, erreur de connexion **avec le texte de `last_error`**, backend
    injoignable, configuré-non-connecté ; il est rafraîchi toutes les 10 s. Ce chantier
    était clos depuis longtemps. **Plus aucun reliquat technique ouvert.**
+6. ~~Deux questions en attente de David sur la page Réglages.~~ **TRANCHÉES par David le
+   2026-09-07 — la page Réglages est FIGÉE dans son état actuel, aucun code à changer :**
+   (a) **`API_KEY` EST définie sur Render.** Le bloc replié « Dépannage » (URL serveur +
+   clé API) **DOIT donc rester, définitivement**. 🚨 Le supprimer rendrait toute APK
+   réinstallée, ou tout `localStorage` vidé, **incapable de joindre le serveur** — plus
+   d'écran pour saisir la clé, et aucune correction possible sans recompiler l'APK.
+   Ce n'est plus une option ouverte : c'est un garde-fou (§9).
+   (b) **Les sections « Contexte journalier », « Trailing stop » et « Mode Prop Firm »
+   sont CONSERVÉES.** David les garde visibles, bien qu'elles soient toutes OFF.
 
 **Non implémentés volontairement** : **OB 2.0** (imposerait un 5e étage de timeframe) et
 **SMT Divergence** (imposerait de suivre un 2e instrument corrélé en continu, casserait
@@ -338,6 +369,79 @@ jamais été calculée avant le 2026-08-27.
   deux variantes contient donc un **rebrassage de la moitié du portefeuille** en plus de
   l'effet cherché. Ce n'est pas un bug — c'est le comportement réel du bot — mais ça
   interdit de lire un petit écart comme « l'effet du filtre ».
+- ✅ **La directivité du marché n'explique RIEN de la performance** (mesuré le 2026-09-07,
+  sans relancer un backtest — `backend/_directional.py`). Sur les 14 mois qui portent des
+  trades, la corrélation entre la directivité d'un mois (|mouvement net| / somme des
+  amplitudes quotidiennes) et le gain moyen par trade vaut **r −0,14, t −0,50**. Au niveau
+  du trade, les mois les plus directionnels font même **+3,30 $/trade de mieux** ± 5,35
+  (t +0,62) que les mois hachés. **Août 2026 n'est pas la pointe d'un motif** : il ne
+  compte que 32 trades et son écart aux autres mois vaut −17,84 $ ± 13,55, **t −1,32**.
+  Le bot y a pris **78 % d'achats dans un mois qui montait de +576 $** — il a suivi la
+  tendance, pas combattu. **Ne pas rouvrir ce sujet.**
+- ✅ **Le bot SUIT bien le biais directionnel — troisième résultat du projet à dépasser le
+  seuil des 2.** La part de ventes d'un mois est corrélée au mouvement net du marché à
+  **r −0,73, t −3,72** (14 mois) : il vend moins quand ça monte, plus quand ça descend.
+  C'est le contrôle de bon fonctionnement du moteur, pas une découverte exploitable.
+- ⚠️ **« Ne trader que dans le sens de la tendance » n'est PAS démontré — et c'est un cas
+  d'école de sur-lecture évité de justesse.** Comparaison des trades pris dans le sens de
+  la tendance des N jours écoulés contre ceux pris à contre-courant : la fenêtre de 20 jours
+  donne +8,83 $/trade ± 5,32 (t +1,66, le plus gros effet de la journée) — mais le même
+  calcul donne **t = −0,02 / +0,92 / +1,66 / +0,76 / −0,48** pour 5 / 10 / 20 / 40 / 60
+  jours. **Le t change de signe selon la fenêtre : il n'y a pas d'effet, seulement un choix
+  de fenêtre.** Tout résultat dépendant d'un paramètre libre doit être rejoué sur plusieurs
+  valeurs de ce paramètre AVANT d'être publié.
+- **Le filtre `require_daily_bias` est le meilleur candidat non retenu** (recalculé le
+  2026-09-07 depuis les fichiers, entrée M5) : contre la référence, **+6,96 $/trade ± 4,96,
+  t +1,40, gagnant sur 3/3 périodes** — le plus fort écart de confluence de toute la
+  campagne, devant `require_unmitigated_ob` (+3,68 ± 3,40, t +1,08). **Mais il n'atteint
+  pas le seuil des 2, il coûte 70 % des trades** (149 contre 488), et **il n'ajoute rien
+  par-dessus l'OB non mitigé** (+2,54 $ ± 5,57, t +0,45). Le laisser OFF reste le bon choix.
+- ❌ **« SL au niveau de TP1 quand TP2 est touché » : écarté le 2026-09-07** (idée de
+  David, mesurée sans backtest par `backend/_tp_management.py`). La règle **coupe 2 à 3
+  fois plus de gagnants qu'elle n'en sauve** : sur les 196 trades qui atteignent TP2,
+  **33 sont sauvés** (ils retombaient au break-even, +368 $) mais **57 à 89 sont coupés**
+  (ils allaient jusqu'à TP3). Effet net **−0,19 à −0,26 $/trade**. ⚠️ **Le balayage compte
+  autant que le résultat** : testé aux **onze** niveaux de 0R (break-even actuel) à 1R
+  (TP1), **aucun n'est positif**, et le nombre de gagnants coupés grimpe de 1 à 57 avec le
+  niveau. **Le break-even actuel est le meilleur des onze.**
+  **Cause mécanique, à retenir** : TP2 est placé à **mi-chemin** entre TP1 et TP3, donc
+  quand le prix l'atteint, TP1 est encore **dans sa respiration normale** — 55 % des trades
+  qui finissent à TP3 y repassent avant de repartir. Y poser le SL ne sécurise pas un gain,
+  ça fait sortir sur du bruit. Toute variante de cette idée (SL à un palier intermédiaire
+  après une prise partielle) se heurtera au même mur.
+  ✅ **Résultat solide bien qu'il ne soit PAS significatif** (|t| < 0,1) : ce sont des
+  **comptages exacts** sur les bougies réelles, pas des moyennes avec une marge d'erreur.
+  Un backtest n'aurait rien pu trancher — il faudrait ~68 fois plus de données. Réserve :
+  l'effet de rebrassage n'est pas modélisé (couper plus tôt libère le créneau suivant).
+- ⚖️ **PLUSIEURS POSITIONS SIMULTANÉES : ce n'est pas un gain d'avantage, c'est un levier**
+  (campagne du 2026-09-08, 24 runs, 3 positions × 1 % plafonnées par le DD max de 3 %).
+  **L'avantage PAR TRADE ne bouge pas** — mesuré en multiples de R pour neutraliser la
+  capitalisation : M1 **+0,098 R → +0,100** (`multi3`, t +0,04) et **+0,108** (`multi3-batch`,
+  t +0,19) ; M5 **+0,078 R → +0,054 / +0,064** (t −0,38 / −0,23). Aucun écart significatif,
+  dans aucun sens, sur aucune des deux timeframes.
+  **Ce qui change, c'est le volume ET le risque, à peu près dans le même rapport** :
+
+  | Entrée M1 | Trades | R total | Pire DD | R / DD | P&L $ |
+  |---|---|---|---|---|---|
+  | Référence (1 position) | 576 | +56,4 | **11,9 %** | 4,75 | +3 148 |
+  | `multi3` | 1 231 (+114 %) | +123,4 | **24,3 %** | 5,07 | +6 908 |
+  | `multi3-batch` | 1 453 (+152 %) | +156,9 | **28,7 %** | 5,46 | +10 694 |
+
+  🚨 **Les P&L en dollars sont TROMPEURS** : les lots grossissent avec l'équité, donc
+  +10 694 $ mélange l'avantage et la capitalisation. **Toujours raisonner en R** pour
+  comparer deux variantes dont le nombre de trades diffère beaucoup.
+  ✅ **Question tranchée définitivement — « au plus une position par sens » ne fait RIEN** :
+  +2 % de trades en M1 (588 contre 576), +1 % en M5. C'est la conséquence directe des
+  **96 % de trades rapprochés de même sens** : les occasions manquées sont presque toutes
+  dans la direction déjà prise. Ne pas re-tester.
+  ⚠️ **Le coût de transaction devient un vrai sujet** : à 2,5× plus de trades, commissions
+  et slippage (non modélisés) sont multipliés par 2,5 alors que l'avantage par trade est
+  inchangé. L'avantage réel serait donc plus faible que le backtest ne le montre, et
+  d'autant plus que le volume augmente.
+  **Conclusion : c'est une décision d'appétit au risque, pas un résultat statistique.**
+  Trois positions de même sens sur le même instrument se comportent comme UNE position de
+  taille triple — le drawdown le confirme (× 2,4). Obtenir le même effet en montant le
+  risque par trade sur une seule position serait équivalent et bien plus simple.
 - **Piège de lecture du drawdown** : `max_drawdown_pct` (3 % par défaut) est un
   coupe-circuit **JOURNALIER**, comparé à l'équité de début de journée
   (`backtest.py:130-132`), avec reprise à la session suivante. Un DD cumulé de 30 à 48 %
@@ -414,7 +518,12 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
 - **Arrêt auto après 3 pertes consécutives** dans la MÊME session (break-even ne compte pas) — reprise paramétrable : prochaine session (défaut) ou lendemain
 - **Arrêt auto sur drawdown max** (défaut 3%) — même politique de reprise
 - **Trades par jour** : trois valeurs coexistent (§0bis). Une seule position par symbole. Le vrai garde-fou est l'arrêt après 3 pertes consécutives, pas le plafond journalier — David a demandé le 2026-08-26 que le bot puisse prendre toutes les occasions
-- **Mode prop firm** activable (défauts calés BlueGuardian Instant Funding : DD jour/total, Guardian Shield, reset 17h EST, high watermark trailing ; marge de sécurité 20% — s'arrête AVANT les limites réelles ; paramétrable pour d'autres firmes)
+- **Mode prop firm** activable (défauts calés BlueGuardian Instant Funding : DD jour/total, Guardian Shield, reset 17h EST, high watermark trailing ; marge de sécurité 20% — s'arrête AVANT les limites réelles ; paramétrable pour d'autres firmes). **Quatre règles**, toutes lues dans `bot_loop.py:672-720` :
+  1. **Guardian Shield** — ferme les positions quand la perte FLOTTANTE atteint la limite moins la marge. Ne stoppe pas le bot.
+  2. **Perte du jour** — arrête le bot avant la limite journalière (repère : `day_start_ref`, reset 17h EST).
+  3. **Drawdown max** — plancher glissant sur le high watermark, verrouillé au solde initial une fois `prop_trailing_lock_profit_pct` atteint.
+  4. **Règle de cohérence** (`prop_consistency_pct`, implémentée le 2026-09-08) — le meilleur jour doit rester ≤ X % du profit total. ⚠️ **Elle N'ARRÊTE JAMAIS le bot** : la violer ne fait pas perdre le compte, elle bloque un *payout*. Surveillance + notification uniquement (décision de David). Calcul unique `bot_loop.prop_consistency`, exposé par `GET /api/prop/consistency` — ne jamais en écrire une seconde version.
+  🚨 **`prop_profit_target_pct` est un CHAMP MORT** : affiché dans Réglages, lu par aucun code backend (vérifié le 2026-09-08). Même piège que `settings.bot_running`. Sans objet sur un compte Instant Funding, qui n'a pas d'objectif de profit.
 - **Filtre news** : pause 30 min avant/après les annonces USD à fort impact (flux Forex Factory / faireconomy, `backend/news.py`). **Non modélisé en backtest**
 - ~~Mode « Signal uniquement »~~ : **retiré le 2026-08-25** (David trade sur compte démo Axi, où il n'apportait rien). Un setup validé part toujours à l'exécution. Le verrou du compte réel (`account_type` + double confirmation `real_confirmed`) est indépendant et reste en place
 - **Trailing stop** : implémenté (logique unique `compute_trailing_sl` partagée live + backtest ; modes breakeven / r_trail / structure), **OFF par défaut**
@@ -478,6 +587,10 @@ complet est dans `DECISIONS.md`, entrée par entrée, la plus récente en haut.
 
 | Date | Ce qui s'est joué | Entrée dans DECISIONS.md |
 |---|---|---|
+| 2026-09-08 | **Nouveau compte 50 000 $ + règle de cohérence prop firm** | « Nouveau compte 50 000 $ » |
+| 2026-09-08 | **Plusieurs positions simultanées : un levier, pas un avantage** | « Plusieurs positions simultanées » |
+| 2026-09-07 | **SL à TP1 après TP2 : écarté par comptage, sans backtest** | « SL à TP1 quand TP2 » |
+| 2026-09-07 | **Août 2026 : la prémisse ne tenait pas ; le bot suit bien la tendance** | « Août 2026 » |
 | 2026-08-27 | La page Réglages ne montre plus que ce qui se décide encore | « La page Réglages » |
 | 2026-08-27 | **Réglages testés appliqués en prod ; le bot tournait à notre insu** | « Application des réglages testés » |
 | 2026-08-27 | **Les trois périodes ne suffisent pas : il manquait la marge d'erreur** | « La règle des trois périodes ne suffit pas » |
@@ -571,6 +684,17 @@ production (cf. le piège `zone_50` en §0ter).
 - `_matrix2.py` (47 variantes + réglages de la campagne), `_period.py` (rejeu sur une
   période nommée avec bougies de chauffe), `_run_matrix2.py` / `_run_period.py` (lancement
   parallèle), `_report2.py` (tableau), `_fetch_m1.py` (téléchargement d'un cache)
+- `_directional.py` (2026-09-07) : **analyse sans relancer un backtest**, à partir des
+  186 fichiers de résultats et des 3 caches. Directivité mensuelle du marché, performance
+  par mois avec sa marge d'erreur, alignement des trades sur la tendance (avec contrôle de
+  robustesse sur la fenêtre), décomposition d'août 2026. `py _directional.py`
+- `_tp_management.py` (2026-09-07) : **rejoue une règle de gestion de position sur les
+  bougies M1 réelles, sans backtest**, en COMPTANT les trades sauvés et coupés au lieu de
+  comparer deux moyennes. Sert à trancher une idée dont l'effet est trop petit pour être
+  mesurable statistiquement. Balaye onze niveaux de SL après TP2. `py _tp_management.py`
+  — **c'est le premier outil à essayer pour toute question de gestion de position**
+  (déplacer un SL, changer un palier) : quelques secondes contre ~40 min de backtest, et
+  il répond souvent définitivement
 - Résultats bruts : `backend/_matrix2_out/_m2_<periode>_<entree>_<dd>_<variante>.json`
 - Les autres `_*` (caches mensuels de 2026, US30, USTECH, `_old_smc.py`, `_old_backtest.py`,
   `_compare_*`, `_trailing_*`) sont des reliquats d'expériences antérieures au moteur
@@ -629,9 +753,29 @@ démo Axi pendant plusieurs jours avant qu'on en tire une conclusion.
   réglage recommandé par un backtest. La décision lui appartient (§0)
 - Préserver le mode dégradé explicite : si MetaApi n'est pas configuré/connecté, afficher l'erreur, jamais de données factices
 - Ne pas affaiblir la protection par clé API (`API_KEY`/`X-API-Key`) ni élargir `_PUBLIC_PATHS` dans `server.py`
+- 🚨 **Ne JAMAIS supprimer le bloc « Dépannage — connexion de cet appareil »** en bas de la
+  page Réglages (URL serveur + clé API). **`API_KEY` EST définie sur Render** (confirmé par
+  David le 2026-09-07) : ce bloc est le seul endroit où saisir la clé sur un appareil. Sans
+  lui, une APK réinstallée ou un `localStorage` vidé ne peut plus jamais joindre le serveur,
+  et rien ne peut le rattraper sans recompiler l'APK. L'URL a un repli à la compilation
+  (`REACT_APP_BACKEND_URL`) — **la clé API n'en a aucun**
 - **Une seule conversion réglages → moteur** : `smc.params_from_settings`. Les QUATRE appelants d'`analyze()` (bot live, backtest, analyse du dashboard, rejeu) doivent passer par elle. Sans ça, le graphique finit par afficher des zones tracées avec d'autres réglages que ceux qui décident des trades — c'est exactement ce qui était arrivé aux deux appels de `server.py`
 - **Toute nouvelle règle SMC arrive DÉSACTIVÉE** : détectée et affichée, mais jamais imposée comme filtre tant qu'un backtest ne l'a pas validée (Synthèse V3 §10 et §11)
 - **Jamais d'anticipation dans le backtest** : ne jamais pré-agréger une bougie EN COURS. La règle vaut pour les QUATRE étages, pas seulement le journalier. Elle a été violée jusqu'au 2026-08-26 : les fenêtres HTF/MTF/D1 étaient découpées avec `bisect_right` sur les temps de **début**, ce qui livrait la bougie supérieure en cours déjà agrégée avec son high/low/close définitifs (prouvé : en analysant la M1 de 16:47, le moteur voyait la M5 16:45→16:49 terminée). Toute bougie supérieure non clôturée doit être reconstruite depuis les bougies du niveau d'entrée écoulées (`backtest._partial_bar`). Test de non-régression : `backend/tests/test_backtest_lookahead.py`
+- **Comparer deux variantes de VOLUMES très différents se fait en R, jamais en dollars**
+  (règle posée le 2026-09-08). Les lots sont dimensionnés sur l'équité courante : plus le
+  compte grossit, plus chaque trade pèse, donc le P&L en dollars mélange l'avantage et la
+  capitalisation. Vécu le jour même : la multi-position affichait **+240 % de P&L**
+  (+10 694 $ contre +3 148 $), un chiffre qui aurait pu emporter la décision ; en R,
+  l'écart par trade tombait à +0,010, soit **t +0,19**. Le gain venait du VOLUME et de la
+  capitalisation, pas d'un meilleur avantage. Le R d'un trade se reconstruit depuis le
+  prix de TP1 (il est à 1R exactement) ou depuis le SL s'il n'a jamais bougé
+- **Tout résultat qui dépend d'un paramètre libre doit être rejoué sur plusieurs valeurs
+  de ce paramètre AVANT d'être annoncé** (règle posée le 2026-09-07). Une fenêtre, un
+  seuil, une coupure : si le `t` change de signe quand on bouge le paramètre, il n'y a pas
+  d'effet — seulement le choix du paramètre. Vécu le jour même : « le bot gagne quand il
+  suit la tendance » donnait t +1,66 sur une fenêtre de 20 jours, et t −0,02 / −0,48 sur
+  5 et 60 jours. Sans ce contrôle, cette conclusion partait dans le §0ter comme un acquis
 - Journal de trading : ne JAMAIS combler un P&L manquant par une estimation. Si
   l'historique broker est indisponible, le trade est clôturé avec `result: "unknown"` et
   `pnl: null`, et il est exclu des statistiques (visible dans la liste, jamais compté)
@@ -664,10 +808,12 @@ rapidement — ne pas les supprimer pour faire de la place. Le reste des `_*` l'
 
 **Tests unitaires — ni serveur, ni MongoDB, ni MetaApi. Rapides, à lancer en premier :**
 ```powershell
-py -m pytest backend/tests/test_backtest_lookahead.py backend/tests/test_signal_reason.py -v
+py -m pytest backend/tests/test_backtest_lookahead.py backend/tests/test_signal_reason.py backend/tests/test_prop_consistency.py -v
 ```
-Attendu : **11 passed** (3 + 8). Le premier fichier vérifie que le backtest ne voit jamais
-le futur (cf. §9), le second que le texte d'un signal décrit les conditions réelles.
+Attendu : **21 passed** (3 + 8 + 10). Le premier fichier vérifie que le backtest ne voit
+jamais le futur (cf. §9), le second que le texte d'un signal décrit les conditions réelles,
+le troisième le calcul de la règle de cohérence prop firm (dont le regroupement par jour
+prop à 17h EST, qui ne coïncide pas avec le jour calendaire).
 C'est le modèle à suivre pour tout nouveau test du moteur : rapide, sans dépendance.
 
 **`backend_test.py` est un test d'intégration : le backend doit tourner AVANT pytest.**

@@ -16,6 +16,324 @@
 
 ---
 
+## 2026-09-08 (suite) — Nouveau compte 50 000 $ et règle de cohérence prop firm
+**Décision :** le compte démo Axi (~4 900 $) est remplacé par un **compte à 50 000 $**.
+Journal de trading remis à zéro, collection `signals` vidée, limites prop firm corrigées,
+et la **règle de cohérence est implémentée — en surveillance seule, sans jamais arrêter
+le bot**. Poussé en production.
+
+**Pourquoi la règle de cohérence n'arrête pas le bot.** C'est le point qui a demandé une
+décision explicite de David. Les trois autres règles prop protègent le COMPTE : les violer
+le fait perdre. Celle-ci est différente — le meilleur jour doit rester ≤ 20 % du profit
+total **au moment du payout** ; la violer ne casse rien, elle **retarde un retrait**.
+Arrêter le bot pour la respecter reviendrait à renoncer à du profit réel pour protéger une
+date. Elle est donc **calculée, affichée et notifiée**, jamais bloquante.
+Second argument, mathématique : au démarrage le cumul vaut 0, donc le premier jour gagnant
+pèse **100 %** du total. Une application stricte interdirait le tout premier trade
+gagnant. La règle n'est satisfiable qu'après plusieurs jours — c'est normal, et le test
+`test_un_seul_jour_gagnant_depasse_forcement` le fige.
+
+**Ce que le bot calcule** (`bot_loop.prop_consistency`, calcul PUR, partagé avec
+`GET /api/prop/consistency` — jamais deux versions) : profit par **jour prop** (reset 17h
+EST, pas jour calendaire), meilleur jour, ratio, et surtout **combien de profit il manque
+ailleurs pour redevenir conforme** (`total_requis = meilleur_jour × 100 / limite`). La
+notification ne part qu'au **changement de situation** (signature « date du meilleur jour
++ ratio » mémorisée dans `bot_state`) : sans ça, chaque clôture de trade renverrait la
+même alerte pendant des jours. Un P&L inconnu est **exclu**, jamais estimé (§9).
+
+**Deux champs morts découverts en lisant le code — ne pas s'y fier :**
+`prop_profit_target_pct` et `prop_consistency_pct` n'étaient lus **par aucun code
+backend** (0 occurrence hors `models.py` et le JSX). Le second l'est désormais ; le
+premier reste mort et le restera — un compte **Instant Funding n'a pas d'objectif de
+profit**. Troisième champ mort du projet après `settings.bot_running` et la colonne PROD
+du §0bis : **la doc et l'interface ne prouvent jamais qu'un réglage est branché.**
+
+**Corrections de réglages appliquées** (bot à l'arrêt, accord explicite de David,
+anciennes valeurs dans `_settings_backup_2026-09-08_prop.json`) :
+
+| Réglage | Atlas | Corrigé | Remarque |
+|---|---|---|---|
+| `prop_daily_dd_pct` | 5 | **3** | Atlas avait dérivé ; `models.py:179` disait déjà 3 |
+| `prop_total_dd_pct` | 10 | **6** | idem, `models.py:180` |
+| `prop_initial_balance` | 10 000 | **50 000** | sinon toutes les limites 5× trop serrées |
+
+**Piège évité au changement de compte, à retenir.** `bot_state` gardait
+`day_start_equity = 4 858,87 $` — l'équité de l'ANCIEN compte — **avec la date du jour
+déjà inscrite**. Le rollover de `bot_loop.py:585` ne se déclenche qu'au changement de
+jour : il n'aurait donc PAS recalculé la référence. Le coupe-circuit de drawdown aurait
+comparé l'équité du nouveau compte à l'ancien solde et, le nouveau compte étant plus gros,
+c'était sans conséquence ici — **mais avec un compte plus petit, le bot se serait arrêté
+seul dès le premier tour**. Corrigé en vidant `current_day`, ce qui force le recalcul
+depuis le compte réel **sans inscrire aucun montant**. À refaire à chaque changement de
+compte.
+
+**Vérifié, pas supposé :** **21 tests passent** (11 existants + 10 nouveaux dans
+`backend/tests/test_prop_consistency.py`), dont le regroupement par jour prop — deux
+trades à des dates calendaires différentes (8 sept. 21:30 UTC et 9 sept. 16:00 UTC)
+tombent bien dans le **même** jour prop, et dans deux jours distincts hors mode prop.
+`server.py` importe et expose `/api/prop/consistency`. Écritures Atlas relues après coup.
+
+**Écarté :** (1) **Arrêter le bot sur la règle de cohérence** — voir ci-dessus ; l'option
+« arrêt » a été proposée à David, il a choisi la surveillance. (2) **Purger `signals`
+automatiquement chaque jour** : David l'a évoqué, ce n'était pas demandé formellement —
+à faire dans le rollover si confirmé. (3) **Activer `prop_firm_enabled`** : décision
+séparée, non prise. (4) **Toucher au frontend** pour afficher le ratio : l'endpoint existe,
+l'affichage viendra si David le demande.
+
+## 2026-09-08 — Plusieurs positions simultanées : un levier, pas un avantage
+**Décision :** le moteur de backtest sait désormais tenir N positions simultanées
+(`backtest.py`), **plafonné par le drawdown maximum** — avec 1 % par trade et 3 % de DD,
+la borne est 3, appliquée par le code (`max_positions_allowed`) et non par la prudence du
+réglage. **Le bot live n'a PAS été touché** (choix de David) : `bot_loop.py` et `models.py`
+sont inchangés, le comportement en production est strictement identique. Les défauts
+(`max_concurrent_positions=1`, `max_concurrent_per_side=0`, `consec_loss_grouping="each"`)
+reproduisent exactement l'ancien moteur. **Rien n'est déployé.**
+
+**Pourquoi cette campagne :** question de David — « que se passerait-il si le bot pouvait
+ouvrir plusieurs trades à la fois, sans jamais risquer plus que le drawdown maximum ? »
+Contrairement à la question sur les TP, elle **ne pouvait pas** se répondre sur les fichiers
+existants : `backtest.py:328` faisait `if open_trade: continue`, donc le moteur n'analysait
+même pas le marché pendant qu'une position était ouverte — les signaux manqués n'existaient
+nulle part. 24 runs (4 variantes × 2 entrées × 3 périodes).
+
+**Résultat principal : l'avantage PAR TRADE ne change pas.** Mesuré en multiples de R,
+et c'est le point de méthode le plus important de la journée :
+
+| Entrée | Référence | `multi3` | `multi3-batch` |
+|---|---|---|---|
+| M1 (prod) | +0,098 R | +0,100 (t **+0,04**) | +0,108 (t **+0,19**) |
+| M5 | +0,078 R | +0,054 (t **−0,38**) | +0,064 (t **−0,23**) |
+
+Aucun écart significatif, dans aucun sens, sur aucune timeframe. **Ce qui change, c'est le
+volume et le risque, dans le même rapport** : en M1, +114 % à +152 % de trades, R total
+× 2,2 à × 2,8, et **drawdown × 2,0 à × 2,4** (11,9 % → 24,3 % / 28,7 %). Le rendement
+rapporté au risque (R total / pire DD) passe de 4,75 à 5,07 / 5,46 en M1 et de 2,88 à
+1,93 / 2,96 en M5 — **les deux timeframes ne s'accordent même pas sur le signe.**
+
+🚨 **Piège majeur évité, à retenir : les P&L en dollars sont trompeurs quand le nombre de
+trades change beaucoup.** `multi3-batch` affiche **+10 694 $** contre +3 148 $ — soit
++240 %, un chiffre spectaculaire qui aurait pu emporter la décision. Mais les lots sont
+dimensionnés sur l'équité courante : plus le compte grossit, plus chaque trade pèse. Une
+partie de ce +240 % est de la **capitalisation**, pas de l'avantage. En R, l'écart par
+trade tombe à +0,010 (t +0,19). **Toute comparaison entre variantes de volumes différents
+doit se faire en R.** Ce piège n'existait pas jusqu'ici parce que toutes les variantes de
+la campagne avaient des volumes comparables.
+
+✅ **Une question tranchée définitivement : « au plus une position par sens » ne fait
+RIEN.** 588 trades contre 576 en M1 (+2 %), 452 contre 447 en M5 (+1 %) — et des P&L à
+0,2 % près. C'est la conséquence directe des **96 % de trades rapprochés de même sens**
+mesurés la veille : les occasions manquées sont presque toutes dans la direction déjà
+prise, donc interdire le doublon de sens les bloque toutes. Ce n'était pas un compromis
+prudent, c'est un non-événement. **`multi3-1side` et `multi3-1side-batch` donnent des
+fichiers strictement identiques** sur les 6 combinaisons — la règle « lot = 1 perte » ne
+se déclenche jamais, puisqu'il faudrait qu'un achat et une vente perdent dans la même
+bougie.
+
+**Ce que la campagne dit vraiment, et qu'il faut dire sans l'habiller :** trois positions
+de même sens sur le même instrument se comportent comme **une position de taille triple**.
+Le drawdown le confirme (× 2,4). C'est donc **une décision d'appétit au risque, pas un
+résultat statistique** — et monter le risque par trade sur une seule position produirait à
+peu près le même effet, en bien plus simple à opérer.
+
+⚠️ **Réserve qui compte plus ici qu'ailleurs : les coûts de transaction.** Commissions,
+slippage et exécution partielle ne sont pas modélisés. À 2,5 fois plus de trades, ils sont
+multipliés par 2,5 **alors que l'avantage par trade est inchangé**. L'avantage réel serait
+donc plus faible que le backtest ne le montre, et d'autant plus érodé que le volume monte.
+Le filtre news, non modélisé lui aussi, couperait également plus de trades.
+
+**Méthode :** moteur `ef32ba4` + le changement ci-dessus. **Non-régression prouvée avant
+tout résultat** : avec les défauts, deux configurations rejouées (M5 `conf-unmitigated` et
+M1 `rr-1-unmit` sur `oos`) redonnent les fichiers stockés **trade par trade et champ par
+champ**, sur 11 champs — 68 trades / +955,68 $ et 79 trades / +376,39 $. Les 11 tests
+unitaires passent. Le plafond dur a été vérifié séparément : réglé à 10 avec 1 % de risque
+et 3 % de DD, il autorise 3 ; à 2 % de risque, il tombe à 1.
+
+**Écarté :** (1) **Toucher `bot_loop.py`** — David a demandé le backtest seul tant qu'on ne
+sait pas si l'idée tient ; l'écart temporaire avec la règle d'architecture n° 3 est assumé
+et à rattraper si la décision est prise. (2) **Ajouter les réglages dans `models.py`** :
+inutile tant que le live ne les lit pas, et ça les ferait apparaître dans Atlas sans effet.
+(3) **Conclure sur les dollars** : c'était le piège, cf. ci-dessus. (4) **Trancher entre M1
+et M5** : ils divergent, aucun écart n'est significatif, il n'y a rien à départager.
+(5) **Recommander l'activation** : l'arbitrage rendement/risque appartient à David.
+
+## 2026-09-07 (suite) — « SL à TP1 quand TP2 est touché » : écarté par comptage, pas par statistique
+**Décision :** l'idée de David — *quand le prix atteint TP2, remonter le SL au niveau de
+TP1* — est **écartée**, et **aucun backtest n'a été lancé**. La gestion de position reste
+inchangée : TP1 à 1R ferme 50 % et met le SL à l'entrée, TP2 ferme 30 %, les 20 % restants
+courent jusqu'à TP3. Nouvel outil au §8 : `backend/_tp_management.py`.
+
+**Pourquoi : la règle coupe 2 à 3 fois plus de gagnants qu'elle n'en sauve.** Sur les
+575 trades de la configuration validée, 196 (34 %) atteignent TP2 et sont donc concernés :
+
+| | Trades | Effet |
+|---|---|---|
+| Retombaient au break-even → **sauvés** | 33 | **+368 $** |
+| Allaient jusqu'à TP3 → **coupés** | **57 à 89** | **−517 $** |
+| Ne repassent jamais sous TP1 | 74 | 0 $ |
+| **Net** | | **−0,19 à −0,26 $/trade** |
+
+**La cause est mécanique, et c'est le vrai enseignement.** TP2 est placé à **mi-chemin
+entre TP1 et TP3** (`compute_tp_ladder`, `backtest.py:442`). Quand le prix atteint TP2,
+TP1 est donc encore **à l'intérieur de sa respiration normale** : **55 % des trades qui
+finissent par toucher TP3 repassent sous TP1 en chemin** avant de repartir. Y poser le SL
+ne sécurise pas un gain, ça fait sortir sur du bruit. **Toute variante de cette idée — un
+SL à un palier intermédiaire après une prise partielle — se heurtera au même mur.**
+
+**Le balayage compte autant que le résultat.** Conformément à la règle de robustesse posée
+le matin même (§9), le niveau du SL n'a pas été testé à une seule valeur mais aux **onze**
+niveaux de 0R (break-even, comportement actuel) à 1R (TP1, la proposition). **Aucun n'est
+positif**, et le nombre de gagnants coupés grimpe régulièrement de 1 à 57. Le comportement
+actuel est le meilleur des onze. Sans ce balayage, on aurait pu conclure « c'est mauvais à
+TP1 mais peut-être bon à mi-chemin » — la réponse est non, à tous les niveaux.
+
+**Ce qui rend le résultat solide alors qu'il n'est PAS significatif.** L'effet vaut
+|t| < 0,1, très loin du seuil de 2 — mais **il n'a pas été obtenu par une comparaison de
+moyennes**. Les 33 sauvés et les 57-89 coupés sont des **comptages exacts** obtenus en
+rejouant les bougies M1 réelles entre le TP2 et la sortie de chaque trade. C'est une
+question de dénombrement, pas d'inférence : elle n'a pas de marge d'erreur statistique.
+**C'est la première fois sur ce projet qu'une question est tranchée ainsi**, et c'est la
+bonne réponse au problème récurrent du §8 (« une variable qui ne change le gain moyen que
+de 2 à 3 $ par trade n'est pas mesurable ») : quand l'effet est trop petit pour être
+mesuré, il faut le **compter** au lieu de l'estimer.
+
+**Sizing fait AVANT toute décision, et c'est ce qui a évité la campagne.** Le gain maximum
+théorique — si aucun gagnant n'était coupé — valait **+368 $, soit +0,64 $/trade, t +0,24**,
+pour une marge de mesure de ±2,64 $/trade. Il aurait fallu **~68 fois plus de données**
+pour départager les deux variantes. Un backtest aurait donc produit deux chiffres dont
+l'écart aurait été du bruit, pour ~40 minutes de calcul et une modification du moteur.
+
+**Réserves honnêtes :** (1) **l'effet de rebrassage n'est pas modélisé** — couper une
+position plus tôt libère le créneau pour la suivante (§0ter), donc un vrai backtest
+donnerait un autre chiffre ; imprévisible, et c'est du bruit, pas du signal. (2) **La
+méthode a un plancher de précision d'environ ±40 $** (±0,07 $/trade) : au niveau 0R, qui
+est le comportement actuel, l'effet devrait valoir exactement 0 et vaut −39,97 $, un trade
+sur 196 tombant dans un cas limite de bornes de bougie. (3) **Le nombre de coupés est une
+fourchette (57 à 89)** selon qu'on inclut ou non la bougie finale : l'ordre intra-bougie du
+moteur décide, et il n'est pas reconstituable depuis les fichiers de résultats. La
+conclusion tient dans les deux cas.
+
+**Écarté :** (1) **Lancer la campagne quand même** — proposé à David avec le sizing, il a
+choisi d'y renoncer. (2) **Coder le réglage « au cas où »** : toute nouvelle règle arrive
+OFF (§9), mais ajouter un réglage mort dans `compute_tp_ladder` et `bot_loop` pour une idée
+mesurée négative ne fait qu'alourdir le moteur. (3) **Chercher un niveau de SL optimal** :
+c'est exactement le sur-apprentissage que la règle de robustesse interdit, et le balayage
+montre qu'il n'y a rien à optimiser.
+
+## 2026-09-07 — Août 2026 : la question ne tenait pas ; et le bot suit bien la tendance
+**Décision :** le chantier « août 2026 » est **clos**, et le §0ter reçoit trois résultats
+neufs. Aucun backtest relancé, aucun réglage touché : tout est recalculé depuis les
+186 fichiers de `_matrix2_out/` et les trois caches M1, par un script nouveau et rejouable,
+`backend/_directional.py`. Nouvelle règle de méthode au §9 : **tout résultat qui dépend
+d'un paramètre libre doit être rejoué sur plusieurs valeurs de ce paramètre avant d'être
+annoncé.**
+
+**La question posée était :** « août 2026 est le mois le plus directionnel des 16 mesurés
+(+576 $, directivité 0,312) et le pire de la stratégie (−361 $, PF 0,73) ; une stratégie
+SMC censée suivre le biais directionnel qui perd son plus gros mois de tendance, c'est
+peut-être le vrai signal. »
+
+**Réponse : la prémisse est fausse sur les deux points.**
+
+1. **Le bot n'a pas combattu la hausse d'août — il l'a suivie.** Sur les 32 trades du mois,
+   **25 sont des ACHATS (78 %)** dans un marché qui montait de +576 $. Les 7 ventes
+   à contre-sens portent −320 $ des −361 $ du mois. Mais 7 trades ne démontrent rien : le
+   perdant moyen vaut −56 $ toutes périodes confondues.
+2. **Août n'est pas significativement pire que les autres mois** : écart de −17,84 $ par
+   trade **± 13,55 $**, soit **t −1,32**. Et le mois seul vaut −11,29 $ ± 13,28 (t −0,85).
+   Comme le 2026-08-27, il fallait d'abord vérifier qu'il y avait quelque chose à
+   expliquer. Il n'y a rien.
+
+**Et surtout, la généralisation ne tient pas non plus.** La bonne façon de poser la
+question n'était pas « pourquoi ce mois-là » (1 mois, 32 trades) mais « la performance
+dépend-elle de la directivité du marché » (14 mois, 575 trades). Réponse :
+
+| Mesure | Résultat | Verdict |
+|---|---|---|
+| corrélation directivité ↔ gain moyen/trade (14 mois) | r −0,14, **t −0,50** | aucun lien |
+| mois directionnels vs mois hachés, au niveau du trade | **+3,30 $/trade ± 5,35**, t +0,62 | aucun lien — et le signe est POSITIF |
+
+Autrement dit, non seulement la stratégie ne souffre pas des marchés directionnels, mais
+elle y fait plutôt (insignifiamment) mieux.
+
+**Ce qui EST démontré, et qui est rassurant : le bot suit bien le biais directionnel.**
+La part de ventes d'un mois est corrélée au mouvement net du marché à **r −0,73, t −3,72**
+sur 14 mois — il vend moins quand ça monte, plus quand ça descend. C'est le **troisième
+résultat du projet à dépasser le seuil des 2**, après « la pile de prod perd » (t −2,85) et
+« la pile A bat la pile de prod » (t +2,17). Ce n'est pas une découverte exploitable :
+c'est le contrôle que le mécanisme du §3 fonctionne comme prévu.
+
+**Le résultat le plus important de la journée est un résultat ÉVITÉ.** En comparant les
+trades pris dans le sens de la tendance des 20 jours écoulés à ceux pris à contre-courant,
+on obtient **+8,83 $/trade ± 5,32, t +1,66** — le plus gros effet mesuré de la journée, et
+une conclusion très vendeuse : « 42 % des trades sont à contre-courant et ne rapportent
+rien, il faut un filtre de tendance ». Le contrôle de robustesse la détruit :
+
+| Fenêtre | 5 j | 10 j | 20 j | 40 j | 60 j |
+|---|---|---|---|---|---|
+| t | −0,02 | +0,92 | **+1,66** | +0,76 | −0,48 |
+
+**Le `t` change de signe selon la fenêtre.** Il n'y a pas d'effet : il y a un choix de
+fenêtre, et 20 jours était le tirage le plus flatteur. C'est exactement le mécanisme du
+piège `zone_50`, transposé d'un réglage du moteur à un paramètre d'analyse — et cette fois
+il a été attrapé avant publication, parce que le contrôle a été fait. D'où la règle du §9.
+
+**Contrôle indirect par un filtre déjà mesuré.** `require_daily_bias` (« ne trader que dans
+le sens du biais journalier ») est la version « moteur » de cette idée, et il a été mesuré
+sur les trois périodes en entrée M5 dès la campagne. Recalculé en question (b) — bat-il sa
+référence ? — il donne **+6,96 $/trade ± 4,96, t +1,40, gagnant 3/3** : le plus fort écart
+de confluence de toute la campagne, devant `require_unmitigated_ob` (+3,68 ± 3,40, t +1,08).
+**Mais il n'atteint pas le seuil des 2, il coûte 70 % des trades (149 contre 488), et il
+n'ajoute rien par-dessus l'OB non mitigé (+2,54 $ ± 5,57, t +0,45).** Il reste OFF. Les
+deux approches — la mienne, ad hoc, et celle du moteur — convergent donc sur « non démontré ».
+
+**Correctif de code au passage — le même bug que `_period.py`, encore armé.**
+`_matrix2.py:204` figeait `"mode": "intraday"` dans la requête, alors que `backtest.py:163`
+choisit les étages d'après **la requête**, pas d'après `trading_mode`. Une variante
+« scalping » lancée par `_matrix2.py` aurait donc tourné avec les étages *intraday*, sans
+aucun message. **Vérifié : aucun chiffre publié n'en souffre** — les 12 fichiers de piles
+sont en `2025h2`/`etude`/`oos`, produits par `_period.py` qui était corrigé, et
+`prod-stack` fait 482/758/241 trades là où la pile A en fait 249/328/90 (runs réellement
+différents). Les totaux reproduisent la doc au dollar près : 1 481 trades, −3 848 $,
+PF 0,86. Le bug était **latent, pas rétroactif**. Corrigé le 2026-09-07.
+
+**Validation de la méthode avant d'en tirer des conclusions**, comme le 2026-08-27 :
+le script reproduit la définition de directivité de la session précédente (**0,312 et
++576 $ pour août 2026**, au dixième près), le gain moyen de la config recommandée
+(**+5,56 $ ± 2,64, t +2,11** contre +5,47 et t +2,08 publiés — l'écart vient d'un doublon
+retiré à la jointure des périodes, 575 trades au lieu de 576) et le `t +1,08` de
+`require_unmitigated_ob` en M5.
+
+**Écarté :** (1) **Chercher une explication de marché à août 2026** — c'était la demande,
+mais il n'y a ni anomalie du mois ni relation générale à expliquer. (2) **Recommander un
+filtre de tendance** sur la foi du t +1,66 : c'est précisément ce que la règle du 2026-08-27
+interdit, et le contrôle de robustesse a montré qu'elle avait raison. (3) **Relancer une
+campagne de backtests** : la question se répondait entièrement sur les fichiers existants,
+et `require_daily_bias` était déjà mesuré sur les trois périodes. (4) **Activer
+`require_daily_bias`** malgré son 3/3 : t +1,40 ne passe pas le seuil, et il n'apporte rien
+au-dessus du filtre déjà actif. (5) **Ré-exécuter les piles avec `_matrix2.py` corrigé** :
+les résultats publiés viennent de `_period.py`, ils sont bons ; les rejouer coûterait des
+heures pour retrouver les mêmes chiffres.
+
+**Note sur ce qui reste vraiment ouvert.** Après ce chantier, il n'y a plus de question de
+fond en attente sur la stratégie — seulement la validation en démo, qui prendra des mois.
+
+**Les deux questions d'interface ont été tranchées le même jour** (voir l'entrée « La page
+Réglages » du 2026-08-27, dont elles étaient la conclusion) : `API_KEY` **est** définie sur
+Render, donc le bloc « Dépannage » reste **définitivement** — c'est devenu un garde-fou du
+§9, plus une option ; et les sections « Contexte journalier », « Trailing stop » et « Mode
+Prop Firm » sont **conservées**. **La page Réglages est figée ; aucun code n'a été
+modifié.**
+
+**Malentendu à ne pas reproduire, signalé par David le 2026-09-07.** En annonçant le
+correctif de `_matrix2.py`, la formule « `prod-stack` lit maintenant bien `H1→M5→M1→M1` » a
+fait craindre que le BOT tourne sur les mauvais étages. Ce n'était pas le cas — `prod-stack`
+est une **variante de banc d'essai**, la reconstitution volontaire de l'ancienne
+configuration, qui n'existe que pour mesurer à quel point elle perdait. **Toujours préciser
+si l'on parle du bot ou d'une variante de test** : les deux manipulent les mêmes noms de
+réglages et David n'a aucun moyen de les distinguer sans qu'on le dise. Contrôle refait
+devant lui : `trading_mode = intraday` → le moteur lit la famille `intraday_*` →
+**`D1→H1→M15→M1`**, les clés `scalping_*` dormant en base sans être lues.
+
 ## 2026-08-27 (suite) — La page Réglages ne montre plus que ce qui se décide encore
 **Décision :** l'écran Réglages passe de **987 à 734 lignes** et de 14 sections à 9. Sont
 retirés de l'interface les réglages sur lesquels la campagne a statué et que David ne
