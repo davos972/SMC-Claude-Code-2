@@ -769,6 +769,19 @@ démo Axi pendant plusieurs jours avant qu'on en tire une conclusion.
 - **Une seule conversion réglages → moteur** : `smc.params_from_settings`. Les QUATRE appelants d'`analyze()` (bot live, backtest, analyse du dashboard, rejeu) doivent passer par elle. Sans ça, le graphique finit par afficher des zones tracées avec d'autres réglages que ceux qui décident des trades — c'est exactement ce qui était arrivé aux deux appels de `server.py`
 - **Toute nouvelle règle SMC arrive DÉSACTIVÉE** : détectée et affichée, mais jamais imposée comme filtre tant qu'un backtest ne l'a pas validée (Synthèse V3 §10 et §11)
 - **Jamais d'anticipation dans le backtest** : ne jamais pré-agréger une bougie EN COURS. La règle vaut pour les QUATRE étages, pas seulement le journalier. Elle a été violée jusqu'au 2026-08-26 : les fenêtres HTF/MTF/D1 étaient découpées avec `bisect_right` sur les temps de **début**, ce qui livrait la bougie supérieure en cours déjà agrégée avec son high/low/close définitifs (prouvé : en analysant la M1 de 16:47, le moteur voyait la M5 16:45→16:49 terminée). Toute bougie supérieure non clôturée doit être reconstruite depuis les bougies du niveau d'entrée écoulées (`backtest._partial_bar`). Test de non-régression : `backend/tests/test_backtest_lookahead.py`
+- **Les repères du nouveau jour s'écrivent par `bot_loop.new_day_state`, JAMAIS à la main.**
+  Trois endroits les écrivaient chacun à leur façon (le rollover de la boucle, `/bot/start`,
+  `/bot/resume`) : les deux endpoints mettaient à jour `day_start_equity` mais **oubliaient
+  `day_start_ref` et `prop_hwm_balance`**, et fixaient `current_day` au jour **calendaire**
+  au lieu du jour prop — ce qui empêchait ensuite le rollover de corriger le tir.
+  🚨 Constaté le 2026-09-08 après le changement de compte : `day_start_ref` est resté à
+  **4 858,87 $** (ancien compte) pour une équité de **50 000 $**. `day_start_ref` étant LE
+  repère de la perte journalière en mode prop, la protection aurait été **inopérante toute
+  la journée**. Corrigé et figé par 4 tests
+- **La collection `signals` est purgée à chaque nouveau jour de trading** (depuis le
+  2026-09-08, dans le rollover de `bot_loop`). Elle ne sert qu'à comprendre la journée en
+  cours et gonflait sans limite (4 515 documents au moment de la demande). ⚠️ **Les
+  `trades`, eux, ne sont JAMAIS purgés** — c'est le journal de performance
 - **Comparer deux variantes de VOLUMES très différents se fait en R, jamais en dollars**
   (règle posée le 2026-09-08). Les lots sont dimensionnés sur l'équité courante : plus le
   compte grossit, plus chaque trade pèse, donc le P&L en dollars mélange l'avantage et la
@@ -817,10 +830,12 @@ rapidement — ne pas les supprimer pour faire de la place. Le reste des `_*` l'
 ```powershell
 py -m pytest backend/tests/test_backtest_lookahead.py backend/tests/test_signal_reason.py backend/tests/test_prop_consistency.py -v
 ```
-Attendu : **21 passed** (3 + 8 + 10). Le premier fichier vérifie que le backtest ne voit
+Attendu : **25 passed** (3 + 8 + 14). Le premier fichier vérifie que le backtest ne voit
 jamais le futur (cf. §9), le second que le texte d'un signal décrit les conditions réelles,
 le troisième le calcul de la règle de cohérence prop firm (dont le regroupement par jour
-prop à 17h EST, qui ne coïncide pas avec le jour calendaire).
+prop à 17h EST, qui ne coïncide pas avec le jour calendaire) **et les repères du nouveau
+jour** (`new_day_state`), qui avaient laissé `day_start_ref` périmé après un changement
+de compte.
 C'est le modèle à suivre pour tout nouveau test du moteur : rapide, sans dépendance.
 
 **`backend_test.py` est un test d'intégration : le backend doit tourner AVANT pytest.**

@@ -65,6 +65,35 @@ def _trading_day_key(now_utc: datetime, s: Dict) -> str:
     return now_utc.date().isoformat()
 
 
+def new_day_state(equity: float, balance: float, s: Dict, prev_hwm: float = 0.0,
+                  now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Etat a ecrire au debut d'un NOUVEAU jour de trading.
+
+    Logique UNIQUE partagee par le rollover de la boucle ET les endpoints /bot/start et
+    /bot/resume. Elle existe parce que ces trois endroits l'ecrivaient chacun a leur
+    facon : /bot/start et /bot/resume mettaient a jour `day_start_equity` mais PAS
+    `day_start_ref` ni `prop_hwm_balance`, tout en fixant `current_day` au jour
+    CALENDAIRE — ce qui empechait ensuite le rollover de la boucle de corriger le tir.
+
+    🚨 Consequence mesuree le 2026-09-08 apres un changement de compte : `day_start_ref`
+    est reste a 4 858,87 $ (ancien compte) alors que l'equite valait 50 000 $. En mode
+    prop, `day_start_ref` est LE repere de la perte journaliere : la protection aurait
+    ete inoperante toute la journee. Ne jamais reecrire ces cles a la main ailleurs.
+    """
+    now = now or datetime.now(timezone.utc)
+    prop_initial = float(s.get("prop_initial_balance", balance) or balance)
+    return {
+        "current_day": _trading_day_key(now, s),   # jour PROP (17h EST), pas calendaire
+        "trades_today": 0,
+        "day_start_equity": equity,
+        # Repere journalier prop = le PLUS HAUT entre solde et equite (regle BlueGuardian).
+        "day_start_ref": max(equity, balance),
+        "session_start_equity": equity,
+        # High watermark trailing = plus haut solde vu jusqu'ici.
+        "prop_hwm_balance": max(float(prev_hwm or 0), balance, prop_initial),
+    }
+
+
 def _as_utc(ts: Any) -> Optional[datetime]:
     """ISO (ou datetime) -> datetime AWARE en UTC. None si illisible."""
     if isinstance(ts, datetime):
@@ -670,27 +699,23 @@ async def _bot_trading_loop() -> None:
             # drawdown « du jour » est calculé contre une équité périmée.
             today_str = _trading_day_key(now, s)
             if state.get("current_day") != today_str:
-                # Repère journalier prop = le PLUS HAUT entre solde et équité (règle BlueGuardian).
-                day_ref = max(equity, balance)
-                # High watermark trailing = plus haut solde de fin de journée vu jusqu'ici.
-                prop_initial = float(s.get("prop_initial_balance", balance) or balance)
-                hwm = max(float(state.get("prop_hwm_balance", 0) or 0), balance, prop_initial)
-                await store.set_bot_state({
-                    "current_day": today_str,
-                    "trades_today": 0,
-                    "day_start_equity": equity,
-                    "day_start_ref": day_ref,
-                    "session_start_equity": equity,
-                    "prop_hwm_balance": hwm,
-                })
-                state["current_day"] = today_str
-                state["trades_today"] = 0
-                state["day_start_equity"] = equity
-                state["day_start_ref"] = day_ref
-                state["session_start_equity"] = equity
-                state["prop_hwm_balance"] = hwm
-                logger.info("Nouveau jour %s — compteurs réinitialisés (equity=%.2f, ref=%.2f, hwm=%.2f).",
-                            today_str, equity, day_ref, hwm)
+                fresh = new_day_state(equity, balance, s,
+                                      state.get("prop_hwm_balance", 0), now)
+                await store.set_bot_state(fresh)
+                state.update(fresh)
+                logger.info("Nouveau jour %s — compteurs réinitialisés "
+                            "(equity=%.2f, ref=%.2f, hwm=%.2f).",
+                            today_str, equity, fresh["day_start_ref"],
+                            fresh["prop_hwm_balance"])
+                # Purge quotidienne du journal des signaux (demandée par David le
+                # 2026-09-08) : il ne sert qu'à comprendre la journée en cours et
+                # gonflait sans limite — 4 515 documents au moment de la demande.
+                # Les TRADES, eux, ne sont jamais purgés : c'est le journal de perf.
+                try:
+                    await store.clear_signals()
+                    logger.info("Journal des signaux purgé pour le nouveau jour.")
+                except Exception as e:
+                    logger.warning("Purge des signaux échouée: %s", e)
 
             # ── Journal : reprendre les trades encore ouverts apres un redemarrage ──
             # Doit passer AVANT _check_closed_positions, sinon une position rouverte

@@ -115,3 +115,46 @@ def test_cumul_negatif_ne_declenche_rien():
     assert r["profit_total"] == -300.0
     assert r["ok"] is True          # rien à signaler tant qu'on est en perte
     assert r["ratio_pct"] is None
+
+
+# --------------------------------------------------------------------------
+# Repères du nouveau jour — la duplication entre /bot/start, /bot/resume et le
+# rollover avait laissé `day_start_ref` périmé après un changement de compte
+# (constaté le 2026-09-08 : ref à 4 858,87 $ pour une équité de 50 000 $).
+# --------------------------------------------------------------------------
+from datetime import datetime, timezone  # noqa: E402
+
+from bot_loop import new_day_state  # noqa: E402
+
+
+def test_nouveau_jour_rafraichit_toutes_les_cles():
+    st = new_day_state(equity=50000.0, balance=50000.0, s={}, prev_hwm=10000.0)
+    assert st["day_start_equity"] == 50000.0
+    assert st["day_start_ref"] == 50000.0          # <- la clé qui restait périmée
+    assert st["session_start_equity"] == 50000.0
+    assert st["trades_today"] == 0
+    assert st["prop_hwm_balance"] == 50000.0       # hwm suit le solde à la hausse
+
+
+def test_day_start_ref_prend_le_plus_haut_entre_solde_et_equite():
+    """Règle BlueGuardian : le repère du jour est le plus haut des deux."""
+    assert new_day_state(49000.0, 50000.0, {})["day_start_ref"] == 50000.0
+    assert new_day_state(51000.0, 50000.0, {})["day_start_ref"] == 51000.0
+
+
+def test_hwm_ne_redescend_jamais():
+    st = new_day_state(40000.0, 40000.0, {"prop_initial_balance": 50000.0},
+                       prev_hwm=55000.0)
+    assert st["prop_hwm_balance"] == 55000.0
+
+
+def test_current_day_suit_le_jour_prop_pas_le_calendaire():
+    """21:30 UTC = 17:30 à New York = après le reset → jour prop du LENDEMAIN.
+
+    C'est l'autre moitié du bug : /bot/start écrivait la date calendaire, ce qui
+    empêchait ensuite le rollover de la boucle de corriger quoi que ce soit.
+    """
+    now = datetime(2026, 9, 8, 21, 30, tzinfo=timezone.utc)
+    prop = {"prop_firm_enabled": True, "prop_daily_reset_hour_est": 17}
+    assert new_day_state(1.0, 1.0, prop, now=now)["current_day"] == "2026-09-09"
+    assert new_day_state(1.0, 1.0, {}, now=now)["current_day"] == "2026-09-08"

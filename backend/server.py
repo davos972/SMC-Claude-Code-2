@@ -342,20 +342,23 @@ async def bot_start() -> Dict[str, Any]:
                       "MetaApi n'est pas configuré. Ajoute ton token dans Réglages.")
         return {"running": False, "error": "MetaApi non configuré."}
     # Snapshot equity at bot start for drawdown tracking
-    equity = 0.0
+    equity = balance = 0.0
     try:
         info = await metaapi_client.get_account_information()
         equity = float(info.get("equity", 0))
+        balance = float(info.get("balance", equity))
     except Exception:
         pass
     now_iso = datetime.now(timezone.utc).isoformat()
+    # Repères du jour : calcul UNIQUE partagé avec le rollover de la boucle
+    # (bot_loop.new_day_state). Écrire ces clés à la main ici avait laissé
+    # `day_start_ref` périmé — voir la docstring de new_day_state.
+    bstate = await store.get_bot_state()
     await store.set_bot_state({
         "running": True, "stop_reason": None,
         "last_status_change": now_iso,
-        "current_day": datetime.now(timezone.utc).date().isoformat(),
-        "trades_today": 0,
-        "day_start_equity": equity,
-        "session_start_equity": equity,
+        **bot_loop.new_day_state(equity, balance, s,
+                                 bstate.get("prop_hwm_balance", 0)),
     })
     bot_loop.start(day_start_equity=equity)
     await _notify("success", "bot_stop", "Bot démarré",
@@ -425,20 +428,21 @@ async def bot_resume() -> Dict[str, Any]:
     s = await store.get_settings()
     if not metaapi_client.is_configured():
         return {"running": False, "error": "MetaApi non configuré."}
-    equity = 0.0
+    equity = balance = 0.0
     try:
         info = await metaapi_client.get_account_information()
         equity = float(info.get("equity", 0))
+        balance = float(info.get("balance", equity))
     except Exception:
         pass
+    # Mêmes repères que /bot/start : calcul unique (bot_loop.new_day_state).
+    bstate = await store.get_bot_state()
     await store.set_bot_state({
         "running": True, "stop_reason": None,
         "last_status_change": datetime.now(timezone.utc).isoformat(),
-        "current_day": datetime.now(timezone.utc).date().isoformat(),
         "consec_losses": 0,  # reset on manual resume
-        "trades_today": 0,
-        "day_start_equity": equity,
-        "session_start_equity": equity,
+        **bot_loop.new_day_state(equity, balance, s,
+                                 bstate.get("prop_hwm_balance", 0)),
     })
     bot_loop.start(day_start_equity=equity)
     await _notify("info", "bot_stop", "Bot repris manuellement",

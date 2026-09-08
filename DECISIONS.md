@@ -73,12 +73,40 @@ trades à des dates calendaires différentes (8 sept. 21:30 UTC et 9 sept. 16:00
 tombent bien dans le **même** jour prop, et dans deux jours distincts hors mode prop.
 `server.py` importe et expose `/api/prop/consistency`. Écritures Atlas relues après coup.
 
+**Ajouts du même jour, après le redémarrage du bot par David.**
+
+**(a) Purge quotidienne des signaux — demandée et faite.** La collection `signals` est
+vidée à chaque nouveau jour de trading, dans le rollover de `bot_loop`. Elle ne sert qu'à
+comprendre la journée en cours et gonflait sans limite (4 515 documents). **Les `trades`
+ne sont jamais purgés** : c'est le journal de performance.
+
+**(b) Bug trouvé en vérifiant l'état après le redémarrage — la protection journalière
+prop était inopérante.** Après le changement de compte, Atlas montrait
+`day_start_equity = 50 000 $` mais **`day_start_ref = 4 858,87 $`**, l'équité de l'ancien
+compte. Cause : **trois endroits écrivaient les repères du jour, chacun à sa façon.**
+`/bot/start` (`server.py:352`) et `/bot/resume` mettaient à jour `day_start_equity` mais
+**oubliaient `day_start_ref` et `prop_hwm_balance`** — et fixaient `current_day` au jour
+**calendaire** au lieu du jour prop, ce qui empêchait ensuite le rollover de la boucle de
+corriger quoi que ce soit. `day_start_ref` étant LE repère de la perte journalière en mode
+prop (`bot_loop.py:698`), la protection aurait été **inopérante toute la journée** dès
+l'activation du mode prop.
+
+Corrigé par **une source unique**, `bot_loop.new_day_state`, appelée par les trois
+endroits — la duplication était la cause, pas le symptôme. Figé par 4 tests, dont celui
+qui vérifie que `current_day` suit le jour prop (21:30 UTC = 17:30 à New York = jour
+suivant) et non le calendaire. **25 tests au total.**
+
+⚠️ **Sans effet en production aujourd'hui** : `prop_firm_enabled` est à `False`, donc
+`day_start_ref` n'est pas lu. La valeur périmée reste en base jusqu'au prochain rollover
+quotidien, qui la corrigera seul. À savoir avant d'activer le mode prop.
+
 **Écarté :** (1) **Arrêter le bot sur la règle de cohérence** — voir ci-dessus ; l'option
-« arrêt » a été proposée à David, il a choisi la surveillance. (2) **Purger `signals`
-automatiquement chaque jour** : David l'a évoqué, ce n'était pas demandé formellement —
-à faire dans le rollover si confirmé. (3) **Activer `prop_firm_enabled`** : décision
-séparée, non prise. (4) **Toucher au frontend** pour afficher le ratio : l'endpoint existe,
-l'affichage viendra si David le demande.
+« arrêt » a été proposée à David, il a choisi la surveillance. (2) **Activer
+`prop_firm_enabled`** : décision séparée, non prise. (3) **Toucher au frontend** pour
+afficher le ratio de cohérence : l'endpoint existe, l'affichage viendra si David le
+demande. (4) **Écrire `day_start_ref` à la main dans Atlas** pour corriger tout de suite :
+le bot tourne, et la valeur se corrigera d'elle-même au prochain rollover — écrire sous
+une boucle en vol pour un champ inutilisé aujourd'hui n'en vaut pas le risque.
 
 ## 2026-09-08 — Plusieurs positions simultanées : un levier, pas un avantage
 **Décision :** le moteur de backtest sait désormais tenir N positions simultanées
