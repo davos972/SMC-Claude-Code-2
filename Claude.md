@@ -33,37 +33,50 @@ Repère stable et utile : le dernier commit qui touche le **moteur SMC** (`smc.p
 `backtest.py`) est `db61adb` (anti-anticipation, 2026-08-26). Les décisions de trading
 n'ont donc pas changé depuis — tout le reste est frontend, documentation, ou garde-fous
 prop firm.
-🔴 **État du bot : À L'ARRÊT** (`bot_state.running = false`, `stop_reason = "manual"`),
-arrêté par David le **2026-09-08 à 06:43 UTC**. Aucune position ouverte.
+🟢 **État du bot : EN MARCHE** en **MODE PROP FIRM**, redémarré par David le
+**2026-09-08 à 08:09 UTC**. Lu dans Atlas le **2026-09-10 à 04:50 UTC**.
 ⚠️ Cet état change sans prévenir : **toujours le relire dans Atlas**, ne jamais le recopier
 d'ici — c'est la règle qui a coûté 34 h de trading non documenté (§9). Démonstration en
 trois heures le 2026-09-07 : « aucune position ouverte, `trades_today = 0` » à 05:16, une
 position ouverte à 07:16, refermée au SL à 08:03.
 
-🆕 **CHANGEMENT DE COMPTE le 2026-09-08.** Le compte démo Axi à ~4 900 $ est remplacé par
-un **nouveau compte à 50 000 $** (nouvel `metaapi_account_id` en base ; les réglages Atlas
-ont priorité sur la variable Render, `server.py:73`). Conséquences :
-- **Journal de trading remis à zéro** (9 trades supprimés, sauvegarde
-  `backend/_journal_backup_2026-09-08_ancien-compte-axi.json`) et **collection `signals`
-  vidée** (4 515 documents, à la demande de David — il ne veut pas les conserver).
-- **`bot_state.current_day` a été vidé** pour forcer le rollover de `bot_loop.py:585` :
-  sans ça, `day_start_equity` serait resté à **4 858,87 $** (l'ancien compte) et le
-  coupe-circuit de drawdown aurait comparé le nouveau compte à l'ancien solde — arrêt
-  immédiat du bot au premier tour. Sauvegarde `_botstate_backup_2026-09-08.json`.
-- ⚠️ **Les chiffres de backtest en DOLLARS sont périmés d'un facteur 10.** Le capital de
-  campagne était 4 919,48 $. Les résultats restent valides en **proportion** (PF 1,21,
-  +64 % sur la période, DD 11,9 %), mais le drawdown de 11,9 % vaut désormais **5 950 $**
-  et non 585 $. À 1 % de risque, chaque trade risque **500 $** au lieu de 49 $.
-- **Limites prop firm corrigées** (accord explicite de David) : `prop_daily_dd_pct`
-  5 → **3**, `prop_total_dd_pct` 10 → **6**, `prop_initial_balance` 10 000 → **50 000**.
-  Atlas avait dérivé ; les valeurs du code (`models.py:179-180`) étaient les bonnes.
-  **`prop_firm_enabled` reste à `False`** — l'activer est une décision séparée.
+🆕 **NOUVEAU COMPTE 50 000 $ + MODE PROP ACTIF, depuis le 2026-09-08.** Le compte démo Axi
+à ~4 900 $ est remplacé par un **compte à 50 000 $** (nouvel `metaapi_account_id` en base ;
+les réglages Atlas ont priorité sur la variable Render, `server.py:73`).
 
-🔴 **Le journal de trading est VIDE** : plus aucun résultat réel mesuré à ce jour sur le
-nouveau compte. Les 9 trades de l'ancien compte (PF 0,67, −76,71 $, **t −0,55**) ne
-mesuraient de toute façon rien — c'est la règle du §8 : avec un écart-type d'environ 60 $
-par trade, il faut plusieurs centaines de trades pour distinguer une performance d'un
-tirage au sort. Ils restent consultables dans la sauvegarde.
+```
+Risque par trade   0,4 %  = 200 $      (au lieu de 1 %)
+prop_firm_enabled  True                 (activé par David lui-même)
+Capital de référence 50 000 $
+```
+
+**Les quatre règles prop en vigueur** (détail du fonctionnement au §4) :
+
+| Règle | Limite réelle | Le bot agit à |
+|---|---|---|
+| Guardian Shield (perte flottante) | 500 $ | ferme les positions à **400 $** |
+| Perte du jour | 1 500 $ | **arrête le bot à 1 200 $** |
+| Drawdown max (trailing) | plancher glissant | arrêt **600 $** avant |
+| Cohérence (meilleur jour ≤ 20 %) | — | **n'arrête jamais**, alerte seulement |
+
+**Premiers trades réels sur le nouveau compte — 3 trades, du 2026-09-08 au 2026-09-09** :
+
+| Date | Sens | Sortie | P&L |
+|---|---|---|---|
+| 08/09 17:03 | vente | TP | **+270,08 $** |
+| 09/09 07:00 | vente | SL | −209,79 $ |
+| 09/09 15:08 | achat | SL | −209,82 $ |
+
+**Total −149,53 $.** Équité **49 850,47 $**, high watermark **50 270,08 $**.
+🔴 **3 TRADES NE MESURENT RIEN** — cf. la règle du §8. Ne rien changer sur cette base.
+✅ **Marge prop confortable** : plancher qui tue à 47 270 $, **coussin de 2 580 $ (5,2 %)**.
+Perte du jour à 0 $. Règle de cohérence : rien à signaler (cumul négatif).
+✅ **Les pertes à ~210 $ confirment que le risque de 0,4 % est bien appliqué** (0,42 % avec
+le spread). ✅ **La purge quotidienne des signaux fonctionne** : collection à 0.
+
+⚠️ **Les chiffres de backtest en DOLLARS sont périmés.** Le capital de campagne était
+4 919,48 $ à 1 % de risque. Les résultats restent valides **en proportion et en R**, mais
+plus du tout en dollars. **Toujours raisonner en R ou en pourcentage** (§9).
 
 ℹ️ **« trailing_sl » n'est PAS un trailing stop qui se serait rallumé.** `trailing_mode`
 vaut bien `off` ; `bot_loop.py:233` étiquette `trailing_sl` **toute** sortie dont le SL
@@ -105,8 +118,13 @@ Filtre        require_unmitigated_ob = ON   (seule confluence active)
 Sessions      Londres 08:00–17:00 et New York 08:00–17:00 (heures LOCALES)
 RR minimum    1
 TP partiels   activés
-Risque        1 % par trade
+Risque        0,4 % par trade   ← CHANGÉ le 2026-09-08 (backtest : 1 %)
 ```
+
+⚠️ **Le risque n'est plus celui du backtest.** Il est passé de 1 % à **0,4 %** le
+2026-09-08, sur décision de David, parce qu'à 1 % (et même à 0,8 %) **la configuration perd
+le compte prop firm** — mesuré, voir §0ter. Tout le reste est identique à la configuration
+mesurée. Les R par trade sont inchangés ; seule l'échelle en dollars diffère.
 
 **576 trades sur trois périodes indépendantes · PF 1,21 · +3 148 $ sur 4 919 $ ·
 DD max 11,9 % · t +2,08 · rentable sur les TROIS périodes**, et régulièrement : 10 mois
@@ -144,6 +162,9 @@ Sans lui, la pile A seule fait PF 1,10, t +1,10, rentable 3/3.
    jours. ⚠️ **Elle ne peut PAS départager deux configurations proches** : au rythme
    mesuré (~41 trades/mois), il faudrait ~2 450 trades, soit près de cinq ans. Ne jamais
    lui demander de valider un avantage statistique (`DECISIONS.md`, 2026-08-27).
+   **C'est le seul chantier réellement ouvert, et il prendra des mois.** Ce qu'il faut
+   surveiller en mode prop, en plus : que les quatre règles se déclenchent comme prévu, et
+   que le coussin face au plancher ne se réduise pas durablement.
 3. ~~Comprendre l'inversion de la période juin→août 2026.~~ **TRAITÉ le 2026-08-27 :
    il n'y avait pas d'inversion.** Les trois effets « inversés » sont du bruit (18
    comparaisons, aucune n'atteint |t| = 2), et le régime de juin→août 2026 n'est pas
@@ -178,7 +199,17 @@ Sans lui, la pile A seule fait PF 1,10, t +1,10, rentable 3/3.
    d'écran pour saisir la clé, et aucune correction possible sans recompiler l'APK.
    Ce n'est plus une option ouverte : c'est un garde-fou (§9).
    (b) **Les sections « Contexte journalier », « Trailing stop » et « Mode Prop Firm »
-   sont CONSERVÉES.** David les garde visibles, bien qu'elles soient toutes OFF.
+   sont CONSERVÉES.** David les garde visibles. *(Le mode Prop Firm est ACTIF depuis le
+   2026-09-08 — la section n'est plus décorative.)*
+7. ⚠️ **SEUL POINT TECHNIQUE OUVERT — le bandeau « Configuration validée » est ROUGE.**
+   La constante `CONFIG_VALIDEE` (`frontend/src/pages/Settings.jsx:534`) attend
+   `risk_per_trade_pct: 1`, alors que la prod tourne volontairement à **0,4 %** depuis le
+   passage en mode prop. Le bandeau signale donc une dérive qui n'en est pas une.
+   🚨 **Un bandeau d'alerte allumé en permanence ne sert plus à rien** — on apprend à
+   l'ignorer, et il ne signalera plus la vraie dérive le jour où elle arrivera, ce qui est
+   exactement sa raison d'être. **Proposé à David le 2026-09-08 : mettre la référence à
+   0,4 % avec un commentaire expliquant que c'est le niveau prop firm. Il n'a pas encore
+   répondu.** À faire dès qu'il valide (une ligne de frontend + un push).
 
 **Non implémentés volontairement** : **OB 2.0** (imposerait un 5e étage de timeframe) et
 **SMT Divergence** (imposerait de suivre un 2e instrument corrélé en continu, casserait
@@ -449,6 +480,41 @@ jamais été calculée avant le 2026-08-27.
   Trois positions de même sens sur le même instrument se comportent comme UNE position de
   taille triple — le drawdown le confirme (× 2,4). Obtenir le même effet en montant le
   risque par trade sur une seule position serait équivalent et bien plus simple.
+- 🚨 **SUR UN COMPTE PROP FIRM, LA CONFIGURATION VALIDÉE PERD LE COMPTE — à 1 % ET à
+  0,8 % de risque.** Rejeu des 575 trades sur 50 000 $ avec les vraies limites
+  (perte jour 3 % = 1 500 $, DD max trailing 6 % = 3 000 $, marge 20 %), fait le
+  2026-09-08 par `backend/_prop_replay.py` — **aucun backtest relancé.**
+
+  | Scénario | Compte perdu | Survie | Pic avant la perte |
+  |---|---|---|---|
+  | Mode prop OFF, risque 1 % | 18/07/2025 | **16 jours** | +3,2 % |
+  | Mode prop ON, risque 0,8 % | 22/10/2025 | **3,7 mois** | +7,2 % (+3 584 $) |
+
+  **Cause structurelle, pas un défaut de réglage** : le drawdown mesuré de la stratégie
+  est de **11,9 %** quand la limite prop est de **6 %** — soit **le double**. Aucun arrêt
+  préventif ne corrige ça ; le mode prop retarde la perte (16 j → 112 j), il ne l'évite pas.
+  **Il y a bien eu du profit avant la perte, et il a été intégralement rendu.**
+
+  ✅ **Le risque par trade est le seul levier qui marche** :
+
+  | Risque | Verdict | Coussin minimal | Gain sur 14 mois |
+  |---|---|---|---|
+  | 1,0 % / 0,8 % / 0,65 % | **perdu** (16 j / 112 j / 414 j) | — | — |
+  | 0,6 % | conservé | **356 $ (0,7 %)** | +39,9 % |
+  | 0,4 % | conservé | 909 $ (1,8 %) | +25,1 % |
+  | **0,3 %** | conservé | **1 444 $ (2,9 %)** | **+18,4 %** |
+
+  ⚠️ **Lire le COUSSIN MINIMAL, pas le drawdown.** Une fois le plancher verrouillé au
+  capital initial (dès que le high watermark atteint +6 %), la contrainte n'est plus
+  « ne pas perdre 6 % depuis le pic » mais **« ne jamais repasser sous 50 000 $ »** — d'où
+  des comptes qui survivent à 10,7 % de drawdown. C'est exactement ce qui a tué le
+  scénario B : pic à 53 584 $, puis repli à 49 936 $, soit **64 $ sous le solde initial**
+  après trois mois de profit. À 0,6 % le compte tient avec **356 $ de marge** : ce n'est
+  pas de la survie, c'est de la chance.
+  ⚠️ **Une seule séquence historique.** Tenir 14 mois à 0,6 % ne dit pas qu'on tiendrait
+  demain — les limites prop sont absolues, le drawdown est aléatoire. Réserve de méthode :
+  la séquence de trades est celle produite avec les garde-fous standard, les arrêts prop
+  étant ajoutés par-dessus (ils ne peuvent que retirer des trades).
 - **Piège de lecture du drawdown** : `max_drawdown_pct` (3 % par défaut) est un
   coupe-circuit **JOURNALIER**, comparé à l'équité de début de journée
   (`backtest.py:130-132`), avec reprise à la session suivante. Un DD cumulé de 30 à 48 %
@@ -594,6 +660,7 @@ complet est dans `DECISIONS.md`, entrée par entrée, la plus récente en haut.
 
 | Date | Ce qui s'est joué | Entrée dans DECISIONS.md |
 |---|---|---|
+| 2026-09-08 | **Mode prop activé, risque 1 % → 0,4 % (à 1 % le compte est perdu)** | « Mode prop firm activé » |
 | 2026-09-08 | **Nouveau compte 50 000 $ + règle de cohérence prop firm** | « Nouveau compte 50 000 $ » |
 | 2026-09-08 | **Plusieurs positions simultanées : un levier, pas un avantage** | « Plusieurs positions simultanées » |
 | 2026-09-07 | **SL à TP1 après TP2 : écarté par comptage, sans backtest** | « SL à TP1 quand TP2 » |
@@ -691,6 +758,10 @@ production (cf. le piège `zone_50` en §0ter).
 - `_matrix2.py` (47 variantes + réglages de la campagne), `_period.py` (rejeu sur une
   période nommée avec bougies de chauffe), `_run_matrix2.py` / `_run_period.py` (lancement
   parallèle), `_report2.py` (tableau), `_fetch_m1.py` (téléchargement d'un cache)
+- `_prop_replay.py` (2026-09-08) : **rejoue la courbe d'équité avec les règles PROP FIRM**,
+  que le moteur de backtest ne modélise pas (elles vivent dans `bot_loop.py`, côté live).
+  Répond à « aurait-on gardé le compte ? », et balaye le risque par trade pour trouver le
+  niveau survivable. `py _prop_replay.py`
 - `_directional.py` (2026-09-07) : **analyse sans relancer un backtest**, à partir des
   186 fichiers de résultats et des 3 caches. Directivité mensuelle du marché, performance
   par mois avec sa marge d'erreur, alignement des trades sur la tendance (avec contrôle de

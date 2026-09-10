@@ -16,6 +16,67 @@
 
 ---
 
+## 2026-09-08 (fin) — Mode prop firm activé, risque ramené de 1 % à 0,4 %
+**Décision :** `prop_firm_enabled` passe à **True** (activé par David lui-même dans l'app)
+et `risk_per_trade_pct` de **1 % à 0,4 %** (écrit par Claude, bot à l'arrêt, accord
+explicite). Le bot a été redémarré par David à 08:09 UTC et tourne depuis en mode prop.
+
+**Pourquoi 0,4 % et pas 1 % : à 1 %, la stratégie perd le compte.** Rejeu des 575 trades
+sur 50 000 $ avec les vraies limites, par `backend/_prop_replay.py` — **aucun backtest
+relancé**, on rejoue la courbe d'équité trade par trade parce que le moteur de backtest ne
+modélise pas les règles prop (elles vivent dans `bot_loop.py`, côté live).
+
+| Scénario | Compte perdu | Survie | Pic avant la perte |
+|---|---|---|---|
+| Mode prop OFF, risque 1 % | 18/07/2025 | **16 jours** | +3,2 % |
+| Mode prop ON, risque 0,8 % | 22/10/2025 | **3,7 mois** | +7,2 % (+3 584 $) |
+
+**La cause est structurelle, pas un défaut de réglage** : le drawdown mesuré de la
+stratégie est de **11,9 %** quand la limite prop est de **6 %** — le double. Aucun arrêt
+préventif ne corrige ça ; le mode prop retarde la perte, il ne l'évite pas. Il y a bien eu
+du profit avant la perte, intégralement rendu.
+
+**Balayage du risque — le seul levier qui marche :**
+
+| Risque | Verdict | Coussin minimal | Gain sur 14 mois |
+|---|---|---|---|
+| 1,0 / 0,8 / 0,65 % | **perdu** (16 j / 112 j / 414 j) | — | — |
+| 0,6 % | conservé | **356 $ (0,7 %)** | +39,9 % |
+| **0,4 % (retenu)** | conservé | **909 $ (1,8 %)** | **+25,1 %** |
+| 0,3 % | conservé | 1 444 $ (2,9 %) | +18,4 % |
+
+**Pourquoi 0,4 % plutôt que 0,6 %, qui rapporte plus.** À 0,6 % le compte survit en passant
+à **356 $ du couperet**, soit 0,7 % du capital : ce n'est pas de la survie, c'est de la
+chance — une séquence légèrement différente le tuait. 0,4 % double le coussin pour un tiers
+de rendement en moins. **Choix de David après présentation des deux.**
+
+🚨 **Piège de lecture à retenir : le COUSSIN MINIMAL, pas le drawdown.** Des comptes
+survivent à 10,7 % de drawdown alors que la limite affichée est 6 %. La raison : une fois
+le plancher **verrouillé au capital initial** (dès que le high watermark atteint +6 %), la
+contrainte n'est plus « ne pas perdre 6 % depuis le pic » mais **« ne jamais repasser sous
+50 000 $ »**. C'est exactement ce qui a tué le scénario B : pic à 53 584 $, puis repli à
+49 936 $ — **64 $ sous le solde initial**, après trois mois de profit.
+
+⚠️ **Réserve capitale : c'est UNE seule séquence historique.** Tenir ces 14 mois à 0,4 % ne
+dit pas qu'on tiendrait les 14 prochains. Les limites prop sont **absolues et
+définitives** ; le drawdown, lui, est aléatoire. C'est précisément pourquoi on prend de la
+marge au lieu de viser la frontière. Réserve de méthode : la séquence de trades est celle
+produite avec les garde-fous standard, les arrêts prop ajoutés par-dessus (ils ne peuvent
+que retirer des trades).
+
+**Vérifié en production le 2026-09-10** (2 jours après) : 3 trades réels, pertes à
+**−209,79 $ et −209,82 $** = 0,42 % du capital → **le risque de 0,4 % est bien appliqué**.
+Coussin face au plancher : **2 580 $ (5,2 %)**. Collection `signals` à 0 → la purge
+quotidienne fonctionne. `day_start_ref` correct → le correctif `new_day_state` tient.
+
+**Écarté :** (1) **0,6 %** malgré son +39,9 % — coussin de 0,7 %, trop mince. (2) **Garder
+1 %** : mesuré perdant sur le compte. (3) **Toucher à la stratégie** pour réduire son
+drawdown : rien dans la campagne ne permet de le faire sans dégrader l'espérance ; le
+risque par trade est le levier propre. (4) **Modéliser les règles prop dans
+`backtest.py`** : elles sont une contrainte de compte, pas une décision de trading — les
+mettre dans le moteur mélangerait deux responsabilités. Le rejeu par `_prop_replay.py`
+répond à la question sans toucher au moteur.
+
 ## 2026-09-08 (suite) — Nouveau compte 50 000 $ et règle de cohérence prop firm
 **Décision :** le compte démo Axi (~4 900 $) est remplacé par un **compte à 50 000 $**.
 Journal de trading remis à zéro, collection `signals` vidée, limites prop firm corrigées,
