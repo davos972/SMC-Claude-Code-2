@@ -103,11 +103,17 @@ le §0 a affirmé pendant deux jours que le bot était à l'arrêt **alors qu'il
 Démarré le 2026-08-26 à 04:31 UTC, il a tourné environ 34 h sur la pile de prod mesurée
 perdante et pris **2 trades le 2026-08-27** avant d'être arrêté.
 
-⚠️ **L'APK Android tourne sur `d90c6a7`** (n° 9) et est désormais **EN RETARD** : la page
-Réglages a été allégée le 2026-08-27 (§5). Ce n'est pas bloquant pour le trading — l'APK
-parle au même backend et les réglages sont les mêmes — mais l'app mobile affiche encore
-l'ancien écran, sans le bloc « Configuration validée ». À recompiler quand David le
-voudra (GitHub Actions, cf. §6bis).
+📱 **APK Android recompilée le 2026-09-11** sur le `main` du jour (run GitHub Actions
+`34603897898`, 2 min 24 s) : elle contient le bandeau « Configuration validée » corrigé et
+le nouveau journal (graphique + conditions par trade). Le fichier est dans `../apk/`,
+l'ancien conservé à côté sous `goldflow-smc_ancien_2026-07-08.apk`.
+✅ **Empreinte de signature vérifiée identique au build précédent**
+(`B1:96:C0:98:…:0F:8F:FE:7F`) → elle s'installe **par-dessus** l'ancienne, sans
+désinstaller. C'est ce que garantit l'étape « Install persistent signing key », qui échoue
+explicitement si le secret `ANDROID_DEBUG_KEYSTORE_B64` manque.
+⚠️ **Reste à faire par David : l'installer sur le téléphone.** Tant qu'il ne l'a pas fait,
+le mobile affiche encore l'ancien écran. Ce n'est pas bloquant pour le trading — l'APK
+parle au même backend et les réglages sont les mêmes.
 
 ⚠️ **NE JAMAIS REBASCULER LE MODE EN `scalping`.** Les clés `scalping_*` sont toujours en
 base (`H1→M5→M1→M1`) et redeviendraient actives instantanément : c'est la pile mesurée le
