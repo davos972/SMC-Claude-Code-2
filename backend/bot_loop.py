@@ -320,8 +320,34 @@ def _exit_reason(tracked: Dict, exit_price: Optional[float]) -> str:
     return "other"
 
 
+def _chart_snapshot(candles: Optional[List[Dict]], analysis: Optional[Dict]) -> Optional[Dict]:
+    """Instantane du graphique au moment de la decision, rejouable tel quel par SMCChart.
+
+    On archive les bougies d'entree ET les zones que le moteur a reellement calculees.
+    Le graphique du journal montre donc CE QUI A DECIDE, pas une analyse refaite apres
+    coup avec d'autres donnees — c'est le garde-fou du CLAUDE.md §9 (« une seule
+    conversion reglages -> moteur ») applique a l'affichage.
+    Poids mesure : ~66 Ko par trade. Exclu de la LISTE du journal (voir store.list_trades),
+    charge a la demande par GET /api/journal/{id}/chart.
+    """
+    if not candles or not analysis:
+        return None
+    # Les cles utiles au dessin uniquement : `signal`/`reject_reason` sont deja ailleurs
+    # dans le document du trade, inutile de les stocker deux fois.
+    zones = {k: v for k, v in analysis.items()
+             if k not in ("signal", "reject_reason", "reject_stage", "conditions")}
+    return {
+        "candles": candles,
+        "analysis": zones,
+        "source": "live",          # "reconstitue" = rejoue apres coup, a signaler a l'ecran
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 async def _journal_open(pos_id: str, s: Dict, symbol: str, sig: Dict, lot: float,
-                        session: str, timeframe: str, when: datetime) -> None:
+                        session: str, timeframe: str, when: datetime,
+                        analysis: Optional[Dict] = None,
+                        candles: Optional[List[Dict]] = None) -> None:
     """Ouvre la ligne du trade dans le journal (collection `trades`).
 
     Ecriture « au mieux » : l'ordre est DEJA place chez le broker quand on arrive
@@ -345,6 +371,9 @@ async def _journal_open(pos_id: str, s: Dict, symbol: str, sig: Dict, lot: float
             "reason": sig.get("reason"),
             "source": "bot",
             "settings_snapshot": _settings_snapshot(s),
+            # Conditions SMC validees, structurees (smc.analyze -> "conditions").
+            "conditions": (analysis or {}).get("conditions"),
+            "chart_snapshot": _chart_snapshot(candles, analysis),
         })
     except Exception as e:
         logger.warning("Journal: ouverture du trade %s non enregistree: %s", pos_id, e)
@@ -902,7 +931,11 @@ async def _bot_trading_loop() -> None:
                                     "close": float(c["close"])})
                     return out
 
-                result = analyze(_norm(htf_raw), _norm(mtf_raw), _norm(ltf_raw),
+                # Gardé en variable : ces bougies d'entrée sont EXACTEMENT celles que le
+                # moteur a vues, et elles sont archivées telles quelles dans le journal
+                # si un trade naît (instantané du graphique — voir _journal_open).
+                ltf_norm = _norm(ltf_raw)
+                result = analyze(_norm(htf_raw), _norm(mtf_raw), ltf_norm,
                                  _norm(d1_raw) if d1_raw else None,
                                  **smc_params(s))
             except Exception as e:
@@ -1021,7 +1054,8 @@ async def _bot_trading_loop() -> None:
                     # Journal de trading : la ligne est ouverte ici, cloturee par
                     # _check_closed_positions avec le P&L reel du broker.
                     await _journal_open(pos_id, s, symbol, sig, lot,
-                                        session_info.get("session", "unknown"), ltf, now)
+                                        session_info.get("session", "unknown"), ltf, now,
+                                        analysis=result, candles=ltf_norm)
                 else:
                     logger.error("Ordre placé sans identifiant de position exploitable — "
                                  "suivi gain/perte ignoré pour ce trade. Réponse: %s", order)

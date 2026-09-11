@@ -16,7 +16,7 @@
 
 ---
 
-## 0. ÉTAT COURANT — 2026-09-07
+## 0. ÉTAT COURANT — 2026-09-10
 
 **Ce qui tourne.** Prod sur Render (`goldflow-backend` + `goldflow-frontend`), base
 MongoDB Atlas. **La prod tourne sur `origin/main`, pas sur la copie locale** — le vrai
@@ -59,18 +59,28 @@ Capital de référence 50 000 $
 | Drawdown max (trailing) | plancher glissant | arrêt **600 $** avant |
 | Cohérence (meilleur jour ≤ 20 %) | — | **n'arrête jamais**, alerte seulement |
 
-**Premiers trades réels sur le nouveau compte — 3 trades, du 2026-09-08 au 2026-09-09** :
+**Premiers trades réels sur le nouveau compte — 5 trades, du 2026-09-08 au 2026-09-10** :
 
 | Date | Sens | Sortie | P&L |
 |---|---|---|---|
 | 08/09 17:03 | vente | TP | **+270,08 $** |
 | 09/09 07:00 | vente | SL | −209,79 $ |
 | 09/09 15:08 | achat | SL | −209,82 $ |
+| 10/09 07:19 | achat | SL | −197,54 $ |
+| 10/09 08:33 | achat | SL | −198,15 $ |
 
-**Total −149,53 $.** Équité **49 850,47 $**, high watermark **50 270,08 $**.
-🔴 **3 TRADES NE MESURENT RIEN** — cf. la règle du §8. Ne rien changer sur cette base.
-✅ **Marge prop confortable** : plancher qui tue à 47 270 $, **coussin de 2 580 $ (5,2 %)**.
-Perte du jour à 0 $. Règle de cohérence : rien à signaler (cumul négatif).
+**Total −545,22 $** (1 gagnant sur 5). Lu dans Atlas le **2026-09-10 à ~13:00 UTC** —
+⚠️ deux de ces trades sont tombés PENDANT la session de travail, ce chiffre vieillit vite.
+High watermark **50 270,08 $** (inchangé : aucun nouveau plus-haut depuis le 08/09).
+🔴 **5 TRADES NE MESURENT RIEN** — cf. la règle du §8. Ne rien changer sur cette base ;
+4 pertes d'affilée entrent tout à fait dans le comportement normal d'une stratégie à ~50 %
+de réussite.
+✅ **Marge prop encore large** : équité **49 454,78 $** (lue le 2026-09-11 à 12:03 UTC),
+plancher qui tue à **47 270 $** — coussin de **2 185 $ (4,4 %)**. Le bot s'arrête avant,
+à 47 870 $. Le plancher est encore GLISSANT : il se verrouillera à 50 000 $ quand le high
+watermark atteindra 53 000 $.
+ℹ️ L'arrêt après 3 pertes consécutives ne s'est pas déclenché : il compte **par session**
+(§4), et les pertes se répartissent sur Londres et New York.
 ✅ **Les pertes à ~210 $ confirment que le risque de 0,4 % est bien appliqué** (0,42 % avec
 le spread). ✅ **La purge quotidienne des signaux fonctionne** : collection à 0.
 
@@ -210,6 +220,28 @@ Sans lui, la pile A seule fait PF 1,10, t +1,10, rentable 3/3.
    exactement sa raison d'être. **Proposé à David le 2026-09-08 : mettre la référence à
    0,4 % avec un commentaire expliquant que c'est le niveau prop firm. Il n'a pas encore
    répondu.** À faire dès qu'il valide (une ligne de frontend + un push).
+
+8. ✅ **FAIT le 2026-09-10 — le journal archive le graphique et les conditions de chaque
+   trade** (demande de David). Détail en §5, raisonnement dans `DECISIONS.md`. Les
+   5 trades déjà en base ont été reconstitués et **vérifiés identiques** au trade réel
+   (`backend/_backfill_charts.py`), leur `chart_snapshot` est **déjà écrit dans Atlas**.
+   🚨 **COMMITTÉ MAIS PAS ENCORE DÉPLOYÉ** — le code est sur `main` en local, pas poussé.
+   Tant qu'il n'est pas poussé, la prod Render tourne sans : les trades pris entre-temps
+   n'auront pas d'instantané `live` (ils restent reconstituables). Un push redéploie ET
+   redémarre le bot : **vérifier qu'aucune position n'est ouverte avant**. David décide du
+   moment.
+9. 🔍 **DEUX SUJETS OUVERTS, découverts en analysant la journée du 09/09 :**
+   (a) **Les setups REJETÉS ne sont pas conservés.** La collection `signals` est purgée
+   chaque jour (§9), donc le post-mortem de la veille est impossible : on ne voit que les
+   trades pris, jamais ce que le bot a regardé sans le prendre. Piste proposée à David,
+   pas encore tranchée : archiver les signaux de la veille avant de purger, ou ne purger
+   qu'au-delà de 48 h.
+   (b) 🚨 **La boucle de trading se fige régulièrement.** Le gardien de vivacité l'a
+   relancée **6 fois le 08/09** et 1 fois le 09/09 — à 15:08:22, soit **30 secondes avant**
+   un trade qui a touché son SL en 33 s. Le gardien se déclenche après 5 min sans pouls :
+   la boucle était donc aveugle pendant toute la chute de 15:04 à 15:07. **Rien ne prouve
+   que le gel a causé la perte** (le bot aurait peut-être pris le même trade), mais c'est
+   chronique depuis août et ça n'a jamais été creusé. Indépendant de la stratégie.
 
 **Non implémentés volontairement** : **OB 2.0** (imposerait un 5e étage de timeframe) et
 **SMT Divergence** (imposerait de suivre un 2e instrument corrélé en continu, casserait
@@ -615,6 +647,22 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
   `GET /api/journal` et `POST /api/journal/import` (import de l'historique broker MetaApi,
   filtré sur le magic number). Métriques calculées par `backtest._compute_metrics` —
   ne jamais en écrire une seconde version
+- **Chaque trade archive sa décision — depuis le 2026-09-10** (demande de David). Le
+  détail dépliable d'un trade montre, en plus de son résultat :
+  - **Les conditions SMC validées**, structurées (`trades.conditions`, remplies par
+    `smc.analyze` → `"conditions"`), avec pour chacune l'étiquette **exigée / constatée**.
+    🔑 C'est la distinction qui manquait au texte `reason` : « displacement · 2e CHoCH »
+    ne dit pas si ces confluences ont FILTRÉ ou si elles étaient seulement vraies ce
+    jour-là (elles sont OFF). Ne jamais retirer cette distinction.
+  - **Le graphique du moment de la décision** (`trades.chart_snapshot`) : les 201 bougies
+    d'entrée + les zones que le moteur a réellement calculées, redessinées par le
+    composant `SMCChart` existant. ~66 Ko par trade.
+  🚨 **`chart_snapshot` est EXCLU de `store.list_trades`** (projection Mongo) et chargé à
+  la demande par `GET /api/journal/{id}/chart`. Le remettre dans la liste ferait une
+  réponse de plusieurs dizaines de Mo sur 500 trades — inutilisable sur mobile.
+  ℹ️ Le champ `chart_snapshot.source` vaut `live` (capturé par le bot), ou
+  `reconstitue_verifie` / `reconstitue` pour les trades rejoués après coup — l'écran
+  affiche un avertissement dans le second cas (voir §9)
 - **Le texte d'un signal décrit ce qui s'est vraiment produit** (`smc._signal_reason`,
   depuis le 2026-08-26) : déclencheur réel, présence ou non d'une FVG, type de POI et son
   état mitigé, mode d'entrée, zone premium/discount déduite du prix. Ne jamais y remettre
@@ -660,6 +708,7 @@ complet est dans `DECISIONS.md`, entrée par entrée, la plus récente en haut.
 
 | Date | Ce qui s'est joué | Entrée dans DECISIONS.md |
 |---|---|---|
+| 2026-09-10 | **Le journal archive le graphique et les conditions de chaque trade** | « Le journal de trading archive » |
 | 2026-09-08 | **Mode prop activé, risque 1 % → 0,4 % (à 1 % le compte est perdu)** | « Mode prop firm activé » |
 | 2026-09-08 | **Nouveau compte 50 000 $ + règle de cohérence prop firm** | « Nouveau compte 50 000 $ » |
 | 2026-09-08 | **Plusieurs positions simultanées : un levier, pas un avantage** | « Plusieurs positions simultanées » |
@@ -872,6 +921,21 @@ démo Axi pendant plusieurs jours avant qu'on en tire une conclusion.
   `pnl: null`, et il est exclu des statistiques (visible dans la liste, jamais compté)
 - Le texte d'un signal ne doit décrire que des conditions **réellement constatées**
   (`smc._signal_reason`) — jamais un libellé figé qui suppose des filtres actifs
+- 🔑 **Rejouer une décision LIVE : forcer le dernier close au prix d'entrée du trade**
+  (découvert le 2026-09-10 en reconstituant les graphiques du journal). Le bot décide sur
+  une bougie **en formation** (à 07:00:23, pas à la clôture de la minute), alors qu'un
+  rejeu prend la bougie close — d'où des zones et un RR faux (mesuré : **1,75 → 2,21** sur
+  le trade du 08/09). Or `_build_signal` pose `entry = last_close` : **le prix d'entrée
+  enregistré EST exactement le dernier close vu par le moteur**. En forçant le close de la
+  dernière bougie à `trade["entry"]`, les 5 rejeux sont devenus identiques au trade réel,
+  RR compris. Vaut pour toute reconstitution a posteriori (`backend/_backfill_charts.py`)
+- **Un graphique rejoué après coup se VÉRIFIE avant d'être présenté comme la décision.**
+  Le contrôle est simple et sans appel : comparer la phrase `reason` rejouée à celle
+  enregistrée, caractère par caractère. Identique → `source: "reconstitue_verifie"`,
+  l'écran l'affiche sans alarmer. Différent → `source: "reconstitue"` et l'écran affiche
+  un avertissement avec la phrase obtenue. **Ne jamais présenter des zones recalculées
+  comme celles qui ont décidé** — c'est la même règle que « une seule conversion
+  réglages → moteur », appliquée à l'affichage du passé
 
 ## 10. Environnement local et commandes (Windows 11, PowerShell)
 

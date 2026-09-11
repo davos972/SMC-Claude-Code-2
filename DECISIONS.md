@@ -16,6 +16,65 @@
 
 ---
 
+## 2026-09-10 — Le journal de trading archive le graphique et les conditions de chaque trade
+**Décision :** chaque trade pris par le bot enregistre désormais, en plus de son résultat,
+**(a)** les conditions SMC validées sous forme structurée et **(b)** un instantané du
+graphique — les 201 bougies d'entrée ET les zones que le moteur a réellement calculées.
+L'onglet Stats les affiche dans le détail dépliable du trade. Demande de David, qui veut
+« voir le graphique et toutes les conditions acceptées » en relisant son journal.
+
+**Pourquoi ces deux ajouts et pas seulement le texte existant.** Le champ `reason`
+(`_signal_reason`) résume la décision en une phrase, mais il ne dit pas **quels filtres
+étaient EXIGÉS** et lesquels étaient seulement **constatés**. Sans cette distinction, on
+lit « displacement · 2e CHoCH » et on croit que ces confluences filtraient, alors qu'elles
+sont OFF : elles étaient simplement vraies ce jour-là. Le bloc `conditions` porte
+maintenant `exige: true/false` sur chaque ligne, et l'écran affiche l'étiquette
+**exigée / constatée**.
+
+**Le graphique est REJOUÉ, pas photographié** (choix de David après présentation des deux
+options). On stocke bougies + zones, et le composant `SMCChart` existant les redessine :
+zoomable, avec les calques, ~66 Ko par trade (mesuré). Une vraie image PNG aurait imposé
+un moteur de navigateur sur Render — lourd, fragile au redémarrage, et non zoomable.
+
+**Un piège évité au passage — la liste du journal serait devenue inutilisable.**
+`store.list_trades` renvoyait le document entier : à 66 Ko par trade et 500 trades, la
+réponse de `GET /api/journal` aurait atteint **plusieurs dizaines de Mo**, sur mobile en
+4G. L'instantané est donc **exclu de la liste** (projection Mongo) et chargé trade par
+trade par `GET /api/journal/{id}/chart`. Mesuré après coup : 2 Ko par trade dans la liste
+au lieu de 68.
+
+**Le moteur n'a été touché que pour SORTIR de l'information.** `_build_signal` remplit
+`ctx_out["conditions"]` juste avant de renvoyer le signal — le mécanisme `ctx_out` existait
+déjà pour l'inducement. **Aucune branche de décision modifiée** ; les 25 tests unitaires
+passent à l'identique. Le repère `db61adb` (dernier changement de comportement du moteur)
+reste valable : les décisions de trading n'ont pas bougé.
+
+**Les 5 trades déjà en base ont été reconstitués — et la reconstitution a été VÉRIFIÉE.**
+David a demandé de traiter aussi l'historique malgré la réserve annoncée (le live analyse
+des bougies supérieures en formation, à la seconde près, qu'un rejeu ne reproduit pas).
+Le contrôle mis en place compare la phrase `reason` rejouée à celle enregistrée, caractère
+par caractère : **les 5 sont identiques**, RR compris. L'instantané porte donc
+`source: "reconstitue_verifie"` et l'écran le dit sans alarmer. Si un rejeu divergeait, il
+serait marqué `"reconstitue"` et l'écran afficherait un avertissement rouge avec la phrase
+obtenue — on ne présente jamais des zones recalculées comme celles qui ont décidé (§9).
+
+🔑 **Ce qui a rendu la reconstitution fidèle, et qu'il faut retenir** : la première version
+sortait des RR faux (1,75 → **2,21** sur le trade du 08/09). Cause : le bot décide à
+07:00:23 sur une bougie M1 **en formation**, alors que le rejeu prenait la bougie close.
+Or `_build_signal` pose `entry = last_close` — le **prix d'entrée enregistré EST donc,
+exactement, le dernier close vu par le moteur**. En forçant le close de la dernière bougie
+à `trade["entry"]`, les 5 rejeux sont devenus identiques. Toute reconstitution future d'une
+décision live doit faire ça.
+
+**Écarté :** (1) **L'image PNG** — moteur de navigateur côté serveur, cf. ci-dessus.
+(2) **Stocker l'instantané dans la liste du journal** — réponse API ingérable.
+(3) **Archiver aussi les setups REJETÉS** : ce serait le plus intéressant pour comprendre
+le bot, mais la collection `signals` est purgée chaque jour (décision du 2026-09-08) et
+un rejet ne crée pas de document `trades`. Traité séparément — voir le chantier ouvert.
+(4) **Afficher les lignes « Biais journalier / Power of 3 / OTE » quand ces filtres sont
+OFF** : le moteur ne mesure rien à leur sujet dans ce cas, afficher « — constatée » aurait
+été trompeur. Ces lignes n'apparaissent que si le filtre a réellement filtré.
+
 ## 2026-09-08 (fin) — Mode prop firm activé, risque ramené de 1 % à 0,4 %
 **Décision :** `prop_firm_enabled` passe à **True** (activé par David lui-même dans l'app)
 et `risk_per_trade_pct` de **1 % à 0,4 %** (écrit par Claude, bot à l'arrêt, accord

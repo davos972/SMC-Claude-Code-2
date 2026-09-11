@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Download, RefreshCw, ChevronDown, Settings2 } from "lucide-react";
+import { Download, RefreshCw, ChevronDown, Settings2, LineChart, AlertTriangle } from "lucide-react";
 import { endpoints } from "../api/client";
 import KPICard from "../components/KPICard";
+import SMCChart from "../components/SMCChart";
 import { fmtPct, fmtPnL, fmtMoney, fmtPrice, fmtDate, fmtTime } from "../lib/format";
 
 // Journal de trading : les trades RÉELS du bot (collection `trades` côté backend),
@@ -315,6 +316,10 @@ function TradeRow({ t, currency, open, onToggle }) {
                         <div className="text-xs text-text-secondary leading-relaxed">{t.reason}</div>
                     )}
 
+                    <ConditionsValidees conditions={t.conditions} />
+                    <TradeChart tradeId={t.id} trade={t} />
+
+
                     <div>
                         <div className="text-[10px] uppercase font-bold tracking-widest text-text-secondary mb-1">
                             Réglages particuliers
@@ -333,6 +338,197 @@ function TradeRow({ t, currency, open, onToggle }) {
                     </div>
                 </div>
             )}
+        </div>
+    );
+}
+
+// ─── Conditions SMC validées ────────────────────────────────────────────────────
+// Remplies par le moteur au moment de la décision (smc.analyze → "conditions").
+// La distinction EXIGÉE / constatée est le cœur du bloc : une condition « constatée »
+// était vraie mais n'aurait pas bloqué le trade — sans elle on croit à tort que tous
+// les filtres affichés étaient actifs.
+function Oui({ ok }) {
+    return <span className={ok ? "text-green" : "text-text-secondary"}>{ok ? "oui" : "non"}</span>;
+}
+
+function Ligne({ label, children, exige }) {
+    return (
+        <div className="flex items-baseline justify-between gap-3 py-0.5">
+            <span className="text-text-secondary">{label}</span>
+            <span className="text-right num">
+                {children}
+                {exige !== undefined && (
+                    <span className={`ml-2 px-1 py-px rounded text-[9px] uppercase tracking-wider ${
+                        exige ? "bg-gold/15 text-gold" : "bg-bd text-text-secondary"}`}>
+                        {exige ? "exigée" : "constatée"}
+                    </span>
+                )}
+            </span>
+        </div>
+    );
+}
+
+function ConditionsValidees({ conditions: c }) {
+    if (!c) return null;
+    const d = c.declencheur || {};
+    const ORDRE = {
+        sweep_puis_choch: "Sweep → CHoCH", choch_puis_sweep: "CHoCH → Sweep",
+        sweep_seul: "Sweep seul", choch_seul: "CHoCH seul",
+    };
+    const n = c.niveaux || {};
+    const pd = c.premium_discount || {};
+    const poi = c.poi || {};
+    const amont = c.filtres_amont || {};
+
+    return (
+        <div data-testid="journal-trade-conditions">
+            <div className="text-[10px] uppercase font-bold tracking-widest text-text-secondary mb-1">
+                Conditions validées
+            </div>
+            <div className="text-xs bg-bg/60 border border-bd rounded-lg px-2.5 py-2">
+                <Ligne label="Biais haute timeframe">
+                    {c.biais === "bullish" ? <span className="text-green">haussier</span>
+                        : c.biais === "bearish" ? <span className="text-red">baissier</span> : "—"}
+                </Ligne>
+                <Ligne label="Déclencheur" exige={d.sequence_exigee}>
+                    {ORDRE[d.ordre] || "—"}
+                </Ligne>
+                <Ligne label="Écart de juste valeur (FVG)" exige={c.fvg?.exigee}>
+                    <Oui ok={c.fvg?.presente} />
+                </Ligne>
+                <Ligne label="Zone d'intérêt">
+                    {poi.type || "—"}{poi.mitigee ? " (mitigée)" : ""}
+                    {poi.bas != null && poi.haut != null &&
+                        <span className="text-text-secondary"> · {fmtPrice(poi.bas)}–{fmtPrice(poi.haut)}</span>}
+                </Ligne>
+                <Ligne label="Order block non mitigé" exige={amont.ob_non_mitige_exige}>
+                    <Oui ok={!poi.mitigee} />
+                </Ligne>
+                <Ligne label="Premium / Discount" exige={pd.exige}>
+                    {pd.zone || "—"}
+                    {pd.mediane != null &&
+                        <span className="text-text-secondary"> · médiane {fmtPrice(pd.mediane)}</span>}
+                </Ligne>
+                <Ligne label="Inducement pris" exige={c.inducement?.exige}>
+                    {c.inducement?.identifie ? <Oui ok={c.inducement?.pris} />
+                        : <span className="text-text-secondary">aucun identifié</span>}
+                </Ligne>
+                <Ligne label="Displacement" exige={c.displacement?.exige}>
+                    <Oui ok={c.displacement?.present} />
+                </Ligne>
+                <Ligne label="2e CHoCH" exige={c.second_choch?.exige}>
+                    <Oui ok={c.second_choch?.present} />
+                </Ligne>
+                {/* Ces trois filtres s'appliquent AVANT le calcul du signal : quand ils
+                    sont désactivés, le moteur ne mesure rien à leur sujet. Afficher
+                    « — constatée » serait trompeur, on ne montre la ligne que s'ils ont
+                    réellement filtré. */}
+                {amont.daily_bias_exige && (
+                    <Ligne label="Biais journalier" exige><Oui ok /></Ligne>)}
+                {amont.power_of_3_exige && (
+                    <Ligne label="Power of 3" exige><Oui ok /></Ligne>)}
+                {amont.ote_exige && (
+                    <Ligne label="OTE 62-79 %" exige><Oui ok /></Ligne>)}
+                <div className="border-t border-bd mt-1.5 pt-1.5">
+                    <Ligne label="RR atteignable">
+                        {n.rr != null ? `1:${Number(n.rr).toFixed(2)}` : "—"}
+                        {n.rr_minimum != null &&
+                            <span className="text-text-secondary"> (minimum 1:{n.rr_minimum})</span>}
+                    </Ligne>
+                    <Ligne label="Placement du SL">{n.sl_mode || "—"}</Ligne>
+                    <Ligne label="Cible du TP">{n.tp_cible || "—"}</Ligne>
+                    <Ligne label="Mode d'entrée">{poi.mode_entree || "—"}</Ligne>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ─── Graphique du trade ─────────────────────────────────────────────────────────
+// Chargé À LA DEMANDE : l'instantané pèse ~66 Ko, il est volontairement exclu de la
+// liste du journal. Les zones affichées sont celles que le moteur a RÉELLEMENT
+// calculées au moment de la décision — jamais une analyse refaite après coup.
+function TradeChart({ tradeId, trade }) {
+    const [state, setState] = useState("idle");   // idle | loading | ready | absent | error
+    const [snap, setSnap] = useState(null);
+    const [err, setErr] = useState(null);
+
+    const charger = useCallback(async () => {
+        setState("loading");
+        try {
+            const res = await endpoints.journalChart(tradeId);
+            if (res.data?.available && res.data?.snapshot) {
+                setSnap(res.data.snapshot);
+                setState("ready");
+            } else {
+                setState("absent");
+            }
+        } catch (e) {
+            setErr(e?.response?.data?.detail || e.message);
+            setState("error");
+        }
+    }, [tradeId]);
+
+    if (state === "idle") {
+        return (
+            <button type="button" onClick={charger} data-testid="journal-chart-load"
+                className="flex items-center gap-2 text-xs text-gold hover:underline py-1">
+                <LineChart className="w-3.5 h-3.5" />
+                Voir le graphique de la décision
+            </button>
+        );
+    }
+    if (state === "loading") {
+        return <div className="text-xs text-text-secondary py-1">Chargement du graphique…</div>;
+    }
+    if (state === "absent") {
+        return (
+            <div className="text-xs text-text-secondary py-1">
+                Aucun graphique enregistré pour ce trade (antérieur à cette fonctionnalité).
+            </div>
+        );
+    }
+    if (state === "error") {
+        return <div className="text-xs text-red py-1">Graphique indisponible : {err}</div>;
+    }
+
+    // "live" = capturé par le bot à la décision. "reconstitue_verifie" = rejoué après
+    // coup, mais le moteur a reproduit la décision AU CARACTÈRE PRÈS (même phrase, même
+    // RR) — donc les zones sont bien celles qui ont décidé. "reconstitue" = rejoué et
+    // DIFFÉRENT : à ne pas lire comme la décision réelle.
+    const src = snap?.source;
+    return (
+        <div data-testid="journal-trade-chart">
+            <div className="text-[10px] uppercase font-bold tracking-widest text-text-secondary mb-1">
+                Graphique au moment de la décision
+            </div>
+            {src === "reconstitue_verifie" && (
+                <div className="text-[11px] text-text-secondary bg-bd/40 border border-bd
+                                rounded-lg px-2 py-1.5 mb-1.5">
+                    Graphique <b>rejoué après coup</b> (trade antérieur à l&apos;enregistrement
+                    automatique), puis <b className="text-green">vérifié</b> : le moteur rejoué
+                    retrouve exactement la même décision, mot pour mot et au même RR. Les zones
+                    affichées sont donc bien celles qui ont décidé.
+                </div>
+            )}
+            {src === "reconstitue" && (
+                <div className="flex items-start gap-2 text-[11px] text-gold bg-gold/10 border border-gold/30
+                                rounded-lg px-2 py-1.5 mb-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />
+                    <span>
+                        ⚠ Zones <b>reconstituées après coup et NON conformes</b> : le rejeu ne
+                        retrouve pas la décision d&apos;origine
+                        {snap?.rejoue_reason ? ` (il obtient « ${snap.rejoue_reason} »)` : ""}.
+                        Ne pas lire ces zones comme celles qui ont décidé. Les bougies,
+                        l&apos;entrée, le SL et le TP, eux, sont réels.
+                    </span>
+                </div>
+            )}
+            <SMCChart candles={snap.candles} analysis={snap.analysis} height={260} />
+            <div className="text-[10px] text-text-secondary mt-1 num">
+                {snap.candles?.length || 0} bougies {trade?.timeframe || ""} · entrée {fmtPrice(trade?.entry)}
+                {" · SL "}{fmtPrice(trade?.sl_initial ?? trade?.sl)} · TP {fmtPrice(trade?.tp)}
+            </div>
         </div>
     );
 }

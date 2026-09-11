@@ -1000,6 +1000,18 @@ def _settings_notes(snapshot: Optional[Dict[str, Any]]) -> List[str]:
     return notes
 
 
+@api.get("/journal/{trade_id}/chart")
+async def get_journal_chart(trade_id: str) -> Dict[str, Any]:
+    """Instantane du graphique d'UN trade : bougies + zones SMC vues au moment de la
+    decision. Charge a la demande (~66 Ko) — il est volontairement exclu de la liste
+    du journal, qui deviendrait sinon illisible sur mobile (cf. store.list_trades)."""
+    snap = await store.get_trade_chart(trade_id)
+    if snap is None:
+        # Pas d'erreur : les trades anterieurs a cette fonctionnalite n'en ont pas.
+        return {"available": False, "snapshot": None}
+    return {"available": True, "snapshot": snap}
+
+
 @api.get("/journal")
 async def get_journal(limit: int = 500) -> Dict[str, Any]:
     """Journal de trading : trades reels + metriques globales + courbe d'evolution."""

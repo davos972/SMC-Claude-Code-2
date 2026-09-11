@@ -93,5 +93,8 @@ export const endpoints = {
     // Journal de trading (trades reels + metriques). L'import lit l'historique
     // du broker : long -> instance apiLong.
     journal: (limit = 500) => api.get(`/journal?limit=${limit}`),
+    // Instantané du graphique d'UN trade (~66 Ko) : chargé à la demande, jamais dans la
+    // liste du journal — sinon la réponse ferait des dizaines de Mo.
+    journalChart: (id) => api.get(`/journal/${id}/chart`),
     importJournal: (days = 180) => apiLong.post("/journal/import", { days }),
 };

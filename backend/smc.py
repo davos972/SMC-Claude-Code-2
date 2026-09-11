@@ -1327,6 +1327,50 @@ def _build_signal(direction, candles_entry, last_close, last_idx, poi_list, pd_s
                               second_choch_ok),
         poi_top=poi.top, poi_bottom=poi.bottom,
     )
+    # Conditions VALIDÉES, sous forme structurée — pour le journal de trading (David veut
+    # relire chaque trade et voir ce qui a été accepté, pas seulement la phrase résumée).
+    # Purement descriptif : rien ici n'influence la décision, qui est déjà prise ci-dessus.
+    # `exige` distingue un filtre qui a REJETÉ des setups d'une condition simplement
+    # CONSTATÉE parce que le filtre était désactivé — la distinction manque à `reason`.
+    if ctx_out is not None:
+        mid = pd_struct.get("mid") if pd_struct else None
+        ctx_out["conditions"] = {
+            "biais": direction,
+            "declencheur": {
+                "sweep": bool(recent_sweeps),
+                "choch": bool(recent_choch),
+                "ordre": ("sweep_puis_choch" if (recent_sweeps and recent_choch and choch_after_sweep)
+                          else "choch_puis_sweep" if (recent_sweeps and recent_choch)
+                          else "sweep_seul" if recent_sweeps
+                          else "choch_seul" if recent_choch else None),
+                "sequence_exigee": bool(require_sequence),
+            },
+            "fvg": {"presente": bool(fvg_ok), "exigee": bool(require_fvg)},
+            "poi": {
+                "type": _POI_LABELS.get(getattr(poi, "zone", "wick"), "OB"),
+                "haut": poi.top, "bas": poi.bottom,
+                "mitigee": bool(getattr(poi, "mitigated", False)),
+                "mode_entree": ob_entry_mode,
+            },
+            "premium_discount": {
+                "zone": None if mid is None else ("discount" if last_close <= mid else "premium"),
+                "mediane": mid,
+                "haut": pd_struct.get("top") if pd_struct else None,
+                "bas": pd_struct.get("bottom") if pd_struct else None,
+                "exige": bool(require_pd),
+            },
+            "inducement": {
+                "identifie": inducement is not None,
+                "pris": bool(inducement and inducement.swept),
+                "exige": bool(require_inducement_swept),
+            },
+            "displacement": {"present": bool(displacement_ok), "exige": bool(require_displacement)},
+            "second_choch": {"present": bool(second_choch_ok), "exige": bool(require_second_choch)},
+            "niveaux": {
+                "entree": entry, "sl": sl, "tp": tp, "rr": rr,
+                "rr_minimum": min_rr, "sl_mode": sl_mode, "tp_cible": tp_target,
+            },
+        }
     return sig, None
 
 
@@ -1442,6 +1486,9 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
         # Stade atteint avant le rejet : insufficient | no_bias | no_poi | entry.
         # Seul "entry" = vrai quasi-setup (POI trouvée, entrée tentée puis échouée).
         "reject_stage": None,
+        # Conditions VALIDÉES du setup accepté, structurées (rempli par _build_signal puis
+        # complété ci-dessous par les filtres amont). None tant qu'aucun signal n'est né.
+        "conditions": None,
     }
     min_len = max(fractal_n * 2, swing_confirm * 2) + 5
     if len(candles_bias) < min_len or len(candles_struct) < min_len or len(candles_entry) < min_len:
@@ -1609,4 +1656,15 @@ def analyze(candles_bias: List[Candle], candles_struct: List[Candle], candles_en
         out["reject_stage"] = "out_of_zone" if reason in _OUT_OF_ZONE_REASONS else "near_miss"
     else:
         out["signal"] = asdict(sig)
+        # Filtres appliqués EN AMONT de _build_signal (sélection de la POI, contexte
+        # journalier, OTE) : ils ne sont pas visibles depuis là, on les complète ici.
+        if out.get("conditions") is not None:
+            out["conditions"]["filtres_amont"] = {
+                "ob_non_mitige_exige": bool(require_unmitigated),
+                "daily_bias_exige": bool(require_daily_bias),
+                "power_of_3_exige": bool(require_po3),
+                "ote_exige": bool(require_ote),
+                "source_poi": poi_source,
+            }
+            # Le contexte journalier est déjà dans out["daily"] — ne pas le dupliquer ici.
     return out

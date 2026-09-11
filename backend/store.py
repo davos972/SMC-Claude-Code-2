@@ -213,10 +213,23 @@ async def close_trade(trade_id: str, updates: Dict[str, Any]) -> bool:
 
 
 async def list_trades(limit: int = 500, status: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Liste du journal — SANS l'instantané du graphique.
+
+    `chart_snapshot` pèse ~66 Ko par trade (bougies + zones SMC) : le renvoyer pour
+    500 trades ferait une réponse de plusieurs dizaines de Mo, inutilisable sur mobile.
+    Il se charge trade par trade via `get_trade_chart` (GET /api/journal/{id}/chart).
+    """
     db = get_db()
     q: Dict[str, Any] = {} if status is None else {"status": status}
-    cur = db.trades.find(q, {"_id": 0}).sort("open_time", -1).limit(limit)
+    cur = db.trades.find(q, {"_id": 0, "chart_snapshot": 0}).sort("open_time", -1).limit(limit)
     return await cur.to_list(length=limit)
+
+
+async def get_trade_chart(trade_id: str) -> Optional[Dict[str, Any]]:
+    """Instantané du graphique d'un seul trade (None si le trade n'en porte pas)."""
+    db = get_db()
+    doc = await db.trades.find_one({"id": trade_id}, {"_id": 0, "chart_snapshot": 1})
+    return (doc or {}).get("chart_snapshot")
 
 
 async def get_trade(trade_id: str) -> Optional[Dict[str, Any]]:
