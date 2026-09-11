@@ -226,17 +226,22 @@ Sans lui, la pile A seule fait PF 1,10, t +1,10, rentable 3/3.
    trade** (demande de David). Détail en §5, raisonnement dans `DECISIONS.md`. Les
    5 trades déjà en base ont été reconstitués et **vérifiés identiques** au trade réel
    (`backend/_backfill_charts.py`), leur `chart_snapshot` est **déjà écrit dans Atlas**.
-   🚨 **COMMITTÉ MAIS PAS ENCORE DÉPLOYÉ** — le code est sur `main` en local, pas poussé.
-   Tant qu'il n'est pas poussé, la prod Render tourne sans : les trades pris entre-temps
-   n'auront pas d'instantané `live` (ils restent reconstituables). Un push redéploie ET
-   redémarre le bot : **vérifier qu'aucune position n'est ouverte avant**. David décide du
-   moment.
-9. 🔍 **DEUX SUJETS OUVERTS, découverts en analysant la journée du 09/09 :**
-   (a) **Les setups REJETÉS ne sont pas conservés.** La collection `signals` est purgée
-   chaque jour (§9), donc le post-mortem de la veille est impossible : on ne voit que les
-   trades pris, jamais ce que le bot a regardé sans le prendre. Piste proposée à David,
-   pas encore tranchée : archiver les signaux de la veille avant de purger, ou ne purger
-   qu'au-delà de 48 h.
+   ✅ **DÉPLOYÉ le 2026-09-11** (aucune position ouverte au moment du push). Les trades
+   pris à partir de là portent un instantané `live`, capturé au moment de la décision.
+   ⚠️ **Reste à confirmer** : le premier trade marqué `live` (et non `reconstitue_verifie`)
+   sera la preuve que le nouveau code sert bien en prod — la clé API empêche de le
+   vérifier autrement depuis l'extérieur.
+9. **Les deux sujets ouverts du 09/09 sont CLOS.**
+   (a) ~~Les setups REJETÉS ne sont pas conservés.~~ **TRANCHÉ par David le 2026-09-11 :
+   la purge quotidienne reste telle quelle, les rejets sont jetables.** Son raisonnement :
+   l'instantané désormais archivé sur chaque trade (§5) répond à la question qu'il se
+   posait — « pourquoi ce trade a-t-il été pris ? ». **Ne pas rouvrir ce sujet ni proposer
+   d'archiver les signaux.**
+   ⚠️ Nuance à connaître sans la transformer en chantier : les instantanés couvrent les
+   trades **pris**, pas ce que le bot a **refusé**. Ce qu'on s'interdit, c'est donc le
+   « pourquoi le bot n'a rien pris avant-hier ». En pratique la perte est faible — les
+   signaux du **jour en cours** restent consultables dans le Dashboard (§5), la purge
+   n'intervient qu'au rollover.
    (b) ~~La boucle de trading se fige régulièrement.~~ **RÉSOLU le 2026-09-11 — et la
    prémisse était fausse : la boucle ne se figeait pas, le GARDIEN la tuait.** Son pouls
    ne battait qu'après une lecture MetaApi réussie ; un hoquet du broker de 5 min suffisait
@@ -712,6 +717,7 @@ complet est dans `DECISIONS.md`, entrée par entrée, la plus récente en haut.
 
 | Date | Ce qui s'est joué | Entrée dans DECISIONS.md |
 |---|---|---|
+| 2026-09-11 | Les setups rejetés restent jetables : la purge quotidienne ne bouge pas | « Les setups rejetés restent jetables » |
 | 2026-09-11 | Le bandeau « Configuration validée » attend 0,4 % (niveau prop firm) | « Le bandeau Configuration validée » |
 | 2026-09-11 | **La boucle ne se figeait pas : le gardien la tuait (132 relances)** | « La boucle ne se figeait pas » |
 | 2026-09-10 | **Le journal archive le graphique et les conditions de chaque trade** | « Le journal de trading archive » |

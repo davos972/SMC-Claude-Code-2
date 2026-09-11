@@ -16,6 +16,31 @@
 
 ---
 
+## 2026-09-11 (fin) — Les setups rejetés restent jetables : la purge quotidienne ne bouge pas
+**Décision :** **ne rien changer.** La collection `signals` continue d'être purgée à chaque
+nouveau jour de trading, et les setups REJETÉS ne sont ni archivés, ni conservés au-delà de
+la journée en cours. Tranché par David le 2026-09-11.
+
+**Pourquoi :** l'instantané désormais archivé sur chaque trade (graphique + conditions
+validées, entrée du 2026-09-10) répond à la question qu'il se posait réellement en ouvrant
+le journal — **« pourquoi ce trade-là a-t-il été pris ? »**. Le post-mortem des rejets, qui
+était la justification d'archiver les signaux, perd donc son objet.
+
+**Ce que cette décision coûte, en toute clarté** : les instantanés décrivent les trades
+**PRIS**, jamais ceux que le bot a **REFUSÉS**. On renonce donc à pouvoir répondre à
+« pourquoi le bot n'a-t-il rien pris avant-hier ? ». La perte reste faible en pratique :
+les signaux du **jour en cours** restent visibles dans le Dashboard — la purge n'a lieu
+qu'au rollover — donc la question « pourquoi ne trade-t-il pas *aujourd'hui* ? », de loin
+la plus fréquente, reste traitable.
+
+**Écarté :** (1) **Archiver les signaux de la veille avant de purger** et (2) **ne purger
+qu'au-delà de 48 h** — les deux pistes proposées le 2026-09-10. Rejetées non pas comme
+irréalisables, mais comme **sans objet** : elles servaient un besoin que la nouvelle
+fonctionnalité couvre. La purge, elle, réglait un vrai problème (4 515 documents qui
+gonflaient sans limite) et le règle toujours.
+
+🚫 **Ne pas rouvrir ce sujet, et ne pas reproposer d'archiver les rejets.**
+
 ## 2026-09-11 (suite) — Le bandeau « Configuration validée » attend 0,4 % et non 1 %
 **Décision :** `CONFIG_VALIDEE.risk_per_trade_pct` passe de **1 à 0,4** dans
 `frontend/src/pages/Settings.jsx`, avec la mention « niveau prop firm » à l'écran.
