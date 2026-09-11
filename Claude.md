@@ -211,15 +211,16 @@ Sans lui, la pile A seule fait PF 1,10, t +1,10, rentable 3/3.
    (b) **Les sections « Contexte journalier », « Trailing stop » et « Mode Prop Firm »
    sont CONSERVÉES.** David les garde visibles. *(Le mode Prop Firm est ACTIF depuis le
    2026-09-08 — la section n'est plus décorative.)*
-7. ⚠️ **SEUL POINT TECHNIQUE OUVERT — le bandeau « Configuration validée » est ROUGE.**
-   La constante `CONFIG_VALIDEE` (`frontend/src/pages/Settings.jsx:534`) attend
-   `risk_per_trade_pct: 1`, alors que la prod tourne volontairement à **0,4 %** depuis le
-   passage en mode prop. Le bandeau signale donc une dérive qui n'en est pas une.
-   🚨 **Un bandeau d'alerte allumé en permanence ne sert plus à rien** — on apprend à
-   l'ignorer, et il ne signalera plus la vraie dérive le jour où elle arrivera, ce qui est
-   exactement sa raison d'être. **Proposé à David le 2026-09-08 : mettre la référence à
-   0,4 % avec un commentaire expliquant que c'est le niveau prop firm. Il n'a pas encore
-   répondu.** À faire dès qu'il valide (une ligne de frontend + un push).
+7. ~~Le bandeau « Configuration validée » est ROUGE.~~ **RÉSOLU le 2026-09-11.** La
+   référence `CONFIG_VALIDEE.risk_per_trade_pct` est alignée sur **0,4 %**, le niveau
+   réellement voulu depuis le passage en prop firm (le backtest, lui, était à 1 %). Le
+   bandeau est vert, et il redevient rouge dès que le risque s'en écarte — vérifié dans
+   les deux sens.
+   🚨 **NE JAMAIS retirer le risque de `CONFIG_VALIDEE` pour faire taire le bandeau** :
+   c'est l'alerte la plus utile de l'écran, la seule qui protège d'un retour à 1 %, niveau
+   auquel la stratégie **perd le compte en 16 jours** (§0ter). En cas d'écart, la ligne
+   affiche « ⚠ attendu 0,4 % » — jamais le libellé « prop firm », qui serait mensonger sur
+   un réglage justement non conforme.
 
 8. ✅ **FAIT le 2026-09-10 — le journal archive le graphique et les conditions de chaque
    trade** (demande de David). Détail en §5, raisonnement dans `DECISIONS.md`. Les
@@ -711,6 +712,7 @@ complet est dans `DECISIONS.md`, entrée par entrée, la plus récente en haut.
 
 | Date | Ce qui s'est joué | Entrée dans DECISIONS.md |
 |---|---|---|
+| 2026-09-11 | Le bandeau « Configuration validée » attend 0,4 % (niveau prop firm) | « Le bandeau Configuration validée » |
 | 2026-09-11 | **La boucle ne se figeait pas : le gardien la tuait (132 relances)** | « La boucle ne se figeait pas » |
 | 2026-09-10 | **Le journal archive le graphique et les conditions de chaque trade** | « Le journal de trading archive » |
 | 2026-09-08 | **Mode prop activé, risque 1 % → 0,4 % (à 1 % le compte est perdu)** | « Mode prop firm activé » |

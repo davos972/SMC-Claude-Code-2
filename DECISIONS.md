@@ -16,6 +16,38 @@
 
 ---
 
+## 2026-09-11 (suite) — Le bandeau « Configuration validée » attend 0,4 % et non 1 %
+**Décision :** `CONFIG_VALIDEE.risk_per_trade_pct` passe de **1 à 0,4** dans
+`frontend/src/pages/Settings.jsx`, avec la mention « niveau prop firm » à l'écran.
+Proposé le 2026-09-08, validé par David le 2026-09-11.
+
+**Pourquoi :** le bandeau comparait la prod à la configuration du BACKTEST, où le risque
+valait 1 %. Depuis le passage en compte prop firm il vaut **0,4 %** — un écart **voulu**,
+décidé après mesure (à 1 % la stratégie perd le compte en 16 jours). Le bandeau signalait
+donc une dérive qui n'en était pas une, **en permanence depuis trois jours**.
+
+**Le raisonnement qui compte est celui du garde-fou, pas du confort visuel.** Un voyant
+d'alerte toujours allumé cesse d'être lu : on apprend à l'ignorer, et il ne signale plus
+la VRAIE dérive le jour où elle arrive — ce qui est sa seule raison d'être. Le réparer,
+c'est lui rendre sa capacité d'alerter.
+
+🚨 **Ce qu'il ne fallait surtout PAS faire : retirer le risque de la liste des critères.**
+C'était la solution la plus rapide pour éteindre le bandeau, et la pire : le risque est
+précisément le réglage dont la dérive est la plus coûteuse du projet. La bonne correction
+était d'aligner la RÉFÉRENCE sur la valeur voulue, en gardant le critère actif.
+
+**Vérifié dans les deux sens** (base de test, jamais la prod) : à 0,4 % le bandeau est
+vert et ne signale aucun écart ; à 1 % il repasse rouge, liste `risk_per_trade_pct` en
+écart, et la ligne affiche **« 1 % ⚠ attendu 0,4 % »**. Ce dernier détail a été corrigé en
+cours de route : la première version affichait « 1 % (prop firm) », c'est-à-dire un
+libellé rassurant collé au réglage qui fait perdre le compte.
+
+**Écarté :** (1) **Retirer le risque des critères** — voir ci-dessus. (2) **Garder 1 % en
+référence et tolérer le rouge** : c'est l'état qu'on corrige. (3) **Afficher deux
+références (backtest 1 % / appliqué 0,4 %) et n'alerter sur aucune** : plus riche, mais le
+bandeau doit trancher — vert ou rouge — sinon il ne sert plus de garde-fou. L'explication
+du « pourquoi 0,4 » tient dans le texte du bandeau, sans diluer le critère.
+
 ## 2026-09-11 — La boucle ne se figeait pas : le gardien la tuait
 **Décision :** séparer les deux pouls du bot, interdire au gardien de relancer la boucle
 pour une panne du broker, et ramener les délais de reconnexion MetaApi de 240 s à 60 s

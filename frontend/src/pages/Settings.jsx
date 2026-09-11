@@ -518,10 +518,19 @@ export default function Settings({ settings, refresh }) {
     );
 }
 
-// ─── Configuration validée en backtest, affichée en lecture seule ───────────────
+// ─── Configuration validée, affichée en lecture seule ──────────────────────────
 // Référence : campagne des trois périodes (2026-08-26), appliquée en prod le 2026-08-27.
 // 576 trades, PF 1,21. Les réglages listés ici ne sont plus modifiables depuis l'écran :
 // ce bloc existe pour qu'on puisse VOIR qu'ils sont bien appliqués, et repérer une dérive.
+//
+// 🚨 `risk_per_trade_pct` vaut 0,4 et NON 1 comme le backtest — c'est VOULU, décidé par
+// David le 2026-09-08 en passant sur le compte prop firm : à 1 % (et même à 0,8 %) la
+// stratégie PERD le compte, c'est mesuré (_prop_replay.py, voir CLAUDE.md §0ter).
+// La référence a été alignée sur 0,4 le 2026-09-11 parce que le bandeau restait rouge en
+// permanence — un voyant d'alerte toujours allumé finit par être ignoré, et ne signale
+// plus la vraie dérive le jour où elle arrive, ce qui est pourtant sa seule raison d'être.
+// ⚠️ NE JAMAIS retirer le risque de cette liste pour « régler » le problème : c'est au
+// contraire l'alerte la plus utile de l'écran, la seule qui protège d'un retour à 1 %.
 const CONFIG_VALIDEE = {
     trading_mode: "intraday",
     intraday_d1: "D1", intraday_htf: "H1", intraday_mtf: "M15", intraday_ltf: "M1",
@@ -531,11 +540,17 @@ const CONFIG_VALIDEE = {
     require_daily_bias: false, require_po3: false,
     session_london_start: "08:00", session_london_end: "17:00",
     session_newyork_start: "08:00", session_newyork_end: "17:00",
-    min_rr: 1, partial_tp_enabled: true, risk_per_trade_pct: 1,
+    min_rr: 1, partial_tp_enabled: true, risk_per_trade_pct: 0.4,
     max_consec_losses: 3, max_drawdown_pct: 3, trailing_mode: "off",
     swing_method: "two_candle", ob_zone: "wick", structure_break_mode: "close",
     poi_source: "ob", ob_entry_mode: "close", sl_mode: "poi", tp_target: "range_bound",
 };
+
+// Risque utilisé par la campagne de backtest. Sert UNIQUEMENT à expliquer l'écart à
+// l'écran — ce n'est pas un critère. Déclaré ici pour que le texte affiché ne puisse pas
+// se périmer si les valeurs bougent : le projet a déjà payé plusieurs fois des chiffres
+// écrits en dur qui ne correspondaient plus à rien.
+const RISQUE_BACKTEST = 1;
 
 function memeValeur(a, b) {
     if (typeof b === "number") return Number(a) === b;
@@ -556,7 +571,13 @@ function ConfigValidee({ local }) {
         ["Premium / Discount", local.require_premium_discount ? "exigé" : "désactivé"],
         ["Sessions (heure locale)", `Londres ${local.session_london_start}–${local.session_london_end} · New York ${local.session_newyork_start}–${local.session_newyork_end}`],
         ["RR minimum", local.min_rr],
-        ["Risque par trade", `${local.risk_per_trade_pct} %`],
+        // Le libellé « prop firm » ne doit s'afficher QUE si la valeur est bien celle
+        // attendue : sinon on lirait « 1 % (prop firm) » pour un réglage qui est
+        // justement celui qui fait perdre le compte prop.
+        ["Risque par trade",
+            memeValeur(local.risk_per_trade_pct, CONFIG_VALIDEE.risk_per_trade_pct)
+                ? `${local.risk_per_trade_pct} % (niveau prop firm)`
+                : `${local.risk_per_trade_pct} % ⚠ attendu ${CONFIG_VALIDEE.risk_per_trade_pct} %`],
         ["TP échelonnés", local.partial_tp_enabled ? "activés" : "désactivés"],
         ["Trades par jour", illimite ? "illimité" : local.max_trades_per_day],
         ["Arrêts auto", `${local.max_consec_losses} pertes d'affilée · drawdown ${local.max_drawdown_pct} % (par jour)`],
@@ -571,8 +592,8 @@ function ConfigValidee({ local }) {
             </div>
             <div className="text-xs text-text-secondary mb-3">
                 {ok
-                    ? "Le moteur tourne exactement sur la configuration mesurée en backtest (576 trades, profit factor 1,21). Ces réglages ne sont plus modifiables depuis cet écran."
-                    : "⚠ Un ou plusieurs réglages ne correspondent plus à la configuration mesurée. Signale-le avant de démarrer le bot."}
+                    ? `Le moteur tourne sur la configuration mesurée en backtest (576 trades, profit factor 1,21), à une exception voulue près : le risque est à ${CONFIG_VALIDEE.risk_per_trade_pct} % au lieu de ${RISQUE_BACKTEST} %, parce qu'à ${RISQUE_BACKTEST} % la stratégie perd le compte prop firm. Ces réglages ne sont plus modifiables depuis cet écran.`
+                    : "⚠ Un ou plusieurs réglages ne correspondent plus à la configuration attendue. Signale-le avant de démarrer le bot."}
             </div>
             <div className="space-y-1.5">
                 {lignes.map(([k, v]) => (
