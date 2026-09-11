@@ -1043,6 +1043,14 @@ recharge alors le vrai token depuis `backend/.env` et le serveur démarre CONNEC
 à MetaApi (pas en mode dégradé). D'où le wrapper Python de l'étape 1, où une variable
 vide existe réellement.
 
+**Piège — copier les réglages vers une base de test SANS son `_id` (découvert 2026-09-11).**
+`store.get_settings()` cherche **`{"_id": "global"}"`** : un document copié avec une
+projection `{'_id': 0}` crée un `_id` auto-généré, le backend ne le trouve pas et **crée
+des réglages PAR DÉFAUT**. L'app de test tourne alors sur `risk_per_trade_pct = 1`, pas sur
+ce qu'on croit avoir copié — et on conclut à tort que le code testé ne marche pas. Copier
+avec `replace_one({"_id": "global"}, doc, upsert=True)`, et vérifier la valeur servie par
+`GET /api/settings` avant de juger quoi que ce soit à l'écran.
+
 **Piège — base propre à chaque exécution.** Un test (`TestZTokenPreservation`) écrit
 un faux token en base ; à la relance suivante le backend redémarre « configuré » et
 2 tests échouent à tort. Pour rejouer proprement : soit repartir d'une base neuve
