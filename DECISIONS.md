@@ -16,6 +16,73 @@
 
 ---
 
+## 2026-09-11 — La boucle ne se figeait pas : le gardien la tuait
+**Décision :** séparer les deux pouls du bot, interdire au gardien de relancer la boucle
+pour une panne du broker, et ramener les délais de reconnexion MetaApi de 240 s à 60 s
+par étape. Demandé par David après le constat de 132 relances automatiques depuis juillet.
+
+**Le diagnostic renverse la question posée.** On cherchait pourquoi « la boucle se fige ».
+Elle ne se figeait pas : **le gardien tuait une boucle vivante**. Trois faits, tous
+vérifiables dans le code, sans les logs Render :
+
+1. **Le pouls mesurait la mauvaise chose.** `_last_heartbeat` n'était mis à jour qu'après
+   une lecture MetaApi RÉUSSIE. Quand le broker ne répondait pas, la boucle tournait très
+   bien — elle réessayait toutes les 30 s — mais son pouls ne battait plus. Le gardien
+   concluait « boucle figée ».
+2. **Le seuil était incohérent avec les délais en aval.** `_connect()` enchaîne cinq
+   `wait_for` (get_account, deploy, wait_connected, connect, wait_synchronized) qui étaient
+   **à 240 s chacun : jusqu'à 20 MINUTES**. Le gardien frappait à **5**. Le commentaire du
+   code affirmait « reconnexion à froid ~4 min → pas de fausse alerte » — faux d'un
+   facteur 4 à 5.
+3. **D'où un cercle vicieux.** Reconnexion > 5 min → le gardien tue la boucle EN PLEINE
+   reconnexion → elle repart de zéro → retuée 5 min plus tard, indéfiniment.
+
+**La preuve est dans la forme des données, pas seulement dans le code.** Les relances ne
+sont pas dispersées : elles tombent à **exactement 15 minutes d'intervalle**, en séries.
+15 min = `_WATCHDOG_NOTIFY_GAP_S`, l'anti-spam des notifications. Le bot tournait donc en
+rond **toutes les minutes** (l'intervalle réel du gardien) et David n'en voyait qu'une
+alerte sur quinze. Les **48 relances du 2026-07-12 ne sont pas 48 incidents : c'est une
+seule panne de ~12 h**. Mesuré le 2026-09-11 : une reconnexion saine prend **4,6 s** — le
+problème n'apparaissait que quand MetaApi avait un hoquet, c'est-à-dire précisément quand
+le gardien aggravait au lieu d'aider.
+
+**Le correctif, en quatre points :**
+1. **Deux pouls distincts.** `_last_loop_beat` (battu en HAUT du tour, avant tout appel
+   réseau) prouve que la boucle vit ; `_last_metaapi_ok` dit que le broker répond. Le
+   gardien ne relance que sur le premier.
+2. **Aucune relance pendant une reconnexion en cours** — `metaapi_client.is_connecting()`
+   expose l'état du verrou de connexion. C'est ce point qui casse le cercle vicieux.
+3. **Délais de connexion 240 s → 60 s par étape.** Pire cas : 1 200 s → **300 s**, sous le
+   seuil du gardien. Une connexion qui n'aboutit pas doit échouer VITE et être retentée au
+   tour suivant, pas bloquer 20 minutes.
+4. **Alerte honnête** : nouvelle catégorie `metaapi_down` — « MetaApi injoignable depuis
+   N min », sans relance. Sans ça, le prochain qui regarde referait le même faux diagnostic.
+
+**Seuils recalculés, et non devinés :** `_WATCHDOG_STALE_S` passe de 300 à **600 s**, parce
+que le pire tour NORMAL (4 téléchargements de bougies à 90 s + lectures de compte + ordre)
+vaut ~470 s. À 300 s, le gardien tuait aussi des boucles simplement lentes.
+`_METAAPI_STALE_S` reste à 300 s : l'alerte broker arrive AVANT le seuil de relance, pour
+qu'on voie la cause plutôt qu'une relance mystérieuse.
+
+⚠️ **Risque corrigé au passage, plus grave que les alertes** : le gardien `cancel()` la
+boucle. Le pouls datait d'AVANT les quatre `get_candles` (90 s chacun), donc un tour lent
+pouvait dépasser 300 s **pendant un `place_order`**. L'ordre partait chez le broker, et le
+code qui écrit la ligne de journal ne s'exécutait jamais. `_restore_open_trades` rattrapait
+au redémarrage, mais la fenêtre est désormais fermée.
+
+**Figé par 8 tests** (`backend/tests/test_watchdog.py`), dont deux vérifient la COHÉRENCE
+DES SEUILS — ils cassent si quelqu'un rallonge les délais de connexion ou raccourcit le
+seuil du gardien. Les tests ont été validés en réintroduisant volontairement chacun des
+deux bugs : ils échouent bien.
+
+**Écarté :** (1) **Relever seulement le seuil du gardien** : masque le symptôme, laisse le
+pouls mesurer la mauvaise chose, et n'empêche pas la relance inutile pendant une panne
+broker. (2) **Supprimer le gardien** : il a une vraie utilité — la boucle figée ~2 jours du
+2026-07-08 est ce qui l'a fait naître. (3) **Raccourcir les délais sans toucher au pouls** :
+réduit la fenêtre du cercle vicieux sans la fermer. (4) **Rafraîchir le pouls pendant les
+appels MetaApi longs** : plus fidèle, mais il faudrait instrumenter le client à chaque
+étape — le point 2 (`is_connecting`) obtient le même résultat en trois lignes.
+
 ## 2026-09-10 — Le journal de trading archive le graphique et les conditions de chaque trade
 **Décision :** chaque trade pris par le bot enregistre désormais, en plus de son résultat,
 **(a)** les conditions SMC validées sous forme structurée et **(b)** un instantané du

@@ -31,8 +31,14 @@ _last_candle_time: Dict[str, str] = {}  # "symbol:timeframe" -> last seen ISO ti
 _open_positions: Dict[str, Dict] = {}   # position_id -> {equity_at_open, symbol, side}
 _news_outage_active: bool = False       # True while the news calendar is unreachable
 _watchdog_task: Optional[asyncio.Task] = None       # gardien de vivacité (tâche unique)
-_last_heartbeat: Optional[datetime] = None          # pouls : dernier tour de boucle réussi (lecture compte OK)
-_last_watchdog_notify: Optional[datetime] = None    # dernière notif du gardien (anti-spam)
+# 🚨 DEUX pouls DISTINCTS — les confondre a coûté 132 relances inutiles (voir §9 et
+# DECISIONS.md du 2026-09-11). Un seul pouls existait, mis à jour uniquement après une
+# LECTURE METAAPI RÉUSSIE : quand MetaApi ne répondait pas, la boucle tournait très bien
+# mais son pouls ne battait plus, et le gardien la tuait pour rien.
+_last_loop_beat: Optional[datetime] = None          # la BOUCLE a commencé un tour (elle est vivante)
+_last_metaapi_ok: Optional[datetime] = None         # METAAPI a répondu (le compte a pu être lu)
+_last_watchdog_notify: Optional[datetime] = None    # dernière notif « boucle figée » (anti-spam)
+_last_metaapi_notify: Optional[datetime] = None     # dernière notif « MetaApi injoignable » (anti-spam)
 _journal_restored: bool = False                     # journal : trades ouverts deja repris apres redemarrage ?
 
 
@@ -691,10 +697,14 @@ async def _apply_trailing(s: Dict, magic_number: int) -> None:
 
 async def _bot_trading_loop() -> None:
     """Main loop: every 30 s, check for new candle close and run analysis."""
-    global _last_heartbeat, _journal_restored
+    global _last_loop_beat, _last_metaapi_ok, _journal_restored
     logger.info("Trading loop started.")
     while True:
         await asyncio.sleep(30)
+        # Pouls de la BOUCLE : battu ici, AVANT tout appel réseau. Il prouve une seule
+        # chose — la boucle vit et enchaîne ses tours. C'est le seul signal sur lequel
+        # le gardien a le droit de la tuer. Ne jamais le déplacer après un appel MetaApi.
+        _last_loop_beat = datetime.now(timezone.utc)
         try:
             state = await store.get_bot_state()
             if not state.get("running"):
@@ -717,8 +727,10 @@ async def _bot_trading_loop() -> None:
                 account_info = await metaapi_client.get_account_information()
                 equity = float(account_info.get("equity", 0))
                 balance = float(account_info.get("balance", 0))
-                # Pouls du gardien : arriver ici prouve que la boucle tourne ET que MetaApi répond.
-                _last_heartbeat = datetime.now(timezone.utc)
+                # Pouls METAAPI : arriver ici prouve que le broker a répondu. Distinct du
+                # pouls de la boucle (haut du tour) : si MetaApi est muet, la boucle reste
+                # vivante et continue de réessayer — la relancer n'y changerait rien.
+                _last_metaapi_ok = datetime.now(timezone.utc)
             except MetaApiConnectionError as e:
                 logger.warning("Cannot get account info: %s", e)
                 continue
@@ -1082,10 +1094,13 @@ async def _bot_trading_loop() -> None:
 
 def start(day_start_equity: float = 0.0) -> None:
     """Start the trading loop. Call from bot_start() endpoint."""
-    global _bot_task, _open_positions, _last_heartbeat, _journal_restored
+    global _bot_task, _open_positions, _last_loop_beat, _last_metaapi_ok, _journal_restored
     _open_positions = {}
     _journal_restored = False   # les trades encore ouverts seront repris depuis le journal
-    _last_heartbeat = datetime.now(timezone.utc)  # période de grâce avant le 1er pouls réel
+    # Période de grâce sur les DEUX pouls : sans ça, une boucle qui vient de démarrer
+    # serait aussitôt jugée « morte » (et MetaApi « muet ») par le gardien.
+    _last_loop_beat = datetime.now(timezone.utc)
+    _last_metaapi_ok = datetime.now(timezone.utc)
     if _bot_task and not _bot_task.done():
         _bot_task.cancel()
     _bot_task = asyncio.create_task(_bot_trading_loop())
@@ -1110,24 +1125,57 @@ def stop() -> None:
 # le trou de l'auto-reprise au démarrage (qui, elle, ne couvre que le
 # redémarrage du serveur). Voir DECISIONS.md.
 _WATCHDOG_INTERVAL_S = 60      # fréquence de vérification du pouls
-_WATCHDOG_STALE_S = 300        # pouls périmé > 5 min = boucle figée (> reconnexion à froid ~4 min → pas de fausse alerte)
+# Seuil de « boucle MORTE ». Doit dépasser la durée du pire tour NORMAL, sinon le gardien
+# tue une boucle qui travaillait : 4 téléchargements de bougies à 90 s + lectures de compte
+# + placement d'ordre ≈ 8 min. 600 s laisse la marge. Ce n'est PAS le seuil de détection
+# d'une panne MetaApi — celle-ci a le sien (_METAAPI_STALE_S), et ne provoque aucune relance.
+_WATCHDOG_STALE_S = 600
+_METAAPI_STALE_S = 300         # MetaApi muet > 5 min → on ALERTE, on ne relance rien
 _WATCHDOG_NOTIFY_GAP_S = 900   # anti-spam : au plus 1 notif / 15 min pendant une panne prolongée
 
 
 async def _watchdog_check_once(now: datetime, stale_after_s: int = _WATCHDOG_STALE_S) -> bool:
     """Un tour de vérification du gardien. Renvoie True si la boucle a été relancée.
 
-    Ne relance QUE si le bot est censé tourner (running=true) ET que le pouls est
-    périmé. Un arrêt manuel (running=false) est donc respecté."""
-    global _last_watchdog_notify
+    🚨 Ne relance QUE si la BOUCLE est morte — jamais parce que MetaApi ne répond pas.
+    Historique (2026-09-11) : le gardien surveillait un pouls qui ne battait qu'après une
+    lecture MetaApi réussie. Dès que le broker avait un hoquet de 5 min, il tuait une
+    boucle parfaitement vivante, en pleine reconnexion ; elle repartait de zéro et se
+    faisait retuer 5 min plus tard. 132 relances au compteur, dont 12 h d'affilée le
+    2026-07-12. Les deux causes sont désormais séparées et traitées différemment.
+
+    Un arrêt manuel (running=false) est toujours respecté.
+    """
+    global _last_watchdog_notify, _last_metaapi_notify
     state = await store.get_bot_state()
     if not state.get("running"):
         return False
-    hb = _last_heartbeat
+
+    # ── (a) MetaApi muet, mais boucle vivante → ALERTE SEULE, aucune relance ──
+    mb = _last_metaapi_ok
+    if mb is not None and (now - mb).total_seconds() >= _METAAPI_STALE_S:
+        mins = (now - mb).total_seconds() / 60
+        logger.warning("Gardien : MetaApi muet depuis %.0f min (la boucle, elle, tourne).", mins)
+        if (_last_metaapi_notify is None
+                or (now - _last_metaapi_notify).total_seconds() >= _WATCHDOG_NOTIFY_GAP_S):
+            _last_metaapi_notify = now
+            await _notify("warning", "metaapi_down", "MetaApi injoignable",
+                          f"Aucune réponse du broker depuis {mins:.0f} min. La boucle de "
+                          f"trading tourne normalement et réessaie toutes les 30 s — "
+                          f"aucune relance n'est utile ni tentée.")
+
+    # ── (b) Reconnexion EN COURS → on laisse finir ──
+    # La tuer la ferait repartir de zéro : c'est exactement le cercle vicieux corrigé.
+    if metaapi_client.is_connecting():
+        logger.info("Gardien : reconnexion MetaApi en cours — on laisse la boucle finir.")
+        return False
+
+    # ── (c) Boucle réellement morte → relance (le seul cas qui la justifie) ──
+    hb = _last_loop_beat
     if hb is not None and (now - hb).total_seconds() < stale_after_s:
-        return False  # pouls frais → rien à faire
+        return False  # la boucle bat → rien à faire
     age = (now - hb).total_seconds() if hb else -1
-    logger.warning("Gardien : boucle figée (pouls périmé, %.0fs) — reconnexion MetaApi + relance.", age)
+    logger.warning("Gardien : boucle MORTE (aucun tour depuis %.0fs) — reconnexion MetaApi + relance.", age)
     # 1. Couper la boucle figée et attendre sa fin (libère tout verrou de connexion tenu).
     old = _bot_task
     if old is not None and not old.done():
@@ -1145,8 +1193,11 @@ async def _watchdog_check_once(now: datetime, stale_after_s: int = _WATCHDOG_STA
     start(day_start_equity=float(state.get("day_start_equity", 0) or 0))
     if _last_watchdog_notify is None or (now - _last_watchdog_notify).total_seconds() >= _WATCHDOG_NOTIFY_GAP_S:
         _last_watchdog_notify = now
+        depuis = f"aucun tour depuis {age/60:.0f} min" if age >= 0 else "boucle jamais démarrée"
         await _notify("warning", "bot_resume", "Bot relancé automatiquement",
-                      "La boucle de trading était figée : reconnexion MetaApi et relance par le gardien.")
+                      f"La boucle de trading était MORTE ({depuis}) : reconnexion MetaApi "
+                      f"et relance par le gardien. Une panne du broker, elle, ne déclenche "
+                      f"plus de relance.")
     return True
 
 

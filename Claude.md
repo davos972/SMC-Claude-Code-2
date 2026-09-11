@@ -236,12 +236,15 @@ Sans lui, la pile A seule fait PF 1,10, t +1,10, rentable 3/3.
    trades pris, jamais ce que le bot a regardé sans le prendre. Piste proposée à David,
    pas encore tranchée : archiver les signaux de la veille avant de purger, ou ne purger
    qu'au-delà de 48 h.
-   (b) 🚨 **La boucle de trading se fige régulièrement.** Le gardien de vivacité l'a
-   relancée **6 fois le 08/09** et 1 fois le 09/09 — à 15:08:22, soit **30 secondes avant**
-   un trade qui a touché son SL en 33 s. Le gardien se déclenche après 5 min sans pouls :
-   la boucle était donc aveugle pendant toute la chute de 15:04 à 15:07. **Rien ne prouve
-   que le gel a causé la perte** (le bot aurait peut-être pris le même trade), mais c'est
-   chronique depuis août et ça n'a jamais été creusé. Indépendant de la stratégie.
+   (b) ~~La boucle de trading se fige régulièrement.~~ **RÉSOLU le 2026-09-11 — et la
+   prémisse était fausse : la boucle ne se figeait pas, le GARDIEN la tuait.** Son pouls
+   ne battait qu'après une lecture MetaApi réussie ; un hoquet du broker de 5 min suffisait
+   à faire déclarer « figée » une boucle vivante, tuée en pleine reconnexion, qui repartait
+   de zéro et se faisait retuer. Les 132 relances relevées étaient surtout ce cercle vicieux
+   (les 48 du 12/07 = **une seule panne de 12 h**, pas 48 incidents : les alertes sont
+   plafonnées à 1 / 15 min). Corrigé en quatre points, figé par 8 tests — détail dans
+   `DECISIONS.md`. ⚠️ **Le trade du 09/09 à 15:08 reste inexpliqué à ce jour** : le bot a
+   bien décidé 30 s après une relance, mais rien ne prouve que ça ait causé la perte.
 
 **Non implémentés volontairement** : **OB 2.0** (imposerait un 5e étage de timeframe) et
 **SMT Divergence** (imposerait de suivre un 2e instrument corrélé en continu, casserait
@@ -708,6 +711,7 @@ complet est dans `DECISIONS.md`, entrée par entrée, la plus récente en haut.
 
 | Date | Ce qui s'est joué | Entrée dans DECISIONS.md |
 |---|---|---|
+| 2026-09-11 | **La boucle ne se figeait pas : le gardien la tuait (132 relances)** | « La boucle ne se figeait pas » |
 | 2026-09-10 | **Le journal archive le graphique et les conditions de chaque trade** | « Le journal de trading archive » |
 | 2026-09-08 | **Mode prop activé, risque 1 % → 0,4 % (à 1 % le compte est perdu)** | « Mode prop firm activé » |
 | 2026-09-08 | **Nouveau compte 50 000 $ + règle de cohérence prop firm** | « Nouveau compte 50 000 $ » |
@@ -929,6 +933,24 @@ démo Axi pendant plusieurs jours avant qu'on en tire une conclusion.
   enregistré EST exactement le dernier close vu par le moteur**. En forçant le close de la
   dernière bougie à `trade["entry"]`, les 5 rejeux sont devenus identiques au trade réel,
   RR compris. Vaut pour toute reconstitution a posteriori (`backend/_backfill_charts.py`)
+- 🚨 **LE GARDIEN DE VIVACITÉ NE RELANCE LA BOUCLE QUE SI ELLE EST MORTE — jamais parce
+  que MetaApi ne répond pas.** Il y a **DEUX pouls**, à ne jamais refusionner :
+  `_last_loop_beat` (battu en HAUT de chaque tour, AVANT tout appel réseau → la boucle
+  vit) et `_last_metaapi_ok` (le broker a répondu). Avant le 2026-09-11 il n'y en avait
+  qu'un, mis à jour après une lecture MetaApi réussie : un hoquet du broker de 5 min
+  faisait tuer une boucle parfaitement vivante, **en pleine reconnexion**, qui repartait
+  de zéro et se faisait retuer — 132 relances, dont 12 h d'affilée le 2026-07-12.
+  Trois invariants, tous couverts par `backend/tests/test_watchdog.py` :
+  1. **Ne jamais déplacer `_last_loop_beat` après un appel MetaApi** — ça recrée le bug.
+  2. **`5 × MetaApiWrapper._STEP_TIMEOUT_S` doit rester ≤ `_WATCHDOG_STALE_S`**, sinon le
+     gardien retue les reconnexions. Les délais étaient à 240 s (pire cas 20 min) pour un
+     gardien à 5 min ; ils sont à **60 s** (pire cas 300 s) pour un seuil à **600 s**.
+  3. **`_WATCHDOG_STALE_S` doit dépasser le pire tour NORMAL** (~470 s : 4 `get_candles`
+     à 90 s + lectures de compte + ordre), sinon on tue une boucle simplement lente —
+     éventuellement **pendant un `place_order`**, ce qui laisserait un ordre chez le
+     broker sans ligne de journal.
+  ℹ️ Une panne broker émet une notification `metaapi_down` (« MetaApi injoignable depuis
+  N min ») et **ne relance rien** : relancer n'a jamais rétabli MetaApi.
 - **Un graphique rejoué après coup se VÉRIFIE avant d'être présenté comme la décision.**
   Le contrôle est simple et sans appel : comparer la phrase `reason` rejouée à celle
   enregistrée, caractère par caractère. Identique → `source: "reconstitue_verifie"`,
@@ -963,14 +985,19 @@ rapidement — ne pas les supprimer pour faire de la place. Le reste des `_*` l'
 
 **Tests unitaires — ni serveur, ni MongoDB, ni MetaApi. Rapides, à lancer en premier :**
 ```powershell
-py -m pytest backend/tests/test_backtest_lookahead.py backend/tests/test_signal_reason.py backend/tests/test_prop_consistency.py -v
+py -m pytest backend/tests/test_backtest_lookahead.py backend/tests/test_signal_reason.py backend/tests/test_prop_consistency.py backend/tests/test_watchdog.py -v
 ```
-Attendu : **25 passed** (3 + 8 + 14). Le premier fichier vérifie que le backtest ne voit
+Attendu : **33 passed** (3 + 8 + 14 + 8). Le premier fichier vérifie que le backtest ne voit
 jamais le futur (cf. §9), le second que le texte d'un signal décrit les conditions réelles,
 le troisième le calcul de la règle de cohérence prop firm (dont le regroupement par jour
 prop à 17h EST, qui ne coïncide pas avec le jour calendaire) **et les repères du nouveau
 jour** (`new_day_state`), qui avaient laissé `day_start_ref` périmé après un changement
-de compte.
+de compte. Le quatrième fige le **gardien de vivacité** : il ne doit relancer la boucle que
+si elle est MORTE, jamais pour une panne du broker — et deux de ses tests vérifient la
+COHÉRENCE DES SEUILS, donc ils cassent si quelqu'un rallonge les délais de reconnexion.
+⚠️ **`py -m pytest backend/tests/` en entier fait échouer ~23 tests** : `backend_test.py`
+est un test d'INTÉGRATION qui exige un backend démarré (procédure ci-dessous). Ce n'est pas
+une régression — lancer les quatre fichiers ci-dessus est la vérification du moteur.
 C'est le modèle à suivre pour tout nouveau test du moteur : rapide, sans dépendance.
 
 **`backend_test.py` est un test d'intégration : le backend doit tourner AVANT pytest.**

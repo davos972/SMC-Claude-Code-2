@@ -283,7 +283,9 @@ class Trade(BaseModel):
 class Notification(BaseModel):
     id: str
     type: Literal["info", "success", "warning", "error"]
-    category: str  # open_trade | close_trade | dd_warning | bot_stop | connection | news
+    # open_trade | close_trade | dd_warning | bot_stop | bot_resume | connection | news
+    # | prop | metaapi_down (broker muet — alerte seule, aucune relance de la boucle)
+    category: str
     title: str
     message: str
     time: str

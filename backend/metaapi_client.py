@@ -52,6 +52,16 @@ class MetaApiWrapper:
     def is_configured(self) -> bool:
         return bool(self._token and self._account_id)
 
+    def is_connecting(self) -> bool:
+        """Une (re)connexion est-elle EN COURS ?
+
+        Le gardien de vivacité s'en sert pour ne pas tuer la boucle pendant qu'elle
+        attend légitimement une reconnexion : la tuer la ferait repartir de zéro, et
+        le gardien la retuerait au tour suivant — c'est le cercle vicieux diagnostiqué
+        le 2026-09-11 (voir DECISIONS.md).
+        """
+        return self._connect_lock.locked()
+
     def get_status(self) -> Dict[str, Any]:
         return {
             "configured": self.is_configured(),
@@ -78,6 +88,16 @@ class MetaApiWrapper:
                 "MetaApi credentials not configured. Go to Réglages to add your token and accountId."
             )
 
+    # Délai d'attente de CHAQUE étape de la connexion. Était à 240 s : les cinq étapes
+    # cumulées pouvaient donc bloquer la boucle de trading jusqu'à 20 MINUTES, alors que
+    # le gardien de vivacité la déclare figée au bout de 5 — il la tuait en pleine
+    # reconnexion, elle repartait de zéro, et se faisait retuer. Diagnostiqué le
+    # 2026-09-11 : 132 relances, dont 12 h d'affilée le 2026-07-12 (voir DECISIONS.md).
+    # 60 s suffisent très largement — une connexion saine prend ~5 s (mesuré). Une
+    # connexion qui n'aboutit pas en 60 s doit échouer VITE : la boucle retentera au
+    # tour suivant, 30 s plus tard, au lieu de rester bloquée.
+    _STEP_TIMEOUT_S = 60.0
+
     async def _connect(self) -> None:
         """Connect to MetaApi (idempotent). Raises MetaApiConnectionError on failure."""
         self._require_configured()
@@ -91,25 +111,26 @@ class MetaApiWrapper:
                 self._api = MetaApi(self._token)
                 self._account = await asyncio.wait_for(
                     self._api.metatrader_account_api.get_account(self._account_id),
-                    timeout=240.0,
+                    timeout=self._STEP_TIMEOUT_S,
                 )
                 state = getattr(self._account, "state", None)
                 if state and state in ("UNDEPLOYED", "DEPLOYING"):
                     self._deploying = True
-                    logger.info("Compte MetaApi non déployé — déploiement en cours, attente jusqu'à 240s…")
+                    logger.info("Compte MetaApi non déployé — déploiement en cours, "
+                                "attente jusqu'à %.0fs…", self._STEP_TIMEOUT_S)
                     try:
-                        await asyncio.wait_for(self._account.deploy(), timeout=240.0)
+                        await asyncio.wait_for(self._account.deploy(), timeout=self._STEP_TIMEOUT_S)
                     except Exception as e:
                         logger.warning("deploy() failed: %s", e)
                     self._deploying = False
                 try:
-                    await asyncio.wait_for(self._account.wait_connected(), timeout=240.0)
+                    await asyncio.wait_for(self._account.wait_connected(), timeout=self._STEP_TIMEOUT_S)
                 except Exception as e:
                     logger.warning("wait_connected timeout: %s", e)
                 self._connection = self._account.get_rpc_connection()
-                await asyncio.wait_for(self._connection.connect(), timeout=240.0)
+                await asyncio.wait_for(self._connection.connect(), timeout=self._STEP_TIMEOUT_S)
                 try:
-                    await asyncio.wait_for(self._connection.wait_synchronized(), timeout=240.0)
+                    await asyncio.wait_for(self._connection.wait_synchronized(), timeout=self._STEP_TIMEOUT_S)
                 except asyncio.TimeoutError:
                     logger.warning("wait_synchronized timeout — proceeding anyway (RPC is usable)")
                 self._connected = True
