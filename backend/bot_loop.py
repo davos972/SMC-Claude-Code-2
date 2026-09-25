@@ -265,6 +265,27 @@ def _deal_time(d: Dict) -> str:
     return t.isoformat() if hasattr(t, "isoformat") else str(t or "")
 
 
+def realized_pnl_from_deals(deals: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """P&L RÉALISÉ d'une liste de transactions broker (profit + swap + commission).
+
+    Calcul PUR. Ne compte que les transactions de TRADING (achat/vente) : les dépôts,
+    retraits et crédits (DEAL_TYPE_BALANCE, _CREDIT, _BONUS…) ne sont pas du P&L.
+    Compte TOUTES les positions du compte, bot ou manuelles — c'est le P&L du compte.
+    Les clôtures partielles (TP1/TP2) comptent dès qu'elles ont eu lieu, même si le
+    reste de la position est encore ouvert : c'est de l'argent déjà encaissé.
+    """
+    total, n_closes = 0.0, 0
+    for d in deals:
+        dtype = str(d.get("type", "")).upper()
+        if not (dtype.endswith("_BUY") or dtype.endswith("_SELL")):
+            continue
+        total += (float(d.get("profit", 0) or 0) + float(d.get("swap", 0) or 0)
+                  + float(d.get("commission", 0) or 0))
+        if "_OUT" in str(d.get("entryType", "")).upper():
+            n_closes += 1
+    return {"realized": round(total, 2), "closes": n_closes}
+
+
 async def _closed_position_info(position_id: str) -> Optional[Dict[str, Any]]:
     """Infos RÉELLES d'une position clôturée, lues dans l'historique du broker :
     P&L réalisé (profit + swap + commission), prix et heure de sortie. Renvoie None

@@ -68,6 +68,7 @@ export const endpoints = {
     metaapiStatus: () => api.get("/metaapi/status"),
     testConnection: () => apiLong.post("/metaapi/test-connection"),
     account: () => api.get("/account"),
+    dayPnl: () => api.get("/account/day-pnl"),
     positions: () => api.get("/positions"),
     price: (sym) => api.get(`/price/${sym}`),
     candles: (sym, tf, limit = 200) => apiLong.get(`/candles/${sym}`, { params: { timeframe: tf, limit } }),

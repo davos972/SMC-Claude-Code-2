@@ -16,6 +16,21 @@
 
 ---
 
+## 2026-09-25 — Le « P&L JOUR » du Dashboard est le RÉALISÉ, le latent a sa propre case
+**Décision :** la case « P&L JOUR » affiche la somme des transactions broker clôturées
+**depuis minuit UTC** (profit + swap + commission, TP partiels compris, dépôts/retraits
+exclus), via `GET /api/account/day-pnl` → `bot_loop.realized_pnl_from_deals`. Une case
+« LATENT » affiche à part équité − solde (positions ouvertes). Demande de David.
+**Pourquoi :** l'ancienne case calculait équité − solde, c'est-à-dire le LATENT seul.
+Constaté le jour même : **0 $ affiché** (aucune position ouverte) pour une journée à
+**−8,41 $ réalisés**. Minuit UTC : choix explicite de David, préféré au jour prop (17h NY).
+⚠️ Ce chiffre n'est donc PAS le repère de la règle prop « perte du jour », qui compte
+depuis 17h NY et à partir de `day_start_ref` — ne pas les comparer.
+**Écarté :** solde − solde de début de journée (le repère `day_start_*` n'est réécrit que
+si le bot tourne au rollover, et `/bot/start` le réinitialise en cours de journée) ;
+somme de la collection `trades` (ignore les TP partiels d'une position encore ouverte et
+les trades manuels). Cache serveur de 30 s : le Dashboard interroge toutes les 5 s.
+
 ## 2026-09-11 (fin) — Les setups rejetés restent jetables : la purge quotidienne ne bouge pas
 **Décision :** **ne rien changer.** La collection `signals` continue d'être purgée à chaque
 nouveau jour de trading, et les setups REJETÉS ne sont ni archivés, ni conservés au-delà de

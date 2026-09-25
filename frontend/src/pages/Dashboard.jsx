@@ -19,6 +19,7 @@ const TIMEFRAME_OPTIONS = [
 export default function Dashboard({ botState, settings, refresh }) {
     const [timeframe, setTimeframe] = useState("M5");
     const [account, setAccount] = useState(null);
+    const [dayPnl, setDayPnl] = useState(null);
     const [positions, setPositions] = useState([]);
     const [price, setPrice] = useState(null);
     const [candles, setCandles] = useState([]);
@@ -46,6 +47,13 @@ export default function Dashboard({ botState, settings, refresh }) {
             setNews(nw.data || { events: [], pause: null });
         } catch (err) {
             console.error("Dashboard load failed:", err);
+        }
+        // À part : l'historique broker peut échouer sans priver l'écran du reste.
+        try {
+            const { data } = await endpoints.dayPnl();
+            setDayPnl(data?.data ? data.data.realized : null);
+        } catch (err) {
+            setDayPnl(null);
         }
     }, [symbol]);
 
@@ -158,7 +166,10 @@ export default function Dashboard({ botState, settings, refresh }) {
 
     const balance = account?.balance;
     const equity = account?.equity;
-    const pnlDay = account ? (account.equity - account.balance) : null;
+    // P&L JOUR = réalisé depuis minuit UTC (historique broker). LATENT = positions encore ouvertes.
+    const pnlDay = typeof dayPnl === "number" ? dayPnl : null;
+    const pnlLatent = account ? (account.equity - account.balance) : null;
+    const accentOf = (v) => (v > 0 ? "positive" : v < 0 ? "negative" : "default");
     const currency = account?.currency || "€";
 
     const priceVal = price?.bid || price?.ask;
@@ -207,14 +218,22 @@ export default function Dashboard({ botState, settings, refresh }) {
             </div>
 
             {/* KPI grid */}
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
                 <KPICard label="SOLDE" value={fmtMoney(balance, currency, 0)} testid="kpi-balance" />
                 <KPICard label="ÉQUITÉ" value={fmtMoney(equity, currency, 0)} testid="kpi-equity" />
                 <KPICard
                     label="P&L JOUR"
                     value={pnlDay !== null ? fmtPnL(pnlDay, currency) : "—"}
-                    accent={pnlDay > 0 ? "positive" : pnlDay < 0 ? "negative" : "default"}
+                    accent={accentOf(pnlDay)}
+                    sub="trades clôturés"
                     testid="kpi-pnl"
+                />
+                <KPICard
+                    label="LATENT"
+                    value={pnlLatent !== null ? fmtPnL(pnlLatent, currency) : "—"}
+                    accent={accentOf(pnlLatent)}
+                    sub="positions ouvertes"
+                    testid="kpi-pnl-latent"
                 />
             </div>
 

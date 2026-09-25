@@ -651,7 +651,7 @@ Application web de **trading 100% automatique** sur **MetaTrader 5**, basée sur
 
 ## 5. Fonctionnalités de l'app
 
-- **Dashboard** : bouton START/STOP manuel rond + rail des sessions 24h avec marqueur « maintenant », solde/équité/P&L jour, graphique avec zones SMC, positions ouvertes avec clôture d'urgence, journal des signaux (y compris setups REJETÉS avec la raison), annonces éco du jour
+- **Dashboard** : bouton START/STOP manuel rond + rail des sessions 24h avec marqueur « maintenant », solde/équité, **P&L jour = RÉALISÉ depuis minuit UTC** (transactions broker, TP partiels compris — `GET /api/account/day-pnl`, cache 30 s) et **LATENT** à part (équité − solde) — ⚠️ ce n'est pas le repère de la perte du jour prop (17h NY, `day_start_ref`), graphique avec zones SMC, positions ouvertes avec clôture d'urgence, journal des signaux (y compris setups REJETÉS avec la raison), annonces éco du jour
 - **Backtest** (simple) : config actuelle sur période choisie, données M1 MetaApi, spread simulé paramétrable, rapport (winrate, profit factor, RR, DD max, courbe d'équité, liste des trades cliquables sur le graphique), avertissement performances passées. Le backtest part du **solde réel du compte** lu chez le broker (10 000 $ uniquement en mode dégradé). ⚠️ La limite « **max 6 mois** » (`backend/server.py:767`) est une limite de l'**API de l'app** ; les scripts `_*` appellent le moteur directement et ne l'ont pas — c'est ainsi que la campagne a tourné sur 8 mois
 - **Journal de trading** (onglet « Stats ») : les trades RÉELS du bot, stockés dans la
   collection Mongo `trades` (écrite par `bot_loop` à l'ouverture puis à la clôture, avec
@@ -723,6 +723,7 @@ complet est dans `DECISIONS.md`, entrée par entrée, la plus récente en haut.
 
 | Date | Ce qui s'est joué | Entrée dans DECISIONS.md |
 |---|---|---|
+| 2026-09-25 | « P&L JOUR » = réalisé depuis minuit UTC ; case « LATENT » séparée | « Le P&L JOUR du Dashboard » |
 | 2026-09-11 | Les setups rejetés restent jetables : la purge quotidienne ne bouge pas | « Les setups rejetés restent jetables » |
 | 2026-09-11 | Le bandeau « Configuration validée » attend 0,4 % (niveau prop firm) | « Le bandeau Configuration validée » |
 | 2026-09-11 | **La boucle ne se figeait pas : le gardien la tuait (132 relances)** | « La boucle ne se figeait pas » |
@@ -999,9 +1000,10 @@ rapidement — ne pas les supprimer pour faire de la place. Le reste des `_*` l'
 
 **Tests unitaires — ni serveur, ni MongoDB, ni MetaApi. Rapides, à lancer en premier :**
 ```powershell
-py -m pytest backend/tests/test_backtest_lookahead.py backend/tests/test_signal_reason.py backend/tests/test_prop_consistency.py backend/tests/test_watchdog.py -v
+py -m pytest backend/tests/test_backtest_lookahead.py backend/tests/test_signal_reason.py backend/tests/test_prop_consistency.py backend/tests/test_watchdog.py backend/tests/test_day_pnl.py -v
 ```
-Attendu : **33 passed** (3 + 8 + 14 + 8). Le premier fichier vérifie que le backtest ne voit
+Attendu : **37 passed** (3 + 8 + 14 + 8 + 4 ; le dernier fichier vérifie le P&L réalisé du
+jour affiché au Dashboard). Le premier fichier vérifie que le backtest ne voit
 jamais le futur (cf. §9), le second que le texte d'un signal décrit les conditions réelles,
 le troisième le calcul de la règle de cohérence prop firm (dont le regroupement par jour
 prop à 17h EST, qui ne coïncide pas avec le jour calendaire) **et les repères du nouveau

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -220,6 +221,34 @@ async def get_account() -> Dict[str, Any]:
         return {"configured": True, "data": info}
     except MetaApiConnectionError as e:
         return {"configured": True, "error": str(e)}
+
+
+# Cache court : le Dashboard interroge toutes les 5 s, l'historique broker est lourd.
+_DAY_PNL_TTL_S = 30.0
+_day_pnl_cache: Dict[str, Any] = {"at": 0.0, "day": None, "value": None}
+
+
+@api.get("/account/day-pnl")
+async def get_day_pnl() -> Dict[str, Any]:
+    """P&L RÉALISÉ depuis minuit UTC (trades clôturés, TP partiels compris), lu dans
+    l'historique du broker. Le gain LATENT (positions ouvertes) n'y est PAS : le
+    Dashboard l'affiche à part (équité − solde). Jamais d'estimation : si l'historique
+    est indisponible, on renvoie l'erreur et l'écran affiche « — »."""
+    if not metaapi_client.is_configured():
+        return {"configured": False, "error": "MetaApi non configuré."}
+    now = datetime.now(timezone.utc)
+    day = now.date().isoformat()
+    c = _day_pnl_cache
+    if c["value"] is not None and c["day"] == day and time.monotonic() - c["at"] < _DAY_PNL_TTL_S:
+        return {"configured": True, "data": c["value"]}
+    start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    try:
+        deals = await metaapi_client.get_deals_by_time_range(start, now + timedelta(minutes=1))
+    except Exception as e:
+        return {"configured": True, "error": str(e)}
+    value = {**bot_loop.realized_pnl_from_deals(deals), "day": day, "since": start.isoformat()}
+    c.update(at=time.monotonic(), day=day, value=value)
+    return {"configured": True, "data": value}
 
 
 @api.get("/positions")
