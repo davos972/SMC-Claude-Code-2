@@ -40,6 +40,23 @@ d'ici — c'est la règle qui a coûté 34 h de trading non documenté (§9). D�
 trois heures le 2026-09-07 : « aucune position ouverte, `trades_today = 0` » à 05:16, une
 position ouverte à 07:16, refermée au SL à 08:03.
 
+🆕🆕 **COMPTE BLUEGUARDIAN 200 000 $ — ÉVALUATION — branché le 2026-10-05 à 04:26 UTC.**
+Login 583729, `BlueGuardian-Server`, MetaApi `bc20edec…` (« Buy Now Pay Later -
+Evaluation »). L'ancien compte 50k (`b5b80ffc…`) a été supprimé de MetaApi. Règles données
+par David : **objectif +8 000 $ (on continue de trader une fois atteint), perte du jour
+8 000 $, perte max 16 000 $, pas de règle de cohérence.** Réglages écrits :
+`prop_initial_balance=200000`, `prop_daily_dd_pct=4`, `prop_total_dd_pct=8`,
+`prop_trailing_lock_profit_pct=8`, `prop_consistency_pct=0`, `prop_profit_target_pct=4`
+(champ mort, affichage seul). Risque **0,4 % = 800 $/trade**, validé par David. Le bot
+s'arrête à **6 400 $** de perte du jour et à **187 200 $** d'équité.
+⚠️ **Perte max supposée GLISSANTE** (`prop_trailing_dd=True`, réglage le plus prudent),
+non confirmée par David : si elle est statique, le bot peut s'arrêter plus tôt que
+nécessaire après des gains. **Journal remis à zéro le 2026-10-05** à la demande de David :
+les 34 trades du compte 50k sont sauvegardés intégralement dans
+`../sauvegardes/trades_compte50k_2026-10-05.json`, le journal ne mesure plus que le 200k.
+**Le spread se lit dans MetaApi** (48 pts lus le dimanche soir, contre 16 au backtest Axi).
+Tout ce qui suit sur le compte 50k est l'historique de ce compte.
+
 🆕 **NOUVEAU COMPTE 50 000 $ + MODE PROP ACTIF, depuis le 2026-09-08.** Le compte démo Axi
 à ~4 900 $ est remplacé par un **compte à 50 000 $** (nouvel `metaapi_account_id` en base ;
 les réglages Atlas ont priorité sur la variable Render, `server.py:73`).
